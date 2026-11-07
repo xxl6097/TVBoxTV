@@ -1,0 +1,2967 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>夜帧影视软件 V1.0 源程序</title><style>
+@page { size: A4; margin: 0; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #fff; }
+.page {
+  width: 210mm; height: 297mm;
+  padding: 18mm 20mm 16mm 22mm;
+  page-break-after: always;
+  position: relative;
+  overflow: hidden;
+}
+.page:last-child { page-break-after: auto; }
+.hd {
+  text-align: center; font-size: 9pt; line-height: 1;
+  margin-bottom: 5mm;
+  font-family: "Songti SC", "SimSun", serif;
+}
+.code {
+  font-family: "Menlo", "Consolas", "Courier New", monospace;
+  font-size: 9pt; line-height: 13pt; white-space: pre;
+}
+.ft {
+  position: absolute; left: 0; right: 0; bottom: 8mm;
+  text-align: center; font-size: 9pt;
+  font-family: "Songti SC", "SimSun", serif;
+}
+</style></head><body><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">// ==========================================================================
+// 文件：entry/src/main/ets/common/Cms.ets    （共 661 行）
+// ==========================================================================
+import hilog from '@ohos.hilog';
+import { Http } from './Http';
+import { Site, Category, Vod, VodPage, Line, Episode, JResp, JVod, JClass,
+  FilterGroup, FilterValue } from './Model';
+/**
+ * 内容接口客户端：面向标准 CMS 开放数据接口。
+ *
+ * 支持三类数据源协议：
+ *   type 0 —— XML 数据接口
+ *   type 1 —— JSON 数据接口
+ *   type 4 —— 返回体多包一层 data 的 JSON 接口（同一套参数）
+ * 脚本型实现依赖 JVM 与字节码加载器，本平台不支持，由上层标记为不可用。
+ */
+/** 一条接口响应缓存。key 即完整 URL（含接口地址与查询串），天然按来源隔离 */
+class CmHit {
+  key: string = '';
+  body: string = '';
+  at: number = 0;
+}
+export class Cms {
+  /**
+   * 接口响应缓存。
+   *
+   * 一次列表请求往往 1~3 秒，而用户在分类标签上来回点的概率很高
+   * （看看「电影」有没有新片、再回「电视剧」继续）。之前每次切换都重新请求，
+   * 回来一次就白等一次。这里加一层按 URL 的短 TTL 缓存：
+   *   分类表 5 分钟（基本不变）
+   *   列表   90 秒（够「来回切」，又不会把刚更新的片单压太久）
+   *   详情   10 分钟（详情几乎不变，但剧集会更新，所以不给太长）
+   * 搜索不缓存：关键词千变万化，缓存命中率低，还容易把「刚试过的搜索」结果留旧。
+   */
+  private static hits: CmHit[] = [];
+  private static readonly HIT_MAX: number = 30;
+  private static readonly HIT_CHARS: number = 3000000;
+  private static readonly TTL_CAT: number = 300000;
+  private static readonly TTL_LIST: number = 90000;
+  private static readonly TTL_DETAIL: number = 600000;
+  /** 读缓存；过期或没有都返回空串 */
+  private static hit(url: string, ttl: number): string {
+    const now: number = Date.now();
+    for (let i = 0; i &lt; Cms.hits.length; i++) {
+      if (Cms.hits[i].key === url) {
+        if (now - Cms.hits[i].at &lt;= ttl) {
+          return Cms.hits[i].body;
+        }
+        Cms.hits.splice(i, 1);   // 过期就地清掉，避免数组越攒越长
+        return '';</div><div class="ft">1</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      }
+    }
+    return '';
+  }
+  /** 写缓存：同 URL 覆盖、超条数按最旧淘汰、超总字数从最旧开始丢 */
+  private static keep(url: string, body: string): void {
+    if (body.length === 0) {
+      return;                  // 空响应不缓存，否则一次失败会「粘」住 90 秒
+    }
+    const e = new CmHit();
+    e.key = url;
+    e.body = body;
+    e.at = Date.now();
+    for (let i = 0; i &lt; Cms.hits.length; i++) {
+      if (Cms.hits[i].key === url) {
+        Cms.hits[i] = e;
+        return;
+      }
+    }
+    Cms.hits.push(e);
+    while (Cms.hits.length &gt; Cms.HIT_MAX) {
+      Cms.hits.shift();
+    }
+    let total: number = 0;
+    for (let i = 0; i &lt; Cms.hits.length; i++) {
+      total += Cms.hits[i].body.length;
+    }
+    while (total &gt; Cms.HIT_CHARS &amp;&amp; Cms.hits.length &gt; 1) {
+      total -= Cms.hits[0].body.length;
+      Cms.hits.shift();
+    }
+  }
+  /**
+   * 缓存透明的一层：命中直接返回，未命中请求后落缓存。
+   * 注意不能叫 text —— 类里已有一个 `Cms.text(s)` 负责剥 HTML 标签。
+   */
+  private static async fetch(url: string, ttl: number, ms: number): Promise&lt;string
+&gt; {
+    const has: string = Cms.hit(url, ttl);
+    if (has.length &gt; 0) {
+      hilog.info(0x1000, 'BOXN', 'cache HIT  %{public}s', Cms.short(url));
+      return has;
+    }
+    const t0: number = Date.now();
+    const txt: string = await Http.text(url, undefined, ms);
+    hilog.info(0x1000, 'BOXN', 'cache MISS %{public}s  %{public}d ms',
+      Cms.short(url), Date.now() - t0);
+    Cms.keep(url, txt);
+    return txt;
+  }</div><div class="ft">2</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  /** 日志里只留参数部分，URL 太长会把 hilog 刷屏 */
+  private static short(url: string): string {
+    const i: number = url.indexOf('?');
+    const q: string = i &gt;= 0 ? url.substring(i + 1) : url;
+    return q.length &gt; 48 ? q.substring(0, 48) : q;
+  }
+  /** 用户更换配置后主动清空，避免旧响应还留着 */
+  static clearCache(): void {
+    Cms.hits = [];
+  }
+  private site: Site;
+  /** 筛选条件尾巴，形如 &amp;area=大陆&amp;year=2025。由点播页切换筛选时塞进来 */
+  private extra: string = '';
+  constructor(site: Site) {
+    this.site = site;
+  }
+  setExtra(q: string): void {
+    this.extra = q;
+  }
+  // ---------- 公共入口 ----------
+  async categories(): Promise&lt;Category[]&gt; {
+    const txt: string = await Cms.fetch(this.u('ac=list'), Cms.TTL_CAT, 15000);
+    if (this.site.type === 0 || Cms.looksXml(txt)) {
+      const cats: Category[] = Cms.catFromXml(txt);
+      if (cats.length &gt; 0) {
+        const all = new Category();
+        all.id = '';
+        all.name = '全部';
+        cats.unshift(all);
+        return cats;
+      }
+      // 该站的 ?ac=list 直接返回影片列表，只能从条目里反推分类；
+      // 这时补一个「全部」（tid 传空串接口会返回全集），否则会被锁死在单个分类里
+      const derived: Category[] = Cms.catsFromVideos(txt);
+      if (derived.length &gt; 0) {
+        const all = new Category();
+        all.id = '';
+        all.name = '全部';
+        derived.unshift(all);
+      }
+      return derived;
+    }
+    const root: JResp = Cms.root(Cms.parse(txt));
+    const out: Category[] = [];
+    if (root.catList !== undefined) {
+      for (let i = 0; i &lt; root.catList.length; i++) {
+        const c = new Category();
+        c.id = String(root.catList[i].type_id === undefined ? '' : root.catList[i]
+.type_id);
+        c.name = Cms.s(root.catList[i].type_name);</div><div class="ft">3</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">        // type_pid 为 0 / 缺省都算顶级分类
+        const pidAny: number | undefined = root.catList[i].type_pid;
+        const pidRaw: number = pidAny === undefined ? 0 : pidAny;
+        c.pid = pidRaw &gt; 0 ? String(pidRaw) : '';
+        if (c.id.length &gt; 0 &amp;&amp; c.name.length &gt; 0) {
+          out.push(c);
+        }
+      }
+    }
+    if (out.length === 0 &amp;&amp; root.list !== undefined) {
+      const seen: string[] = [];
+      for (let i = 0; i &lt; root.list.length; i++) {
+        const tid: string = String(root.list[i].tid === undefined ? '' : root.list
+[i].tid);
+        const tn: string = Cms.s(root.list[i].type_name);
+        if (tid.length &gt; 0 &amp;&amp; tn.length &gt; 0 &amp;&amp; seen.indexOf(tid) &lt; 0) {
+          seen.push(tid);
+          const c = new Category();
+          c.id = tid;
+          c.name = tn;
+          out.push(c);
+        }
+      }
+    }
+    if (out.length &gt; 0) {
+      // t 传空串多数 CMS 会返回全集，作为默认入口体验更好：
+      // 部分站点的分类 id 里只有零星几条，不开「全部」会让人以为没内容
+      const all = new Category();
+      all.id = '';
+      all.name = '全部';
+      out.unshift(all);
+    }
+    return out;
+  }
+  async list(tid: string, page: number): Promise&lt;VodPage&gt; {
+    const q: string = 'ac=videolist&amp;t=' + encodeURIComponent(tid) + '&amp;pg=' + page 
++ this.extra;
+    const txt: string = await Cms.fetch(this.u(q), Cms.TTL_LIST, 18000);
+    if (this.site.type === 0 || Cms.looksXml(txt)) {
+      return Cms.listFromXml(txt, page, this.site);
+    }
+    const root: JResp = Cms.root(Cms.parse(txt));
+    const pg = new VodPage();
+    pg.page = root.page === undefined ? page : root.page;
+    pg.pageCount = root.pagecount === undefined ? 1 : root.pagecount;
+    pg.total = root.total === undefined ? 0 : root.total;
+    if (root.list !== undefined) {
+      for (let i = 0; i &lt; root.list.length; i++) {
+        pg.items.push(this.toVod(root.list[i]));
+      }</div><div class="ft">4</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    }
+    return pg;
+  }
+  /**
+   * 把一个父分类和它的子分类合在一起取第一页。
+   *
+   * 为什么需要：父分类（如 `电视剧`）通常**没有直属影片**，
+   * 直接请求 `t=1` 返回空列表，界面就会显示「这个分类下没有内容」——
+   * 但下面明明排着 欧美剧/韩剧/日剧。用户会以为软件坏了。
+   * 这里把父 + 子同时请求、按 vod id 去重合并，父分类点进去也有内容。
+   *
+   * 只取第 1 页且不做翻页：聚合结果本来就是「各类最新的混排」，
+   * 继续翻页的语义说不清（翻谁的页？），不如把翻页留给具体的子分类。
+   */
+  async listMerged(ids: string[], page: number): Promise&lt;VodPage&gt; {
+    const out = new VodPage();
+    out.page = 1;
+    out.pageCount = 1;
+    const seen: string[] = [];
+    const tasks: Promise&lt;VodPage&gt;[] = [];
+    for (let i = 0; i &lt; ids.length; i++) {
+      tasks.push(this.list(ids[i], page));
+    }
+    const got: VodPage[] = await Promise.all(tasks);
+    for (let i = 0; i &lt; got.length; i++) {
+      const items: Vod[] = got[i].items;
+      for (let k = 0; k &lt; items.length; k++) {
+        if (seen.indexOf(items[k].id) &lt; 0) {
+          seen.push(items[k].id);
+          out.items.push(items[k]);
+        }
+      }
+    }
+    out.total = out.items.length;
+    return out;
+  }
+  async detail(id: string): Promise&lt;Vod&gt; {
+    const q: string = 'ac=detail&amp;ids=' + encodeURIComponent(id);
+    const txt: string = await Cms.fetch(this.u(q), Cms.TTL_DETAIL, 18000);
+    if (this.site.type === 0 || Cms.looksXml(txt)) {
+      return Cms.detailFromXml(txt, this.site, id);
+    }
+    const root: JResp = Cms.root(Cms.parse(txt));
+    if (root.list !== undefined &amp;&amp; root.list.length &gt; 0) {
+      return this.toVod(root.list[0]);
+    }
+    throw new Error('接口没有返回详情数据');
+  }
+  /** 搜索；不同站对 ac / wd 的接受度不同，做两级兜底 */
+  async search(kw: string): Promise&lt;Vod[]&gt; {</div><div class="ft">5</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    const e: string = encodeURIComponent(kw);
+    let items: Vod[] = [];
+    try {
+      const txt: string = await Http.text(this.u('ac=videolist&amp;wd=' + e), undefine
+d, 12000);
+      items = this.pickList(txt);
+    } catch (err) {
+      items = [];
+    }
+    if (items.length === 0) {
+      const txt2: string = await Http.text(this.u('wd=' + e), undefined, 12000);
+      items = this.pickList(txt2);
+    }
+    return items;
+  }
+  private pickList(txt: string): Vod[] {
+    if (this.site.type === 0 || Cms.looksXml(txt)) {
+      return Cms.listFromXml(txt, 1, this.site).items;
+    }
+    const root: JResp = Cms.root(Cms.parse(txt));
+    const out: Vod[] = [];
+    if (root.list !== undefined) {
+      for (let i = 0; i &lt; root.list.length; i++) {
+        out.push(this.toVod(root.list[i]));
+      }
+    }
+    return out;
+  }
+  // ---------- 内部 ----------
+  private u(params: string): string {
+    const a: string = this.site.api;
+    if (a.endsWith('?')) {
+      return a + params;
+    }
+    if (a.indexOf('?') &gt;= 0) {
+      return a + '&amp;' + params;
+    }
+    return a + '?' + params;
+  }
+  private toVod(j: JVod): Vod {
+    const v = new Vod();
+    v.id = String(j.vod_id === undefined ? '' : j.vod_id);
+    v.name = Cms.s(j.vod_name);
+    v.pic = Cms.s(j.vod_pic);
+    v.remark = Cms.s(j.vod_remarks);
+    v.year = Cms.s(j.vod_year);
+    v.area = Cms.s(j.vod_area);
+    v.actor = Cms.s(j.vod_actor);
+    v.director = Cms.s(j.vod_director);
+    v.content = Cms.plain(Cms.s(j.vod_content).length &gt; 0 ? Cms.s(j.vod_content) :</div><div class="ft">6</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code"> Cms.s(j.vod_blurb));
+    v.typeName = Cms.s(j.type_name);
+    v.from = Cms.s(j.vod_play_from);
+    v.playUrl = Cms.s(j.vod_play_url);
+    v.siteKey = this.site.key;
+    v.siteName = this.site.name;
+    return v;
+  }
+  // ---------- 静态工具 ----------
+  static s(v: string | undefined | null): string {
+    if (v === undefined || v === null) {
+      return '';
+    }
+    return String(v).trim();
+  }
+  static looksXml(txt: string): boolean {
+    const t: string = txt.trimStart();
+    return t.startsWith('&lt;');
+  }
+  /** 配置 JSON 容错：去 BOM、去 // 注释行、把保留字 class 改名 */
+  static cleanJson(txt: string): string {
+    let t: string = txt;
+    if (t.charCodeAt(0) === 0xFEFF) {
+      t = t.substring(1);
+    }
+    const raw: string[] = t.split('\n');
+    const keep: string[] = [];
+    for (let i = 0; i &lt; raw.length; i++) {
+      const line: string = raw[i].replace('\r', '');
+      if (line.trimStart().startsWith('//')) {
+        continue;
+      }
+      keep.push(line);
+    }
+    return keep.join('\n').replace(/"class"\s*:/g, '"catList":');
+  }
+  static parse(txt: string): JResp {
+    const t: string = Cms.cleanJson(txt);
+    if (t.trim().length === 0) {
+      throw new Error('接口返回空内容');
+    }
+    try {
+      return JSON.parse(t) as JResp;
+    } catch (err) {
+      throw new Error('接口返回的不是合法 JSON（数据源可能已失效）');
+    }
+  }
+  static root(j: JResp): JResp {
+    if (j.data !== undefined &amp;&amp; j.data !== null) {
+      return j.data;</div><div class="ft">7</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    }
+    return j;
+  }
+  /** HTML 实体 + 标签清理，用于简介 */
+  static plain(s: string): string {
+    let r: string = s.replace(/&lt;br\s*\/?&gt;/gi, '\n');
+    r = r.replace(/&lt;\/p&gt;/gi, '\n');
+    r = r.replace(/&lt;[^&gt;]+&gt;/g, '');
+    r = r.replace(/&amp;lt;/g, '&lt;').replace(/&amp;gt;/g, '&gt;').replace(/&amp;quot;/g, '"')
+      .replace(/&amp;#39;/g, "'").replace(/&amp;nbsp;/g, ' ').replace(/&amp;amp;/g, '&amp;');
+    r = r.replace(/\n{3,}/g, '\n\n');
+    return r.trim();
+  }
+  /** XML 节点取值：先取 CDATA 内容，再清标签与实体。
+   *  注意顺序——不能先跑 plain()，否则 &lt;![CDATA[片名]]&gt; 会被当成标签整段删掉。 */
+  static node(block: string, tag: string): string {
+    const re = new RegExp('&lt;' + tag + '&gt;([\\s\\S]*?)&lt;/' + tag + '&gt;', 'i');
+    const m = block.match(re);
+    if (m === null) {
+      return '';
+    }
+    return Cms.text(m[1]);
+  }
+  static text(s: string): string {
+    let r: string = s;
+    const c: number = r.indexOf('&lt;![CDATA[');
+    if (c &gt;= 0) {
+      const e: number = r.indexOf(']]&gt;', c);
+      if (e &gt; 0) {
+        r = r.substring(c + 9, e);
+      }
+    }
+    return Cms.plain(r);
+  }
+  /** 部分站点的 ?ac=list 不返回 &lt;class&gt;，而是直接返回影片列表。
+   *  这时从每条影片的 tid/type 反推分类，比"没有分类"更好用。 */
+  static catsFromVideos(xml: string): Category[] {
+    const out: Category[] = [];
+    const seen: string[] = [];
+    const blocks = xml.match(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi);
+    if (blocks === null) {
+      return out;
+    }
+    for (let i = 0; i &lt; blocks.length; i++) {
+      const tid: string = Cms.node(blocks[i], 'tid');
+      const tn: string = Cms.node(blocks[i], 'type');
+      if (tid.length &gt; 0 &amp;&amp; tn.length &gt; 0 &amp;&amp; seen.indexOf(tid) &lt; 0) {
+        seen.push(tid);
+        const c = new Category();
+        c.id = tid;</div><div class="ft">8</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">        c.name = tn;
+        out.push(c);
+      }
+    }
+    return out;
+  }
+  static catFromXml(xml: string): Category[] {
+    const out: Category[] = [];
+    const re = /&lt;ty\b[^&gt;]*\bid="(\d+)"[^&gt;]*&gt;([\s\S]*?)&lt;\/ty&gt;/gi;
+    let m = re.exec(xml);
+    while (m !== null) {
+      const c = new Category();
+      c.id = m[1];
+      c.name = Cms.plain(m[2]);
+      if (c.name.length &gt; 0) {
+        out.push(c);
+      }
+      m = re.exec(xml);
+    }
+    return out;
+  }
+  static listFromXml(xml: string, page: number, site: Site): VodPage {
+    const pg = new VodPage();
+    pg.page = page;
+    const head = xml.match(/&lt;list\b[^&gt;]*&gt;/i);
+    if (head !== null) {
+      const p = head[0].match(/\bpage="(\d+)"/i);
+      const pc = head[0].match(/\bpagecount="(\d+)"/i);
+      const rc = head[0].match(/\brecordcount="(\d+)"/i);
+      if (p !== null) {
+        pg.page = parseInt(p[1], 10);
+      }
+      if (pc !== null) {
+        pg.pageCount = parseInt(pc[1], 10);
+      }
+      if (rc !== null) {
+        pg.total = parseInt(rc[1], 10);
+      }
+    }
+    const blocks = xml.match(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi);
+    if (blocks !== null) {
+      for (let i = 0; i &lt; blocks.length; i++) {
+        const b: string = blocks[i];
+        const v = new Vod();
+        v.id = Cms.node(b, 'id');
+        v.name = Cms.node(b, 'name');
+        v.pic = Cms.node(b, 'pic');
+        const note: string = Cms.node(b, 'note');
+        v.remark = note.length &gt; 0 ? note : Cms.node(b, 'dt');
+        v.typeName = Cms.node(b, 'type');</div><div class="ft">9</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">        v.siteKey = site.key;
+        v.siteName = site.name;
+        if (v.name.length &gt; 0) {
+          pg.items.push(v);
+        }
+      }
+    }
+    return pg;
+  }
+  static detailFromXml(xml: string, site: Site, id: string): Vod {
+    const blocks = xml.match(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi);
+    if (blocks === null || blocks.length === 0) {
+      throw new Error('接口没有返回详情数据');
+    }
+    const b: string = blocks[0];
+    const v = new Vod();
+    v.id = Cms.node(b, 'id');
+    if (v.id.length === 0) {
+      v.id = id;
+    }
+    v.name = Cms.node(b, 'name');
+    v.pic = Cms.node(b, 'pic');
+    v.remark = Cms.node(b, 'note');
+    v.typeName = Cms.node(b, 'type');
+    v.year = Cms.node(b, 'year');
+    v.area = Cms.node(b, 'area');
+    v.actor = Cms.node(b, 'actor');
+    v.director = Cms.node(b, 'director');
+    v.content = Cms.node(b, 'des');
+    v.siteKey = site.key;
+    v.siteName = site.name;
+    // &lt;dl&gt;&lt;dd flag="ckm3u8"&gt;第1集$http://...&lt;/dd&gt;&lt;/dl&gt;
+    const flags: string[] = [];
+    const urls: string[] = [];
+    const ddRe = /&lt;dd\b[^&gt;]*\bflag="([^"]*)"[^&gt;]*&gt;([\s\S]*?)&lt;\/dd&gt;/gi;
+    let m = ddRe.exec(b);
+    while (m !== null) {
+      flags.push(m[1]);
+      urls.push(Cms.text(m[2]));
+      m = ddRe.exec(b);
+    }
+    if (flags.length === 0) {
+      const ddRe2 = /&lt;dd\b[^&gt;]*&gt;([\s\S]*?)&lt;\/dd&gt;/gi;
+      let m2 = ddRe2.exec(b);
+      let n: number = 1;
+      while (m2 !== null) {
+        flags.push('线路' + n);
+        urls.push(Cms.text(m2[1]));
+        n++;
+        m2 = ddRe2.exec(b);</div><div class="ft">10</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      }
+    }
+    v.from = flags.join('$$$');
+    v.playUrl = urls.join('$$$');
+    return v;
+  }
+  /** vod_play_url / vod_play_from → 线路与剧集 */
+  static splitLines(from: string, playUrl: string): Line[] {
+    const out: Line[] = [];
+    if (playUrl.length === 0) {
+      return out;
+    }
+    const fArr: string[] = from.length &gt; 0 ? from.split('$$$') : [];
+    const uArr: string[] = playUrl.split('$$$');
+    for (let i = 0; i &lt; uArr.length; i++) {
+      const ln = new Line();
+      ln.name = i &lt; fArr.length &amp;&amp; fArr[i].length &gt; 0 ? fArr[i] : ('线路 ' + (i + 
+1));
+      const segs: string[] = uArr[i].split('#');
+      for (let k = 0; k &lt; segs.length; k++) {
+        const seg: string = segs[k].trim();
+        if (seg.length === 0) {
+          continue;
+        }
+        const ep = new Episode();
+        const p: number = seg.indexOf('$');
+        if (p &gt; 0) {
+          ep.name = seg.substring(0, p).trim();
+          ep.url = seg.substring(p + 1).trim();
+        } else {
+          ep.name = '第 ' + (k + 1) + ' 集';
+          ep.url = seg;
+        }
+        if (ep.url.length &gt; 0 &amp;&amp; ep.url.indexOf('://') &gt; 0) {
+          ln.eps.push(ep);
+        }
+      }
+      // 标记这条线路能否直接喂给播放器：常见站点第一组是网页地址
+      // （如 https://cdn/play/xxx），第二组才是真流（.../index.m3u8）
+      let directCount: number = 0;
+      for (let k = 0; k &lt; ln.eps.length; k++) {
+        if (Cms.isDirect(ln.eps[k].url)) {
+          directCount++;
+        }
+      }
+      ln.direct = ln.eps.length &gt; 0 &amp;&amp; directCount * 2 &gt;= ln.eps.length;
+      if (ln.eps.length &gt; 0) {
+        out.push(ln);
+      }
+    }</div><div class="ft">11</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    return out;
+  }
+  static isDirect(url: string): boolean {
+    const u: string = url.toLowerCase();
+    return u.indexOf('.m3u8') &gt;= 0 || u.indexOf('.mp4') &gt;= 0 || u.indexOf('.flv') 
+&gt;= 0 ||
+      u.indexOf('.mkv') &gt;= 0 || u.indexOf('.ts') &gt;= 0 || u.indexOf('.m4v') &gt;= 0;
+  }
+  /**
+   * 从站点 ext 里取出该分类的筛选组。
+   * ext 形如 {"class":[...],"filters":{"1":[{"key":"area","name":"地区","value":[
+{"n":"全部","v":""}]}]}}
+   * 没有 ext、不是 JSON、或该分类没配筛选时返回空数组。
+   */
+  static filtersOf(ext: string, tid: string): FilterGroup[] {
+    const out: FilterGroup[] = [];
+    const txt: string = ext.trim();
+    if (txt.length === 0 || txt.charAt(0) !== '{') {
+      return out;
+    }
+    let j: JExt;
+    try {
+      j = JSON.parse(txt) as JExt;
+    } catch (err) {
+      return out;
+    }
+    const map: Record&lt;string, JFilterGroup[]&gt; | undefined = j.filters;
+    if (map === undefined) {
+      return out;
+    }
+    const groups: JFilterGroup[] | undefined = map[tid];
+    if (groups === undefined || groups === null) {
+      return out;
+    }
+    for (let i = 0; i &lt; groups.length; i++) {
+      const src: JFilterGroup = groups[i];
+      const g = new FilterGroup();
+      g.key = src.key === undefined ? '' : src.key;
+      g.name = src.name === undefined ? g.key : src.name;
+      const vs: JFilterValue[] | undefined = src.value;
+      if (vs !== undefined) {
+        for (let k = 0; k &lt; vs.length; k++) {
+          const sv: JFilterValue = vs[k];
+          const v = new FilterValue();
+          v.n = sv.n === undefined ? '' : sv.n;
+          v.v = sv.v === undefined ? '' : sv.v;
+          if (v.n.length &gt; 0) {
+            g.values.push(v);
+          }
+        }</div><div class="ft">12</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      }
+      if (g.key.length &gt; 0 &amp;&amp; g.values.length &gt; 0) {
+        out.push(g);
+      }
+    }
+    return out;
+  }
+}
+export function mapClasses(list: JClass[]): Category[] {
+  const out: Category[] = [];
+  for (let i = 0; i &lt; list.length; i++) {
+    const c = new Category();
+    c.id = String(list[i].type_id === undefined ? '' : list[i].type_id);
+    c.name = Cms.s(list[i].type_name);
+    out.push(c);
+  }
+  return out;
+}
+// ============ 站点 ext 的原始结构（只取筛选那一段） ============
+interface JFilterValue {
+  n?: string;
+  v?: string;
+}
+interface JFilterGroup {
+  key?: string;
+  name?: string;
+  value?: JFilterValue[];
+}
+interface JExt {
+  filters?: Record&lt;string, JFilterGroup[]&gt;;
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/Device.ets    （共 83 行）
+// ==========================================================================
+/**
+ * 设备形态识别 —— 让同一套 UI 在「手机 / 电视」上各自适配。
+ *
+ * 判据：
+ *   1. deviceInfo.deviceType 是官方分类，取值 'phone' | 'tv' | 'tablet' | '2in1' 
+| 'wearable' | 'default'。
+ *      手机（含折叠屏 Pura X）返回 'phone'，电视返回 'tv'，这是主判据。
+ *   2. 兜底：有些固件/模拟器返回 'default' / 'tablet'，此时用屏幕短边（vp）猜：
+ *      短边 &lt; 600vp 视为手机。电视横屏大屏、平板大屏都不落在这个区间。
+ *
+ * 结果写进 AppStorage（全局单例，跨页面共享）：
+ *   isPhone : boolean  —— 手机布局（底部 Tab + 网格 + 触摸）
+ *   isTv    : boolean  —— 电视布局（顶部功能行 + 横向轨道 + 遥控器焦点）
+ *
+ * 页面用 @StorageProp('isPhone') isPhone: boolean = false 读取。
+ * Device.init() 必须在 loadContent 之前调用（放 EntryAbility.onCreate 最前面），</div><div class="ft">13</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code"> * 这样首页第一次 build 就能读到正确值，不会闪一帧错误的布局。
+ */
+import deviceInfo from '@ohos.deviceInfo';
+import display from '@ohos.display';
+/** AppStorage 键名，页面用 @StorageProp 绑定 */
+export const KEY_IS_PHONE: string = 'isPhone';
+export const KEY_IS_TV: string = 'isTv';
+export class Device {
+  /** 入口初始化，必须在 EntryAbility.onCreate 里最先调用 */
+  static init(): void {
+    let dt: string = 'default';
+    try {
+      dt = deviceInfo.deviceType;
+    } catch (e) {
+      dt = 'default';
+    }
+    let isPhone: boolean = dt === 'phone';
+    let isTv: boolean = dt === 'tv';
+    // 官方分类拿不准时（default / tablet / 2in1 / wearable），用屏幕短边兜底
+    if (dt !== 'phone' &amp;&amp; dt !== 'tv') {
+      try {
+        const d = display.getDefaultDisplaySync();
+        const short: number = Math.min(d.width, d.height);
+        if (short &gt; 0 &amp;&amp; short &lt; 600) {
+          isPhone = true;
+          isTv = false;
+        }
+      } catch (e) {
+        // 拿不到屏幕信息就维持默认（按电视处理）
+      }
+    }
+    AppStorage.setOrCreate&lt;boolean&gt;(KEY_IS_PHONE, isPhone);
+    AppStorage.setOrCreate&lt;boolean&gt;(KEY_IS_TV, isTv);
+  }
+  /** 是否是手机（含折叠屏）。UI 层优先用 @StorageProp 读，这里给非 UI 代码用 */
+  static isPhone(): boolean {
+    return AppStorage.get&lt;boolean&gt;(KEY_IS_PHONE) === true;
+  }
+  /** 是否是电视 */
+  static isTv(): boolean {
+    return AppStorage.get&lt;boolean&gt;(KEY_IS_TV) === true;
+  }
+  /**
+   * 弹窗/浮层/面板宽度：手机竖屏用相对宽度留边（固定宽度会超出屏宽被裁切），
+   * 电视端保持固定宽度不变。isPhone 在启动时已定、运行期不变，静态读取即可。
+   */
+  static panelW(base: number): string | number {
+    return Device.isPhone() ? '92%' : base;
+  }
+  /** 手机竖屏时留出状态栏/安全区后的可用宽度（vp）下限，供需要精确计算的场景用 */</div><div class="ft">14</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  static phoneW(): number {
+    try {
+      return Math.min(display.getDefaultDisplaySync().width, display.getDefaultDis
+playSync().height);
+    } catch (e) {
+      return 440;
+    }
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/Feedback.ets    （共 105 行）
+// ==========================================================================
+/**
+ * 全局点击反馈（声音 + 震动）。
+ *
+ * 用户按任意按钮时给一个「声音 + 震动」的即时反馈，让操作有实感。
+ * 两个通道各自独立开关，偏好存本机 preferences：
+ *   tapSound   0 = 关 / 1 = 开（默认开）
+ *   tapVibrate 0 = 关 / 1 = 开（默认开）
+ *
+ * 声音用 SoundPool（低延迟短音效，播放 28ms 的 click.wav，混音模式不打断正在播的
+片），
+ * 震动用 vibrator 触发一次 20ms 短震。二者都 fire-and-forget，
+ * 不阻塞 UI 线程，点击响应依然跟手。
+ *
+ * 用法（任何页面）：
+ *   import { Feedback } from '../common/Feedback';
+ *   .onClick(() =&gt; { Feedback.tap(); this.xxx(); })
+ *
+ * 启动时 EntryAbility.onCreate 调 Feedback.init(this.context) 加载音效；
+ * 设置页切换开关后调 Feedback.refresh() 刷新内存缓存。
+ */
+import vibrator from '@ohos.vibrator';
+import soundPool from '@ohos.multimedia.soundPool';
+import audio from '@ohos.multimedia.audio';
+import common from '@ohos.app.ability.common';
+import { Store } from './Store';
+export class Feedback {
+  private static sp: soundPool.SoundPool | null = null;
+  private static soundId: number = -1;
+  private static ready: boolean = false;
+  private static soundOn: boolean = true;
+  private static vibrateOn: boolean = true;
+  private static inited: boolean = false;
+  /** 启动时调用一次（EntryAbility.onCreate），传入 context 用于加载 rawfile 音效 
+*/
+  static init(ctx?: common.UIAbilityContext): void {
+    if (Feedback.inited) {
+      return;
+    }</div><div class="ft">15</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    Feedback.inited = true;
+    Feedback.refresh();
+    if (ctx !== undefined) {
+      Feedback.loadSound(ctx);
+    }
+  }
+  private static loadSound(ctx: common.UIAbilityContext): void {
+    try {
+      const info: audio.AudioRendererInfo = {
+        usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
+        rendererFlags: 0
+      };
+      Feedback.sp = soundPool.createSoundPool(1, info);
+      ctx.resourceManager.getRawFd('click.wav').then((fd) =&gt; {
+        if (Feedback.sp === null) {
+          return;
+        }
+        Feedback.sp.load(fd.fd, fd.offset, fd.length).then((id: number) =&gt; {
+          Feedback.soundId = id;
+          Feedback.ready = true;
+        }).catch(() =&gt; {
+        });
+      }).catch(() =&gt; {
+      });
+    } catch (e) {
+      // 音效加载失败不影响震动反馈
+    }
+  }
+  /** 开关变更后刷新内存缓存（设置页切换开关时调用） */
+  static refresh(): void {
+    Store.tapSound().then((v: number) =&gt; {
+      Feedback.soundOn = v !== 0;
+    });
+    Store.tapVibrate().then((v: number) =&gt; {
+      Feedback.vibrateOn = v !== 0;
+    });
+  }
+  /** 点一下的反馈（任何按钮 onClick 开头调用） */
+  static tap(): void {
+    if (Feedback.vibrateOn) {
+      try {
+        vibrator.vibrate(20);
+      } catch (e) {
+        // 忽略：个别设备无马达或权限受限
+      }
+    }
+    if (Feedback.soundOn &amp;&amp; Feedback.ready &amp;&amp; Feedback.sp !== null &amp;&amp; Feedback.sou
+ndId &gt;= 0) {
+      try {
+        const params: soundPool.PlayParameters = {</div><div class="ft">16</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">          loop: 0,
+          rate: 1,
+          leftVolume: 0.7,
+          rightVolume: 0.7,
+          priority: 0
+        };
+        Feedback.sp.play(Feedback.soundId, params).catch(() =&gt; {
+        });
+      } catch (e) {
+        // 忽略
+      }
+    }
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/Http.ets    （共 187 行）
+// ==========================================================================
+import http from '@ohos.net.http';
+const UA: string = 'Mozilla/5.0 (Linux; HarmonyOS; SmartScreen) AppleWebKit/537.36
+ (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+class Resp {
+  code: number = 0;
+  body: string = '';
+  location: string = '';
+}
+/** 精简 HTTP 客户端：GET + 手写重定向跟随 + 中文错误提示 */
+export class Http {
+  static async text(url: string, extra?: Record&lt;string, string&gt;, timeout?: number)
+: Promise&lt;string&gt; {
+    const ms: number = timeout === undefined ? 12000 : timeout;
+    let cur: string = url;
+    let last: Resp = new Resp();
+    for (let hop = 0; hop &lt; 3; hop++) {
+      last = await Http.once(cur, extra, ms);
+      if (last.code &gt;= 300 &amp;&amp; last.code &lt; 400 &amp;&amp; last.location.length &gt; 0) {
+        cur = Http.abs(cur, last.location);
+        continue;
+      }
+      break;
+    }
+    if (last.code === 0) {
+      return last.body;
+    }
+    if (last.code &gt;= 400) {
+      let hint: string = '';
+      if (last.code === 403) {
+        hint = '，被站点拒绝（可能需要 Referer 或已限制地区）';
+      } else if (last.code === 429) {
+        hint = '，请求过于频繁被限流';
+      } else if (last.code === 404) {</div><div class="ft">17</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">        hint = '，接口不存在（数据源可能已失效）';
+      }
+      throw new Error('HTTP ' + last.code + hint);
+    }
+    return last.body;
+  }
+  /**
+   * 只抓首包（前 4KB），用来判断一个流地址「活不活」和「快不快」。
+   *
+   * 为什么不直接用 text()：直播地址 302 到 mp4 时会整段下载，几秒都回不来。
+   * 这里带 Range 头，读超时一到就 destroy，拿多少算多少。
+   * 抛异常 = 连不上；返回空串 = 服务端给了 4xx/5xx。
+   */
+  static async peek(url: string, ms: number): Promise&lt;string&gt; {
+    const req = http.createHttp();
+    try {
+      const opt: http.HttpRequestOptions = {
+        method: http.RequestMethod.GET,
+        header: {
+          'User-Agent': UA,
+          'Accept': '*/*',
+          'Range': 'bytes=0-4095'
+        },
+        connectTimeout: ms,
+        readTimeout: ms,
+        expectDataType: http.HttpDataType.STRING,
+        usingCache: false
+      };
+      const res = await req.request(url, opt);
+      if (res.responseCode &gt;= 400) {
+        return '';
+      }
+      if (typeof res.result !== 'string') {
+        return '#BIN';
+      }
+      const s: string = res.result as string;
+      return s.length &gt; 4096 ? s.substring(0, 4096) : s;
+    } catch (err) {
+      const e = err as Error;
+      throw new Error('连接失败：' + e.message);
+    } finally {
+      req.destroy();
+    }
+  }
+  /**
+   * WebDAV PROPFIND：列目录 / 探测连接。
+   *
+   * http.RequestMethod 枚举只有 OPTIONS/GET/HEAD/POST/PUT/DELETE/TRACE/CONNECT
+   * 八个，没有 PROPFIND；但底层网络栈走的是 libcurl 语义（CURLOPT_CUSTOMREQUEST）
+，</div><div class="ft">18</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">   * 接受任意 method 字符串。这里用双重断言把 'PROPFIND' 塞进去。
+   * Depth: 1 表示列当前目录的直接子项（不递归）。
+   */
+  static async propfind(url: string, extra: Record&lt;string, string&gt; | undefined, ti
+meout?: number): Promise&lt;string&gt; {
+    const ms: number = timeout === undefined ? 15000 : timeout;
+    const req = http.createHttp();
+    try {
+      const header: Record&lt;string, string&gt; = { 'User-Agent': UA, 'Depth': '1' };
+      if (extra !== undefined) {
+        const keys: string[] = Object.keys(extra);
+        for (let i = 0; i &lt; keys.length; i++) {
+          header[keys[i]] = extra[keys[i]];
+        }
+      }
+      const opt: http.HttpRequestOptions = {
+        method: 'PROPFIND' as http.RequestMethod,
+        header: header,
+        connectTimeout: ms,
+        readTimeout: ms,
+        expectDataType: http.HttpDataType.STRING,
+        usingCache: false
+      };
+      const res = await req.request(url, opt);
+      if (res.responseCode &gt;= 400) {
+        let hint: string = '';
+        if (res.responseCode === 401) {
+          hint = '，用户名或密码错误';
+        } else if (res.responseCode === 403) {
+          hint = '，无权限访问该路径';
+        } else if (res.responseCode === 404) {
+          hint = '，路径不存在';
+        }
+        throw new Error('WebDAV HTTP ' + res.responseCode + hint);
+      }
+      if (typeof res.result === 'string') {
+        return res.result as string;
+      }
+      return '';
+    } catch (err) {
+      const e = err as Error;
+      if (e.message.indexOf('WebDAV HTTP') === 0) {
+        throw e;
+      }
+      throw new Error('WebDAV 请求失败：' + e.message);
+    } finally {
+      req.destroy();
+    }
+  }
+  private static async once(url: string, extra: Record&lt;string, string&gt; | undefined</div><div class="ft">19</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">, ms: number): Promise&lt;Resp&gt; {    const req = http.createHttp();
+    const r = new Resp();
+    try {
+      const header: Record&lt;string, string&gt; = { 'User-Agent': UA, 'Accept': '*/*' }
+;
+      if (extra !== undefined) {
+        for (const k of Object.keys(extra)) {
+          header[k] = extra[k];
+        }
+      }
+      const opt: http.HttpRequestOptions = {
+        method: http.RequestMethod.GET,
+        header: header,
+        connectTimeout: ms,
+        readTimeout: ms,
+        expectDataType: http.HttpDataType.STRING,
+        usingCache: false
+      };
+      const res = await req.request(url, opt);
+      r.code = res.responseCode;
+      if (typeof res.result === 'string') {
+        r.body = res.result as string;
+      }
+      const h = res.header as Record&lt;string, string&gt;;
+      const keys: string[] = Object.keys(h);
+      for (let i = 0; i &lt; keys.length; i++) {
+        if (keys[i].toLowerCase() === 'location') {
+          r.location = String(h[keys[i]]);
+        }
+      }
+    } catch (err) {
+      const e = err as Error;
+      throw new Error('网络请求失败：' + e.message);
+    } finally {
+      req.destroy();
+    }
+    return r;
+  }
+  private static abs(base: string, loc: string): string {
+    if (loc.startsWith('http://') || loc.startsWith('https://')) {
+      return loc;
+    }
+    const i: number = base.indexOf('://');
+    if (i &lt; 0) {
+      return loc;
+    }
+    const slash: number = base.indexOf('/', i + 3);
+    if (loc.startsWith('/')) {
+      return slash &lt; 0 ? base.substring(0, base.length) + loc : base.substring(0, 
+slash) + loc;</div><div class="ft">20</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    }
+    return slash &lt; 0 ? base + '/' + loc : base.substring(0, slash + 1) + loc;
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/LiveProbe.ets    （共 228 行）
+// ==========================================================================
+/**
+ * 播放源测速排行 + 可用性检测。
+ *
+ * 为什么抽成公共模块：这套逻辑原先只写在设置页里，直播页拿不到，于是用户在
+ * 直播页看到某个源「一堆台但全点不开」，只能自己退回设置页去猜哪个源好用。
+ * 现在两处共用同一份实现，结论也一致（同一套超时、抽样数、评分权重）。
+ *
+ * 两类检测，回答的是两个不同问题：
+ *   1. 源级 rankOne —— 这个源好不好？拉列表快不快、有多少台、抽样能不能播。
+ *      用于「测速排行」，用来在多个源之间挑一个。
+ *   2. 频道级 channels —— 这个源里哪些台是死的？逐个抓首包，
+ *      用于把失效台标灰，避免用户点一次等 20 秒。
+ *
+ * 一个必须记住的教训：只看「列表拉得快」完全没用。实测有源 74 ms 就拉完
+ * 500 多个台，抽样一测全连不上。所以可播率必须实测，不能靠速度推断。
+ */
+import { Live } from './Live';
+import { Channel, ChannelGroup } from './Model';
+/** 一次源级测速的结论 */
+export class LiveScore {
+  name: string = '';
+  url: string = '';
+  /** 列表是否拉得下来（不代表频道能播） */
+  ok: boolean = false;
+  /** 拉完整份列表的耗时（ms），-1 = 没测出来 */
+  ms: number = -1;
+  /** 频道总数 */
+  count: number = 0;
+  /** 抽样里能连上的数量 */
+  alive: number = 0;
+  /** 实际抽样数量（源里台太少时可能小于计划值） */
+  sampled: number = 0;
+  /** 综合评分 0~100，越大越好 */
+  score: number = 0;
+  /** 给界面直接用的一句话，避免每处各拼一遍 */
+  state: string = '';
+}
+export class LiveProbe {
+  /** 每个源抽样几个台实测。3 个够看出「全军覆没」，再多会明显拖慢排行 */
+  static readonly SAMPLE: number = 3;
+  /** 单条流等首包的超时。死链常常直接挂住不返回，超过这个时间就当失效 */
+  static readonly STREAM_MS: number = 3000;
+  /** 拉列表的超时。8 秒拉不下来说明这个源本身有问题 */</div><div class="ft">21</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  static readonly LIST_MS: number = 8000;
+  /** 外层兜底超时：Http 的 abort 不是所有情况都能打断，外层再压一道 */
+  static readonly GUARD_MS: number = 10000;
+  /**
+   * 测一个源。不会抛异常，失败也会返回一个 ok=false 的结果。
+   *
+   * 顺序是刻意的：先把列表拉下来（拿到频道数），再抽样测流。
+   * 反过来做的话，列表都拉不下来的源还要白等 3 次流超时。
+   */
+  static async rankOne(name: string, url: string): Promise&lt;LiveScore&gt; {
+    const r = new LiveScore();
+    r.name = name;
+    r.url = url;
+    const t0: number = Date.now();
+    let gs: ChannelGroup[] = [];
+    try {
+      gs = await Promise.race([Live.load(url, LiveProbe.LIST_MS), LiveProbe.guard(
+LiveProbe.GUARD_MS)]);
+    } catch (e) {
+      r.state = '拉取失败';
+      return r;
+    }
+    r.ms = Date.now() - t0;
+    let n: number = 0;
+    for (let i = 0; i &lt; gs.length; i++) {
+      n += gs[i].channels.length;
+    }
+    if (n === 0) {
+      r.state = '列表为空';
+      return r;
+    }
+    r.ok = true;
+    r.count = n;
+    // 抽样：先从不同分组里各取第一个（避免全落在同一个台的多条线路上），
+    // 分组数不够再回头补该组里的第 2、3 个 —— 有的源只有一个分组装着四百个台，
+    // 只从这里取一个样本，「可播 1/1」的说服力太弱，一个台抽风就会把整个源判死。
+    const samples: string[] = [];
+    for (let i = 0; i &lt; gs.length &amp;&amp; samples.length &lt; LiveProbe.SAMPLE; i++) {
+      const chs: Channel[] = gs[i].channels;
+      if (chs.length &gt; 0) {
+        samples.push(chs[0].urls.length &gt; 0 ? chs[0].urls[0] : chs[0].url);
+      }
+    }
+    for (let k = 1; samples.length &lt; LiveProbe.SAMPLE; k++) {
+      let added: boolean = false;
+      for (let i = 0; i &lt; gs.length &amp;&amp; samples.length &lt; LiveProbe.SAMPLE; i++) {
+        const chs: Channel[] = gs[i].channels;
+        if (k &lt; chs.length) {
+          const u: string = chs[k].urls.length &gt; 0 ? chs[k].urls[0] : chs[k].url;
+          if (samples.indexOf(u) &lt; 0) {</div><div class="ft">22</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">            samples.push(u);
+            added = true;
+          }
+        }
+      }
+      if (!added) {
+        break;      // 全源就那么几个台，补不出来
+      }
+    }
+    r.sampled = samples.length;
+    const jobs: Promise&lt;boolean&gt;[] = [];
+    for (let i = 0; i &lt; samples.length; i++) {
+      jobs.push(Live.probe(samples[i], LiveProbe.STREAM_MS));
+    }
+    const rs: boolean[] = await Promise.all(jobs);
+    for (let i = 0; i &lt; rs.length; i++) {
+      if (rs[i]) {
+        r.alive++;
+      }
+    }
+    r.score = LiveProbe.score(r);
+    r.state = r.ms + ' ms · ' + r.count + ' 台 · 可播 ' + r.alive + '/' + r.sample
+d;
+    return r;
+  }
+  /**
+   * 评分：可播率占 70%，速度占 30%。
+   *
+   * 权重不对称是有意的 —— 直播首要的是「点开能看」。一个 200 ms 但半数是死台的源
+，
+   * 实际体验远不如一个 800 ms 但全部能播的源。速度按 50 ms 折 1 分递减：
+   * 100 ms → 98 分，1000 ms → 80 分，5000 ms → 0 分。
+   */
+  static score(r: LiveScore): number {
+    if (!r.ok) {
+      return 0;
+    }
+    const availability: number = r.sampled &gt; 0 ? (r.alive / r.sampled) * 100 : 0;
+    const speed: number = Math.max(0, 100 - r.ms / 50);
+    return Math.round(availability * 0.7 + speed * 0.3);
+  }
+  /**
+   * 批量测速，按批推进（每批 3 个）。
+   *
+   * 并发全部拉满的话，同时开十几个 HTTP 连接，弱网下会互相拖慢，
+   * 测出来的耗时反而不准（本来 300 ms 的源测成 2 秒）。
+   */
+  static async rankAll(items: LiveScore[], onEach: (i: number, r: LiveScore) =&gt; vo
+id): Promise&lt;LiveScore[]&gt; {
+    const out: LiveScore[] = [];</div><div class="ft">23</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    for (let i = 0; i &lt; items.length; i++) {
+      const r = new LiveScore();
+      r.name = items[i].name;
+      r.url = items[i].url;
+      out.push(r);
+    }
+    for (let s = 0; s &lt; out.length; s += 3) {
+      const batch: Promise&lt;void&gt;[] = [];
+      for (let i = s; i &lt; Math.min(s + 3, out.length); i++) {
+        const idx: number = i;
+        batch.push((async (): Promise&lt;void&gt; =&gt; {
+          const r = await LiveProbe.rankOne(out[idx].name, out[idx].url);
+          out[idx] = r;
+          onEach(idx, r);
+        })());
+      }
+      await Promise.all(batch);
+    }
+    return out;
+  }
+  /** 按评分排序；同分时台多的排前面，再同则按耗时 */
+  static sort(list: LiveScore[]): LiveScore[] {
+    const out: LiveScore[] = list.slice();
+    out.sort((a: LiveScore, b: LiveScore): number =&gt; {
+      if (a.score !== b.score) {
+        return b.score - a.score;
+      }
+      if (a.ok !== b.ok) {
+        return a.ok ? -1 : 1;
+      }
+      if (a.count !== b.count) {
+        return b.count - a.count;
+      }
+      return a.ms - b.ms;
+    });
+    return out;
+  }
+  /**
+   * 逐个检测频道能不能连上，返回失效数量。
+   *
+   * 并发控制在 4：再高容易把源站当攻击，几十个台同时探活会被限流，
+   * 结果是一堆「假失效」——明明能播的台被标灰，比不标更糟。
+   *
+   * onTick 每检测完一条调一次，界面可以边测边标灰，不用等全部结束。
+   */
+  static async channels(chs: Channel[], onTick: (ch: Channel, alive: boolean) =&gt; v
+oid,
+    parallel: number = 4): Promise&lt;number&gt; {
+    let dead: number = 0;
+    for (let s = 0; s &lt; chs.length; s += parallel) {</div><div class="ft">24</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      const jobs: Promise&lt;void&gt;[] = [];
+      for (let i = s; i &lt; Math.min(s + parallel, chs.length); i++) {
+        const ch: Channel = chs[i];
+        const u: string = ch.urls.length &gt; 0 ? ch.urls[0] : ch.url;
+        jobs.push((async (): Promise&lt;void&gt; =&gt; {
+          const ok: boolean = await Live.probe(u, LiveProbe.STREAM_MS);
+          if (!ok) {
+            dead++;
+          }
+          onTick(ch, ok);
+        })());
+      }
+      await Promise.all(jobs);
+    }
+    return dead;
+  }
+  /** 外层兜底超时：到点就抛，让 rankOne 走到「拉取失败」分支 */
+  private static guard(ms: number): Promise&lt;ChannelGroup[]&gt; {
+    return new Promise&lt;ChannelGroup[]&gt;((_, reject: (e: Error) =&gt; void) =&gt; {
+      setTimeout(() =&gt; {
+        reject(new Error('探测超时'));
+      }, ms);
+    });
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/PhoneTabBar.ets    （共 69 行）
+// ==========================================================================
+/**
+ * 手机端底部 Tab 导航 —— 全局共享，供首页和各子页面复用。
+ *
+ * 电视端没有这个：电视用顶部功能行 + 遥控器焦点导航。
+ * 手机端首页和各功能页底部都放同一个栏，用户不用回首页就能切换页面。
+ *
+ * active 传「当前页面的路由」，对应项高亮、点击不重复跳转（避免页面无限堆叠）；
+ * 首页传空字符串（首页不属于任何子页面 Tab）。
+ */
+import router from '@ohos.router';
+import { T } from './Model';
+function tabIcon(label: string): Resource {
+  if (label === '直播') {
+    return $r('app.media.ic_live');
+  }
+  if (label === '搜索') {
+    return $r('app.media.ic_search');
+  }
+  if (label === '收藏') {
+    return $r('app.media.ic_collect');
+  }
+  if (label === '设置') {</div><div class="ft">25</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    return $r('app.media.ic_setting');
+  }
+  return $r('app.media.ic_vod');
+}
+/** 单个 Tab 项：图标 + 文字，整块可点 */
+@Builder
+function TabItem(label: string, page: string, active: string) {
+  Column() {
+    Image(tabIcon(label))
+      .width(20)
+      .height(20)
+      .objectFit(ImageFit.Contain)
+    Text(label)
+      .fontSize(11)
+      .fontColor(page === active ? T.SELECTED : T.SUB)
+      .margin({ top: 3 })
+      .maxLines(1)
+  }
+  .layoutWeight(1)
+  .height('100%')
+  .justifyContent(FlexAlign.Center)
+  .onClick(() =&gt; {
+    if (page !== active) {
+      router.pushUrl({ url: page });
+    }
+  })
+}
+/** 底部 Tab 栏：5 个入口，触屏拇指热区 */
+@Builder
+export function PhoneTabBar(active: string) {
+  Row() {
+    TabItem('点播', 'pages/VodPage', active)
+    TabItem('直播', 'pages/LivePage', active)
+    TabItem('搜索', 'pages/Search', active)
+    TabItem('收藏', 'pages/CollectPage', active)
+    TabItem('设置', 'pages/SettingPage', active)
+  }
+  .width('100%')
+  .height(54)
+  .padding({ left: 4, right: 4 })
+  .backgroundColor(T.SURFACE)
+  .border({ width: { top: 1 }, color: '#1FFFFFFF' })
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/Pinyin.ets    （共 140 行）
+// ==========================================================================
+/**
+ * 汉字 → 拼音首字母（声母）映射，供搜索联想做「拼音首字母」猜测。
+ *
+ * 数据来源：GB2312 字库（一、二级共 6763 个汉字），用 macOS</div><div class="ft">26</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code"> * CFStringTransform 批量转拼音后取首字母；另对 21 个影视语境下
+ * 首字母易分歧的多音字（长/重/传/乐/行…）做了双声母修正，
+ * 生成缩写时这类字会分叉出多个候选，保证「cz」也能命中「长征」。
+ *
+ * 说明：这是本地纯内存查表，不联网；表外字（超 GB2312 的生僻字）
+ * 会被跳过，剩余字仍能提供足够首字母用于匹配。
+ */
+const MAIN: string = 'a:啊阿埃挨哎唉哀皑癌蔼矮艾碍爱隘鞍氨安俺按暗岸胺案肮昂盎凹敖
+熬翱袄傲奥懊澳谙坳埯拗捱揞吖嗷嗳嗌岙犴庵廒遨媪嫒骜瑷桉獒暧砹铵锕锿鹌聱螯霭鏊鳌鏖黯
+;b:芭捌扒叭吧笆八疤巴拔跋靶把耙坝霸罢爸白柏百摆佰败拜稗斑班搬扳般颁板版扮拌伴瓣半
+办绊邦帮梆榜膀绑棒磅蚌镑傍谤苞胞包褒剥薄雹保堡饱宝抱报暴豹鲍爆杯碑悲卑北辈背贝钡倍
+狈备惫焙被奔苯本笨崩绷甭泵蹦迸逼鼻比鄙笔彼碧蓖蔽毕毙毖币庇痹闭敝弊必壁臂避陛鞭边编
+贬扁便变卞辨辩辫遍标彪膘表鳖憋别瘪彬斌濒滨宾摈兵冰柄丙秉饼炳病并玻菠播拨钵波博勃搏
+铂箔伯帛舶脖膊渤驳捕卜哺补埠不布步簿部怖埔匕孛匾俾傧勹亳禀冫阪邴邶弁畚坌坂芘苄茇荜
+荸菝萆葆蓓蒡蕃薜捭摒卟吡呗哔啵嘣岜豳狴饽庳忭悖愎汴浜滗濞灞逋弼妣婊婢嬖孢骠缏缤玢璧
+杓槟檗殡瓿甏晡贲掰擘膑飑飙飚煲煸灬砭碚碥礴畀钚钣钯钸钹铋锛镔镖镳秕鸨鹁鹎瘢瘭癍窆裱
+裨褙褓褊蝙笾筚箅篦簸舭舨襞粑醭蹩趵跛跸踣龅鐾鲅鳊鳔鞴髀髌魃髟鬓;c:擦猜裁材才财睬踩
+采彩菜蔡餐参蚕残惭惨灿苍舱仓沧操糙槽曹草厕策侧册测层蹭插叉茬茶查碴搽察岔差诧拆柴豺
+搀掺蝉馋谗缠铲产阐颤昌猖场尝常偿肠厂敞畅唱倡超抄钞嘲潮巢吵炒车扯撤掣彻澈郴臣辰尘晨
+忱沉陈趁衬撑称城橙成呈乘程惩澄诚承逞骋秤吃痴持池迟弛驰耻齿侈尺赤翅斥炽充冲虫崇宠抽
+酬畴踌稠愁筹仇绸瞅丑臭初出橱厨躇锄雏滁除楚础储矗搐触处揣川穿椽船喘串疮窗幢床闯创吹
+炊捶锤垂春椿醇唇淳纯蠢戳绰疵茨磁雌辞慈瓷词此刺赐次聪葱囱匆从丛凑粗醋簇促蹿篡窜摧崔
+催脆瘁粹淬翠村存寸磋撮搓措挫错伺畜亍丞厝伥伧侪俦傺汆冁谄谌谶陲刍鬯坼埕墀艹苌苁茌茈
+茺莼菖萃蒇蔟抻搋撺叱呲哧啐啜啻嗔嗤嘈噌嚓帱岑嵯彳徂徜猝猹舛饬馇廛忖忏忡怅怆怵怊恻惝
+惆悴憧憷阊汊涔淙漕潺澶宸辶遄孱羼屮姹娼婵媸嫦骖骢骣绌巛琮琛璀璁璨杈杵枨枞柽楮棰槌榇
+槎榱樗檫殂辍辏昶晟晁觇毳氅氚敕脞腠塍膪焯爨祠禅砗碜礤眵瞠钏钗铖铳锉锸镡镩镲矬鸱鹑鹚
+痤瘥瘛瘳衩裎褚褫皴耖虿蚩蛏蜍蝽螭螬蟾笞篪舂舡艚艟粲糍豉酲鹾蹙踔踟踹蹉蹰蹴躔龀龊雠鲳
+魑黜黪;d:搭达答瘩打大呆歹傣戴带殆代贷袋待逮怠耽担丹郸掸胆旦氮但惮淡诞弹蛋当挡党荡
+档刀捣蹈倒岛祷导到稻悼道盗德得的蹬灯登等瞪凳邓堤低滴迪敌笛狄涤翟嫡抵底地蒂第帝弟递
+缔颠掂滇碘点典靛垫电佃甸店惦奠淀殿碉叼雕凋刁掉吊钓调跌爹碟蝶迭谍叠丁盯叮钉顶鼎锭定
+订丢东冬董懂动栋侗恫冻洞兜抖斗陡豆逗痘都督毒犊独读堵睹赌杜镀肚度渡妒端短锻段断缎堆
+兑队对墩吨蹲敦顿囤钝盾遁掇哆多夺垛躲朵跺舵剁惰堕氐刂仃儋籴诋谛谠阽邸凼坫坻垤垌埭堞
+芏荻萏菪蔸耷揲甙叨呔咚咄哒哚啖啶喋嗒嘟嗲嘀噔岽岱峒嶝巅忉怛沌渎澹宕迨妲娣骀绐缍玎玷
+玳柢椟棣椴殚戥赕觌氘氡牍牒胨胴腚炖煅怼憝沓砀砘砥硐碓碇碲礅磴盹眈睇钭钿铎铛铞铥铫锝
+镝镦镫瓞鸫疔疸瘅癜癫窦裆裰褡耋耵聃蚪蠹笃笪箪篼簖簟簦羝纛酊趸踮蹀踱貂鲷鲽靼鞑骶髑黛
+黩;e:蛾峨鹅俄额讹娥恶厄扼遏鄂饿恩而儿耳尔饵洱二贰噩诶谔垩苊莪萼蒽摁呃愕迩屙婀珥轭
+腭铒锇锷鸸鹗颚鲕鳄;f:发罚筏伐乏阀法珐藩帆番翻樊矾钒繁凡烦反返范贩犯饭泛坊芳方肪房
+防妨仿访纺放菲非啡飞肥匪诽吠肺废沸费芬酚吩氛分纷坟焚汾粉奋份忿愤粪丰封枫蜂峰锋风疯
+烽逢冯缝讽奉凤佛否夫敷肤孵扶拂辐幅氟符伏俘服浮涪福袱弗甫抚辅俯釜斧腑府腐赴副覆赋复
+傅付阜父腹负富讣附妇缚咐匚俸偾匐凫阝邡郛酆垡芙芾苻茯莩菔葑蘩拊呋呒唪幞幡狒怫悱沣淝
+滏瀵艴妃孚驸绂绋绯枋梵桴棼榧赙腓斐燔扉祓砜砝砩黻黼畈罘钫镄稃馥痱蚨蜉蜚蝠蝮缶篚舫翡
+麸趺跗蹯霏鲂鲋鲱鲼鳆鼢;g:噶嘎该改概钙盖溉干甘杆柑竿肝赶感秆敢赣冈刚钢缸肛纲岗港杠
+篙皋高膏羔糕搞镐稿告哥歌搁戈鸽胳疙割革葛格阁隔铬个各给根跟耕更庚羹埂耿梗工攻功恭龚
+供躬公宫弓巩汞拱贡共钩勾沟苟狗垢构购够辜菇咕箍估沽孤姑鼓古蛊骨谷股故顾固雇刮瓜剐寡
+挂褂乖拐怪棺关官冠观管馆罐惯灌贯光广逛瑰规圭硅归龟闺轨鬼诡癸桂柜跪贵刽辊滚棍锅郭国
+果裹过咯丐亘鬲丨睾嘏匦卦刿仡佝倌馘衮诂诖诟诰陔郜哿圪坩垓埚塥苷茛莞菰藁廾尬尴掴掼擀
+呙呱咣哏哽嗝帼岣崮崞犷猓庋赓汩泔淦涫澉宄遘妫媾尕尜绀绠绲缑缟珙枸桄栝桧梏椁槔槁橄轱
+戤旮旰杲晷赅觏牯牿搿虢肱胍胱膈臌彀毂戆矸硌磙瞽罡罟盥钆钴锆锢镉皈鸪鸹鹄鹳疳痼袼聒虼
+蚣蛄蜾蝈笱筻篝簋舸艮酐酤觚觥鲑鲠鲧鲴鳏鳜鞲鹘骼;h:蛤哈骸孩海氦亥害骇酣憨邯韩含涵寒
+函喊罕翰撼捍旱憾悍焊汗汉夯杭航壕嚎豪毫郝好耗号浩呵喝荷菏核禾和何合盒貉阂河涸赫褐鹤</div><div class="ft">27</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">贺嘿黑痕很狠恨哼亨横衡恒轰哄烘虹鸿洪宏弘红喉侯猴吼厚候后呼乎忽瑚壶葫胡蝴狐糊湖弧虎
+唬护互沪户花哗华猾滑画划化话槐徊怀淮坏欢环桓缓换患唤痪豢焕涣宦幻荒慌黄磺蝗簧皇凰惶
+煌晃幌恍谎灰挥辉徽恢蛔回毁悔慧卉惠晦贿秽会烩汇讳诲绘荤昏婚魂浑混豁活伙火获或惑霍货
+祸咳劐黉訇冱讧诃诙诨隍邗郇奂劾壑堠茴荟荭萑菡蒿蕙蕻薨薅藿蘅撖擐攉咴哕唿喙嗬嗥嗨嚆嚯
+囫圜岵後徨猢獾夥馄怙惚隳闳阍阖沆泓洹洄浍浒浣湟溷潢滹漶濠瀚灏寰逅逭遑彗骅纥绗缋缳珩
+珲琥璜桦桁槲轷昊曷晖晗肓胲觳烀焓煳戽扈祜恚砉盍钬铧铪锪锾镬皓瓠鹕鹱瘊癀耠顸颃颌颔颢
+虍虺蚝蚶蚵蟥蟪蠖笏篁篌糇翮醐醢踝斛鲎鲩鳇骺鬟麾鼾;j:击圾基机畸稽积箕肌饥迹激讥鸡姬
+绩缉吉极棘辑籍集及急疾汲即嫉级挤几脊己蓟技冀季伎祭剂悸济寄寂计记既忌际妓继纪嘉枷夹
+佳家加荚颊贾甲钾假稼价架驾嫁歼监坚尖笺间煎兼肩艰奸缄茧检柬碱硷拣捡简俭剪减荐鉴践贱
+见键箭件健舰剑饯渐溅涧建僵姜将浆江疆蒋桨奖讲匠酱蕉椒礁焦胶交郊浇骄娇嚼搅铰矫侥脚狡
+角饺缴绞剿教酵轿较叫窖揭接皆秸街阶截劫节桔杰捷睫竭洁结姐戒藉芥界借介疥诫届巾筋斤金
+今津襟紧锦仅谨进靳晋禁近烬浸尽劲荆兢茎睛晶鲸京惊精粳经井警景颈静境敬镜径痉靖竟竞净
+炯窘揪究纠玖韭久灸九酒厩救旧臼舅咎就疚鞠拘狙疽居驹菊局咀矩举沮聚拒据巨具距踞锯俱句
+惧炬剧捐鹃娟倦眷卷绢撅攫抉掘倔爵觉决诀绝均菌钧军君峻俊竣浚郡骏茄丌亟乩厥刭剞劂冂伽
+佶佼倨偈儆僭僬僦讦讵诘谏谫谲卩卺阱郏鄄矍墼艽芨芰苣苴莒荠茭茳荩菁堇菅葭蒺蒹蕨蕺拮挢
+捃掎掬搛叽咭哜唧喈啾嗟噘噍噤囝岌岬峤崛嵴徼狷獍獗馑廑憬阄泾浃洎洚涓湫湔蹇謇迥迦迳遽
+彐屐屦弪妗姣婧婕孑孓骥绛缙缣缰畿玑珏珈琚瑾枧柩桕桀桊桷楗椐楫榘榉槿橛橘殛戋戛戟戢戬
+炅赆赍觊觐牮犟犄犋犍毽敫肼胛胫腈腱飓齑旌爝扃恝矶碣礓睑羁蠲钅钜铗锏锔锩镌镓镢嵇稷皎
+鸠鹣鹪鹫疖痂瘕瘠窭衿裥裾皲矜耩颉虮蚧蛱蛟笈笄笕笳袈羯糨暨翦赳趄豇醮醵趼跏跻跤跽踺踽
+蹶觖靓霁龃隽雎鲒鲚鲛鲣鲫鞯鞫骱髻鬏麂麇;k:槛喀咖卡开揩楷凯慨刊堪勘坎砍看康慷糠扛抗
+亢炕考拷烤靠坷苛柯棵磕颗科壳可渴克刻客课肯啃垦恳坑吭空恐孔控抠口扣寇枯哭窟苦酷库裤
+夸垮挎跨胯块筷侩快宽款匡筐狂框矿眶旷况亏盔岿窥葵奎魁傀馈愧溃坤昆捆困括扩廓阔馗匮刳
+剀蒯伉佧侉侃倥夔诓诳邝郐圹垲堀芤莰蒈蒉蔻夼揆叩咔哐哙喹喟喾嗑岢崆狯忾恺恪悝悃愦闶阃
+阚溘逵尻骒纩绔缂珂琨栲轲戡暌贶犒氪胩脍龛眍睽瞌瞰钪钶铐铠铿锎锞锟锴稞疴窠裉聩颏蛞蝰
+蝌筘箜篑醌跬鲲骷髁髋髡;l:垃拉喇蜡腊辣啦莱来赖蓝婪栏拦篮阑兰澜谰揽览懒缆烂滥琅榔狼
+廊郎朗浪捞劳牢老佬姥酪烙涝勒雷镭蕾磊累儡垒擂肋类泪棱楞冷厘梨犁黎篱狸离漓理李里鲤礼
+莉荔吏栗丽厉励砾历利傈例俐痢立粒沥隶力璃哩俩联莲连镰廉怜涟帘敛脸链恋炼练粮凉梁粱良
+两辆量晾亮谅撩聊僚疗燎寥辽潦了撂镣廖料列裂烈劣猎琳林磷霖临邻鳞淋凛赁吝拎玲菱零龄铃
+伶羚凌灵陵岭领另令溜琉榴硫馏留刘瘤流柳六龙聋咙笼窿隆垄拢陇楼娄搂篓漏陋芦卢颅庐炉掳
+卤虏鲁麓碌露路赂鹿潞禄录陆戮驴吕铝侣旅履屡缕虑氯律率滤绿峦挛孪滦卵乱掠略抡轮伦仑沦
+纶论萝螺罗逻锣箩骡裸落洛骆络剌仂俪俚倮偻脔蠃羸冽诔郦酃坜垅垆埒塄墚苈茏苓荦莅莨蒌蓠
+蒗蔹蔺蓼藜奁尥捋捩摞撸叻呖呤咧唠啉啷唳喱喽嘞嘹噜囵囹岚崂崃嵝嶙徕猁猡獠廪愣懔闾阆泐
+泷泸泠泺洌浏涞渌溧漤漯潋漉濑澧濂寮逦逯遛遴邋娈娌嫠嫘骊骝绫绺缡缧缭珑珞琏璐枥栊栌柃
+栎栳栾棂椤椋楝榄榈橹檑檩殓轳轹辂辘辚瓴旯赉氇胧胪脶膂臁膦斓旒熘戾砺砻砬睐瞵詈罱罹钌
+铑铹铼锂锊锍锒镂镏镙镥镧稆稂鸬鸾鹂鹨鹩鹭疠疬痨瘌瘘瘰癃癞裢裣褛褴耒耢耧聆蛎蛉蜊螂蝼
+蠊蠡笠篥簏籁舻粝粼翎趔酹醪醴跞踉躏躐雳雒銮鎏鲈鲡鲢鲮鳓鳢髅魉鬣麟黧;m:妈麻玛码蚂马
+骂嘛吗埋买麦卖迈脉瞒馒蛮满蔓曼慢漫谩芒茫盲氓忙莽猫茅锚毛矛铆卯茂冒帽貌贸么玫枚梅酶
+霉煤没眉媒镁每美昧寐妹媚门闷们萌蒙檬盟锰猛梦孟眯醚靡糜迷谜弥米秘觅泌蜜密幂棉眠绵冕
+免勉娩缅面苗描瞄藐秒渺庙妙蔑灭民抿皿敏悯闽明螟鸣铭名命谬摸摹蘑模膜磨摩魔抹末莫墨默
+沫漠寞陌谋牟某拇牡亩姆母墓暮幕募慕木目睦牧穆乜芈仫侔袤冖冥谟谧邙劢勐坶墁茉苜茆苠茗
+荬莓蓦甍瞢蘼扪咩咪哞唛喵嘧幔峁岷嵋犸猕猸馍懵闵沐沔汨泖泯浼渑湎湄漭溟宀宓邈弭嫫嬷缈
+缗缦缪珉瑁杩杪楣殁昴暝牦耄毪脒腼朦旄焖熳祢愍懋懑淼硭礞眄眇眸瞀瞑钔钼镅镆镘秣鹋鹛瘼
+袂耱颟虻蛑蜢蝥螨蟒蟆蟊蠓蠛篾艋艨敉糸酩貊貘霾黾鍪鳗鳘鞔魅髦麽縻麋;n:拿哪呐钠那娜纳
+氖乃奶耐奈南男难囊挠脑恼闹淖呢馁内嫩能妮霓倪泥尼拟你匿腻逆溺蔫拈年碾撵捻念娘酿鸟尿
+捏聂孽啮镊镍涅您柠狞凝宁拧泞牛扭钮纽脓浓农弄奴努怒女暖虐疟挪懦糯诺廿孬鼐佞伲佴侬傩
+讷陧坭垴埝艿茑萘蘖捺搦攮咛呶哝喏喃嗫嗯囔囡狃猊猱馕忸怩甯弩妞胬嬲孥驽瑙柰楠辇昵曩肭
+脲腩旎恧恁硇睨钕铌铙锘镎黏疒衲耨聍颞蛲蝻臬衄袅赧蹑鲇鲵鲶;o:哦欧鸥殴藕呕偶沤讴喔噢
+怄瓯耦;p:辟泊脯啪趴爬帕怕琶拍排牌徘湃派攀潘盘磐盼畔判叛乓庞旁耪胖抛咆刨炮袍跑泡呸
+胚培裴赔陪配佩沛喷盆砰抨烹澎彭蓬棚硼篷膨朋鹏捧碰坯砒霹批披劈琵毗啤脾疲皮匹痞僻屁譬
+篇偏片骗飘漂瓢票撇瞥拼频贫品聘乒坪苹萍平凭瓶评屏坡泼颇婆破魄迫粕剖扑铺仆莆葡菩蒲朴</div><div class="ft">28</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">圃普浦谱曝瀑丕丿叵剽仳俜俳匍裒谝陂陴邳郫鄱圮埤堋鼙苤葩蒎匏拚掊擗哌辔嘌嘭噗噼帔彷狍
+庀庖怦爿泮淠湓溥滂濮逄姘娉媲嫔嫖骈纰缥珀璞枇杷枰榀殍甓攴牝犏氆氕攵胼脬旆睥瞟罴钋钷
+铍锫镤镨皤疱癖袢襻疋颦蚍蜱螃螵蟛蟠笸筢翩醅蹁蹒蹼貔霈鲆;q:期欺栖戚妻七凄漆柒沏其棋
+歧畦崎脐齐旗祈祁骑起岂乞企启契砌器气迄弃汽泣讫掐恰洽牵扦钎铅千迁签仟谦乾黔钱钳前潜
+遣浅谴堑嵌欠歉枪呛腔羌墙蔷强抢橇锹敲悄桥瞧乔侨巧鞘撬翘峭俏窍切且怯窃钦侵亲秦琴勤芹
+擒禽寝沁青轻氢倾卿清擎晴氰情顷请庆琼穷秋丘邱球求囚酋泅趋蛆曲躯屈驱渠取娶龋趣去圈颧
+权醛泉全痊拳犬券劝缺炔瘸却鹊榷确雀裙群亓劁俅俟倩佥诎诠诮谯阡邛郄劬凵巯圻芊芑芩芡芪
+苘茕茜荞荃萁萋葜葺蕖蕲蘧掮揿吣嗪嘁噙圊屺岍岐岖衢犭犰悭悛惬愀慊憔阒阕阙丬戕汔淇溱骞
+搴褰逑逡遒妾嫱骐绮绻缱缲琪琦璩杞桤椠楸樯槭檠樵檎辁戗耆赇觑挈氍肷朐欹炝祛祺悫愆憩硗
+碛磬磲畎钤铨锓锖锲锵镪鸲癯穹袷襁颀虔虬蚯蛩蛐蛴蜣蜻蜞蜷蝤螓蠼罄筇筌箐箧箝衾裘羟糗綦
+綮麴跫跄跷蹊謦瞿銎鲭鳅鳍鞒髂鬈麒黢黥鼽;r:然燃冉染瓤壤攘嚷让饶扰绕惹热壬仁人忍韧任
+认刃妊纫扔仍日戎茸蓉荣融熔溶容绒冗揉柔肉茹蠕儒孺如辱乳汝入褥软阮蕊瑞锐闰润若弱亻仞
+偌芮苒荛荏葚蓐蕤薷嚅嵘狨饪洳溽濡娆缛枘桡榕轫肜朊禳睿铷稔穰衽襦颥蚋蚺蝾箬糅蹂鞣髯;s
+:匙撒洒萨腮鳃塞赛三叁伞散桑嗓丧搔骚扫嫂瑟色涩森僧莎砂杀刹沙纱傻啥煞筛晒珊苫杉山删
+煽衫闪陕擅赡膳善汕扇缮墒伤商赏晌上尚裳梢捎稍烧芍勺韶少哨邵绍奢赊蛇舌舍赦摄射慑涉社
+设砷申呻伸身深娠绅神沈审婶甚肾慎渗声生甥牲升绳盛剩胜圣师失狮施湿诗尸虱十石拾时什食
+蚀实识史矢使屎驶始式示士世柿事拭誓逝势是嗜噬适仕侍释饰氏市恃室视试收手首守寿授售受
+瘦兽蔬枢梳殊抒输叔舒淑疏书赎孰熟薯暑曙署蜀黍鼠属术述树束戍竖墅庶数漱恕刷耍摔衰甩帅
+栓拴霜双爽谁水睡税吮瞬顺舜说硕朔烁斯撕嘶思私司丝死肆寺嗣四似饲巳松耸怂颂送宋讼诵搜
+艘擞嗽苏酥俗素速粟僳塑溯诉肃酸蒜算虽隋随绥髓碎岁穗遂隧祟孙损笋蓑梭唆缩琐索锁所厦卅
+啬厍厮剡仨倏佘夙兕凇讪诜谂谇谡谥鄯劭叟厶塾埏垧埘埽芟苕荪莳荽莘菘菽蓍蒴蔌薮扌摅搠搡
+弑咝哂唢唼唰嗖嗉嗦嗄嗍嗾噻崧嵊嵩彡狩狲狻猞飧饣馊馓忪悚愫闩氵汜沭泗涑淞渖涮溲滠澍澌
+潸潲濉邃妁姒姗姝娑嬗孀驷骟纟纾绱绶缌缫桫椹榫槊殇轼贳挲毵毹胂脎腧臊膻歃歙飒飕殳炻熵
+燧礻祀磉眚眭睃睢瞍畲钐铄铈铩铯锶锼矧秫穑鸶疝痧瘙竦耜颡蛳蜃蛸螋螫蟀蟮舐笙笥筮筲簌舢
+艄艏裟羧糁酾豕跚觞觫霎隼稣鲥鲨鲺鳋鳝麝;t:塌他它她塔獭挞蹋踏胎苔抬台泰酞太态汰坍摊
+贪瘫滩坛檀痰潭谭谈坦毯袒碳探叹炭汤塘搪堂棠膛唐糖倘躺淌趟烫掏涛滔绦萄桃逃淘陶讨套特
+藤腾疼誊梯剔踢锑提题蹄啼体替嚏惕涕剃屉天添填田甜恬舔腆挑条迢眺跳贴铁帖厅听烃汀廷停
+亭庭挺艇通桐酮瞳同铜彤童桶捅筒统痛偷投头透凸秃突图徒途涂屠土吐兔湍团推颓腿蜕褪退吞
+屯臀拖托脱鸵陀驮驼椭妥拓唾乇鼗佟佗佻倜傥僮仝氽亠邰郯坨堍荑茼莛荼萜菟葶薹抟掭忒啕嗵
+帑饨庹恸悌忝闼阗沲沱洮溻溏潼逖遢彖婷绨缇瑭韬柝柁梃榻樘橐殄昙暾肽豚滕炱煺焘祧忑忐慝
+砼砣町畋疃钍钛钽铊铤铴铽锬镗鹈窕裼耥覃蜓蜩螗螳笤箨羰粜酡酴醍醣趿跎跆霆龆鼍鲐鲦鳎骰
+餮饕髫;w:挖哇蛙洼娃瓦袜歪外豌弯湾玩顽丸烷完碗挽晚皖惋宛婉万腕汪王亡枉网往旺望忘妄
+威巍微危韦违桅围唯惟潍维苇萎委伟伪尾纬未蔚味畏胃喂魏位渭谓尉慰卫瘟温蚊文闻纹吻稳紊
+问嗡翁瓮挝蜗涡窝我斡卧握沃巫呜钨乌污诬屋无芜梧吾吴毋武五捂午舞伍侮坞戊雾晤物勿务悟
+误兀刎剜罔佤仵倭偎诿阢隈隗邬圩圬芄芴莴菀葳蓊薇蕹尢唔囗帏帷幄崴嵬猥猬庑怃忤惘闱阌汶
+沩洧浯涠渥寤迕逶妩娲娓婺骛纨绾玮玟琬璺韪杌辋軎牾肟脘腽炜焐煨硪畹鹉鹜痦痿蜈蜿艉雯龌
+鋈鲔魍鼯;x:昔熙析西硒矽晰嘻吸锡牺稀息希悉膝夕惜熄烯溪汐犀檄袭席习媳喜铣洗系隙戏细
+瞎虾匣霞辖暇峡侠狭下夏吓掀锨先仙鲜纤咸贤衔舷闲涎弦嫌显险现献县腺馅羡宪陷限线厢镶香
+箱襄湘乡翔祥详想响享项巷橡像向象萧硝霄削哮嚣销消宵淆晓小孝校肖啸笑效楔些歇蝎鞋协挟
+携邪斜胁谐写械卸蟹懈泄泻谢屑薪芯锌欣辛新忻心信衅星腥猩惺兴刑型形邢醒幸杏性姓兄凶胸
+匈汹雄熊休修羞朽嗅锈秀袖绣墟戌需虚嘘须徐许蓄酗叙旭序恤絮婿绪续轩喧宣悬旋玄选癣眩绚
+靴薛学穴雪血勋熏循旬询寻驯巡殉汛训讯逊迅吁囟偕僖儇兮巽亵冼诩谑谖陉隰郗勖勰燮埙馨芎
+芗苋荇荀荥荨莶菥葙葸萱蓰蓿蕈薤薰藓奚揎撷擤呷哓咻唏噱岘岫峋崤徇徙狎猃獬獯饧饩饷馐庥
+庠廨忄恂悻阋泫洫洵浔浠淅渫溆渲溴潇漩瀣逍遐暹邂屣娴嬉骁骧绁绡缃缬顼玺瑕璇枭柙枵栩楦
+榭榍樨昕暄曛曦觋氙欷歆炫煊燹煦熹祆禊禧泶硎硖碹盱铉镟皙鸺鹇痃痫穸胥蚬蜥螅蟋蟓罅筅筱
+箫舄舾羲籼粞糈翕酰醑醯醺踅跣跹躞貅霰鑫鲞鲟鳕魈飨髹黠鼷;y:压押鸦鸭呀丫芽牙蚜崖衙涯
+雅哑亚讶焉咽阉烟淹盐严研蜒岩延言颜阎炎沿奄掩眼衍演艳堰燕厌砚雁唁彦焰宴谚验殃央鸯秧
+杨扬佯疡羊洋阳氧仰痒养样漾邀腰妖瑶摇尧遥窑谣姚咬舀药耀椰噎耶爷野冶也页掖业叶曳腋夜
+液一壹医揖铱依伊衣颐夷遗移仪胰疑沂宜姨彝椅蚁倚已乙矣以艺抑易邑屹亿役臆逸肄疫亦裔意
+毅忆义益溢诣议谊译异翼翌绎茵荫因殷音阴姻吟银淫寅饮尹引隐印英樱婴鹰缨莹萤营荧蝇迎赢</div><div class="ft">29</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">盈影颖硬映哟拥佣臃痈庸雍踊蛹咏泳涌永恿勇用幽优悠忧尤由邮铀犹油游酉有友右佑釉诱又幼
+迂淤于盂榆虞愚舆余俞逾鱼愉渝渔隅予娱雨屿禹宇语羽玉域芋郁遇喻峪御愈欲狱育誉浴寓裕预
+豫驭鸳渊冤元垣袁原援辕园员圆猿源缘远苑愿怨院曰约越跃钥岳粤月悦阅耘云郧匀陨允运蕴酝
+晕韵孕轧禺夭爻胤毓厣靥赝卣刈劓伛伢攸佚侑佾俨俣俑偃龠兖嬴讠诒谀谒谕谳邺郓郢郾鄢鄞廴
+壅圯垭垠垸埸堙塬墉懿芫芸苡茚茔莠莜莸莺萸菸萦蓥蓣薏弈奕挹揶揠揄掾撄弋吆呓吲呦咦咿唷
+喁喑嘤噫囿圄圉岈峄崦崾嵛嶷徉徭狁狳狺猗夤饫饴馀庾膺怏怿怡恹恽悒愠慵闫阈阏沅泱洇湮滟
+滢潆漪瀛瀹宥迓迤鬻妍妪妤娅媛嫣驿纡纭缢幺邕琊珧瑛琰瑜瑗璎韫杳柚桠楹樾橼檐猷殒殪轶轺
+昀昱晔晏曜贻觎氩氤氲牖爰刖肴胭腌腴媵欤於旖炀烨烊焱煜熨熠燠恙肀聿砑眢眙睚罨钇钰钺铕
+铘铟镒镛镱甬鸢鹆鹞鹦鹬疣痖痍瘐瘀瘗瘿瘾癔翊窈窬窨窳衤颍蚓蚰蚴蛘蜮蜴蝓蝣螈罂竽筵筠箢
+臾舁舣羿翳繇酏酽雩霪龈龉鼋鱿鳐鳙鞅魇餍饔黝黟鼬鼹;z:匝砸杂栽哉灾宰载再在咱攒暂赞赃
+脏葬遭糟凿藻枣早澡蚤躁噪造皂灶燥责择则泽贼怎增憎赠扎喳渣札铡闸眨栅榨咋乍炸诈摘斋宅
+窄债寨瞻毡詹粘沾盏斩辗崭展蘸栈占战站湛绽樟章彰漳张掌涨杖丈帐账仗胀瘴障招昭找沼赵照
+罩兆肇召遮折哲蛰辙者锗蔗这浙珍斟真甄砧臻贞针侦枕疹诊震振镇阵蒸挣睁征狰争怔整拯正政
+帧症郑证芝枝支吱蜘知肢脂汁之织职直植殖执值侄址指止趾只旨纸志挚掷至致置帜峙制智秩稚
+质炙痔滞治窒中盅忠钟衷终种肿仲众舟周州洲诌粥轴肘帚咒皱宙昼骤珠株蛛朱猪诸诛逐竹烛煮
+拄瞩嘱主著柱助蛀贮铸筑住注祝驻抓爪拽专砖转撰赚篆桩庄装妆撞壮状椎锥追赘坠缀谆准捉拙
+卓桌琢茁酌啄着灼浊兹咨资姿滋淄孜紫仔籽滓子自渍字鬃棕踪宗综总纵邹走奏揍租足卒族祖诅
+阻组钻纂嘴醉最罪尊遵昨左佐柞做作坐座卮丶仄赜仉伫侏倬偬俎冢诏诤诹诼谘谪谮谵阼陟陬郅
+邾鄣鄹圳埴芷苎茱荮菹蓁蕞奘拶揸搌摭摺撙擢攥吒咂咤哳唣唑啧啭啁嘬帙帻幛峥崽嵫嶂徵獐夂
+馔忮怍惴浈洙浞渚涿潴濯迮彘咫姊妯嫜孳驵驺骓骘纣绉缁缒缜缯缵甾璋瓒杼栉柘枳栀桎桢梓棹
+楱楂榛槠橥樽轵轸轾辄辎臧甑昃昝贽赀赈肫胄胙胗胝朕腙膣旃炷祉祚祗祯禚恣斫砟砦碡磔黹眦
+畛罾钊钲铢铮锃锱镞镯锺雉秭稹鸩鸷鹧痄疰痣瘃瘵窀褶耔颛蚱蛭蜇螽蟑竺笊笫笮筝箦箸箴簪籀
+舯舳舴粢粽糌翥絷趑趱赭酎酢酯跖踬踯踵躅躜豸觜觯訾龇隹錾鲰鲻鳟髭麈齄';
+const EXTRA: string = '藏=cz;长=cz;朝=cz;传=cz;单=ds;还=hh;降=jx;解=jx;乐=ly;奇=qj
+;区=qo;省=sx;宿=sx;为=ww;相=xx;行=hx;要=yy;应=yy;与=yy;曾=cz;重=cz';
+let _map: Map&lt;string, string&gt; | null = null;
+/** 构建 字→声母 映射（多音字为多个声母连写，如「长」=「cz」） */
+function buildMap(): Map&lt;string, string&gt; {
+  if (_map !== null) {
+    return _map;
+  }
+  const m: Map&lt;string, string&gt; = new Map&lt;string, string&gt;();
+  const ex: string[] = EXTRA.split(';');
+  for (let i = 0; i &lt; ex.length; i++) {
+    const p: string = ex[i];
+    const eq: number = p.indexOf('=');
+    if (eq &gt; 0) {
+      m.set(p.substring(0, eq), p.substring(eq + 1));
+    }
+  }
+  const parts: string[] = MAIN.split(';');
+  for (let i = 0; i &lt; parts.length; i++) {
+    const p: string = parts[i];
+    const col: number = p.indexOf(':');
+    if (col &lt;= 0) {
+      continue;
+    }
+    const ini: string = p.substring(0, col);
+    const chars: string = p.substring(col + 1);
+    for (let k = 0; k &lt; chars.length; k++) {</div><div class="ft">30</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">// ……（此处省略中间 258 页源码，按登记要求提交前 30 页与后 30 页）……
+      this.hoverKey = '';
+    }
+  }
+  build() {
+    Stack() {
+    Column() {
+      Row() {
+        Text('‹')
+          .fontSize(34)
+          .fontColor(this.hi('back') ? T.TXT : T.SUB)
+          .width(40)
+          .textAlign(TextAlign.Center)
+          .focusable(true)
+          .defaultFocus(true)
+          .onFocus(() =&gt; this.hover('back', true))
+          .onBlur(() =&gt; this.hover('back', false))
+          .onHover((hv: boolean) =&gt; this.hover('back', hv))
+          .onClick(() =&gt; {
+            Feedback.tap();
+            router.back();
+          })
+        Text('收藏')
+          .fontSize(24)
+          .fontColor(T.TXT)
+          .margin({ left: 8 })
+        Text('  ' + this.favs.length + ' 部').fontSize(14).fontColor(T.SUB)
+        Blank()
+      }
+      .width('100%')
+      .padding({ left: 24, right: 24, top: 24, bottom: 8 })
+      if (this.favs.length === 0) {
+        Column() {
+          Text('还没有收藏').fontSize(18).fontColor(T.SUB)
+          Text('在详情页点「收藏」后会出现在这里')
+            .fontSize(15).fontColor(T.DIM).margin({ top: 10 })
+        }
+        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else {
+        Grid() {
+          ForEach(this.favs, (f: FavItem) =&gt; {
+            GridItem() {
+              Column() {
+                Stack({ alignContent: Alignment.TopEnd }) {
+                  Image(f.pic.length &gt; 0 ? f.pic : $r('app.media.app_icon'))
+                    .width('100%')
+                    .height('100%')
+                    .objectFit(ImageFit.Cover)
+                    .backgroundColor(T.CARD)
+                    .borderRadius({ topLeft: T.RADIUS, topRight: T.RADIUS })</div><div class="ft">31</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">                  Text('×')
+                    .fontSize(16)
+                    .fontColor(T.TXT)
+                    .backgroundColor(this.hi('x_' + f.siteKey + f.vodId) ? T.BLACK
+_80 : T.CARD_HI)
+                    .width(26)
+                    .height(26)
+                    .borderRadius(13)
+                    .textAlign(TextAlign.Center)
+                    .margin(6)
+                    .focusable(true)
+                    .onFocus(() =&gt; this.hover('x_' + f.siteKey + f.vodId, true))
+                    .onBlur(() =&gt; this.hover('x_' + f.siteKey + f.vodId, false))
+                    .onHover((hv: boolean) =&gt; this.hover('x_' + f.siteKey + f.vodI
+d, hv))
+                    .onClick(() =&gt; {
+                      Feedback.tap();
+                      this.del(f);
+                    })
+                }
+                .width('100%')
+                .aspectRatio(16 / 9)
+                Text(f.name)
+                  .fontSize(16)
+                  .fontColor(T.TXT)
+                  .backgroundColor(T.CARD)
+                  .width('100%')
+                  .padding(6)
+                  .textAlign(TextAlign.Center)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .borderRadius({ bottomLeft: T.RADIUS, bottomRight: T.RADIUS })
+              }
+              .width('100%')
+              .borderRadius(T.RADIUS)
+              .border({ width: T.BORDER, color: this.hi('f_' + f.siteKey + f.vodId
+) ? T.TXT : '#00000000' })
+              .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+              .focusable(true)
+              .onFocus(() =&gt; this.hover('f_' + f.siteKey + f.vodId, true))
+              .onBlur(() =&gt; this.hover('f_' + f.siteKey + f.vodId, false))
+              .onHover((hv: boolean) =&gt; this.hover('f_' + f.siteKey + f.vodId, hv)
+)
+              .onClick(() =&gt; {
+                Feedback.tap();
+                const p = new DetailParam();
+                p.siteKey = f.siteKey;
+                p.siteName = f.siteName;
+                p.vodId = f.vodId;
+                router.pushUrl({ url: 'pages/Detail', params: p });</div><div class="ft">32</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">              })
+            }
+          }, (f: FavItem) =&gt; 'fav' + f.siteKey + f.vodId)
+        }
+        .columnsTemplate(this.isPhone ? '1fr 1fr 1fr' : '1fr 1fr 1fr 1fr 1fr 1fr')
+        .columnsGap(12)
+        .rowsGap(20)
+        .width('100%')
+        .layoutWeight(1)
+        .padding({ left: 24, right: 24, top: 8, bottom: 24 })
+        .scrollBar(BarState.Off)
+      }
+      if (this.isPhone) {
+        PhoneTabBar('pages/CollectPage')
+      }
+    }
+    .width('100%')
+    .height('100%')
+      if (this.tipMsg.length &gt; 0) {
+        TipLayer(this.tipMsg)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .alignContent(Alignment.Center)
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/pages/HistoryPage.ets    （共 263 行）
+// ==========================================================================
+/**
+ * 历史页 —— 对照 FongMi 的 activity_history.xml + adapter_vod_list.xml。
+ *
+ * 原版横条卡：48dp 缩略图 + 名称 16sp + 备注 14sp，整条可点。
+ * 这里把备注位换成「看到第几集 + 时间」，信息密度更实用。
+ */
+import { Feedback } from '../common/Feedback';
+import router from '@ohos.router';
+import common from '@ohos.app.ability.common';
+import { Store, HistItem } from '../common/Store';
+import { DetailParam, T } from '../common/Model';
+import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
+@Entry
+@Component
+struct HistoryPage {
+  @State hist: HistItem[] = [];
+  /** 全局轻提示（AppStorage 上的 TIP_MSG），Tip.show() 触发 */
+  @StorageLink(TIP_MSG) tipMsg: string = '';
+  /** 「清空」的二次确认窗口：3 秒内再点一次才真清 */
+  @State confirmClear: boolean = false;</div><div class="ft">33</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  /** 「删除」单条的二次确认：存当前待确认的 siteKey+vodId，空串表示无待确认 */
+  @State confirmDel: string = '';
+  @State hoverKey: string = '';
+  @State ready: boolean = false;
+  async aboutToAppear(): Promise&lt;void&gt; {
+    await Store.init(getContext(this) as common.UIAbilityContext);
+    await this.reload();
+    this.ready = true;
+  }
+  async onPageShow(): Promise&lt;void&gt; {
+    if (this.ready) {
+      await this.reload();
+    }
+  }
+  onBackPress(): boolean {
+    router.back();
+    return true;
+  }
+  async reload(): Promise&lt;void&gt; {
+    this.hist = await Store.history();
+  }
+  async clearAll(): Promise&lt;void&gt; {
+    const n: number = this.hist.length;
+    if (n === 0) {
+      Tip.show('本来就没有记录');
+      return;
+    }
+    // 二次确认：整表清空不可撤销，遥控器误触代价太大
+    if (!this.confirmClear) {
+      this.confirmClear = true;
+      // 按钮同时变成「确认清空」：光靠底部提示不够，遥控器用户看完提示
+      // 再找按钮经常超过 3 秒，窗口一过就白点一次。这里给 6 秒 + 按钮自解释。
+      Tip.show('再点一次确认清空（共 ' + n + ' 条），6 秒内有效');
+      setTimeout(() =&gt; {
+        this.confirmClear = false;
+      }, 6000);
+      return;
+    }
+    this.confirmClear = false;
+    await Store.clearHistory();
+    await this.reload();
+    Tip.show('已清空 ' + n + ' 条记录');
+  }
+  /** 单条删除（二次确认：遥控器误触不可恢复） */
+  async removeOne(h: HistItem): Promise&lt;void&gt; {
+    const key: string = h.siteKey + h.vodId;
+    if (this.confirmDel !== key) {
+      this.confirmDel = key;
+      Tip.show('再点一次确认删除「' + h.name + '」，6 秒内有效');
+      setTimeout(() =&gt; {</div><div class="ft">34</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">        if (this.confirmDel === key) {
+          this.confirmDel = '';
+        }
+      }, 6000);
+      return;
+    }
+    this.confirmDel = '';
+    await Store.removeHistory(h);
+    this.hist = await Store.history();
+    Tip.show('已删除「' + h.name + '」');
+  }
+  ago(t: number): string {
+    if (t &lt;= 0) {
+      return '';
+    }
+    const d: number = Date.now() - t;
+    if (d &lt; 60000) {
+      return '刚刚';
+    }
+    if (d &lt; 3600000) {
+      return Math.floor(d / 60000) + ' 分钟前';
+    }
+    if (d &lt; 86400000) {
+      return Math.floor(d / 3600000) + ' 小时前';
+    }
+    return Math.floor(d / 86400000) + ' 天前';
+  }
+  hi(key: string): boolean {
+    return this.hoverKey === key;
+  }
+  hover(key: string, on: boolean): void {
+    if (on) {
+      this.hoverKey = key;
+    } else if (this.hoverKey === key) {
+      this.hoverKey = '';
+    }
+  }
+  build() {
+    Stack() {
+    Column() {
+      Row() {
+        Text('‹')
+          .fontSize(34)
+          .fontColor(this.hi('back') ? T.TXT : T.SUB)
+          .width(40)
+          .textAlign(TextAlign.Center)
+          .focusable(true)
+          .defaultFocus(true)
+          .onFocus(() =&gt; this.hover('back', true))
+          .onBlur(() =&gt; this.hover('back', false))</div><div class="ft">35</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">          .onHover((hv: boolean) =&gt; this.hover('back', hv))
+          .onClick(() =&gt; {
+            Feedback.tap();
+            router.back();
+          })
+        Text('历史')
+          .fontSize(24)
+          .fontColor(T.TXT)
+          .margin({ left: 8 })
+        Text('  ' + this.hist.length + ' 条').fontSize(14).fontColor(T.SUB)
+        Blank()
+        if (this.hist.length &gt; 0) {
+          Text(this.confirmClear ? '确认清空？' : '清空')
+            .fontSize(16)
+            .fontColor(this.confirmClear ? T.ERR : T.TXT)
+            .height(40)
+            .padding({ left: 20, right: 20 })
+            .borderRadius(T.RADIUS)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.hi('clr') ? T.CARD_HI : (this.confirmClear ? T.W
+HITE_15 : '#00000000'))
+            .border({ width: T.BORDER, color: this.hi('clr') || this.confirmClear 
+? T.TXT : '#00000000' })
+            .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+            .focusable(true)
+            .onFocus(() =&gt; this.hover('clr', true))
+            .onBlur(() =&gt; this.hover('clr', false))
+            .onHover((hv: boolean) =&gt; this.hover('clr', hv))
+            .onClick(() =&gt; {
+              Feedback.tap();
+              this.clearAll();
+            })
+        }
+      }
+      .width('100%')
+      .padding({ left: 24, right: 24, top: 24, bottom: 8 })
+      if (this.hist.length === 0) {
+        Column() {
+          Text('还没有播放记录').fontSize(18).fontColor(T.SUB)
+          Text('看过的影片会出现在这里').fontSize(15).fontColor(T.DIM).margin({ to
+p: 10 })
+        }
+        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else {
+        List({ space: 8 }) {
+          ForEach(this.hist, (h: HistItem) =&gt; {
+            ListItem() {
+              Row() {
+                Image(h.pic.length &gt; 0 ? h.pic : $r('app.media.app_icon'))
+                  .width(84)</div><div class="ft">36</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">                  .height(48)
+                  .objectFit(ImageFit.Cover)
+                  .borderRadius(T.RADIUS)
+                  .backgroundColor(T.CARD)
+                Column() {
+                  Text(h.name)
+                    .fontSize(16)
+                    .fontColor(T.TXT)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text((h.epName.length &gt; 0 ? h.epName : '未开始') + '   ·   ' +
+                    h.siteName + '   ·   ' + this.ago(h.time))
+                    .fontSize(14)
+                    .fontColor(T.SUB)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .margin({ top: 4 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+                .margin({ left: 16 })
+                // 单条删除：独立 onClick，不会冒泡触发整行的「进入详情」
+                Text(this.confirmDel === (h.siteKey + h.vodId) ? '确认删除？' : '
+删除')
+                  .fontSize(14)
+                  .fontColor(this.confirmDel === (h.siteKey + h.vodId) ? T.ERR : T
+.SUB)
+                  .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+                  .borderRadius(T.RADIUS)
+                  .backgroundColor(this.hi('del_' + h.siteKey + h.vodId) ? T.CARD_
+HI : '#00000000')
+                  .border({
+                    width: T.BORDER,
+                    color: this.hi('del_' + h.siteKey + h.vodId) ? T.TXT : '#00000
+000'
+                  })
+                  .focusable(true)
+                  .onFocus(() =&gt; this.hover('del_' + h.siteKey + h.vodId, true))
+                  .onBlur(() =&gt; this.hover('del_' + h.siteKey + h.vodId, false))
+                  .onHover((hv: boolean) =&gt; this.hover('del_' + h.siteKey + h.vodI
+d, hv))
+                  .onClick(() =&gt; {
+                    Feedback.tap();
+                    this.removeOne(h);
+                  })
+              }
+              .width('100%')
+              .padding(16)
+              .borderRadius(T.RADIUS)
+              .backgroundColor(this.hi('h_' + h.siteKey + h.vodId) ? T.CARD_HI : '</div><div class="ft">37</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">#00000000')
+              .border({
+                width: T.BORDER,
+                color: this.hi('h_' + h.siteKey + h.vodId) ? T.TXT : '#00000000'
+              })
+              .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+              .focusable(true)
+              .onFocus(() =&gt; this.hover('h_' + h.siteKey + h.vodId, true))
+              .onBlur(() =&gt; this.hover('h_' + h.siteKey + h.vodId, false))
+              .onHover((hv: boolean) =&gt; this.hover('h_' + h.siteKey + h.vodId, hv)
+)
+              .onClick(() =&gt; {
+                Feedback.tap();
+                const p = new DetailParam();
+                p.siteKey = h.siteKey;
+                p.siteName = h.siteName;
+                p.vodId = h.vodId;
+                router.pushUrl({ url: 'pages/Detail', params: p });
+              })
+            }
+          }, (h: HistItem) =&gt; 'hist' + h.siteKey + h.vodId + h.time)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .padding({ left: 24, right: 24, bottom: 24 })
+        .scrollBar(BarState.Off)
+      }
+    }
+    .width('100%')
+    .height('100%')
+      if (this.tipMsg.length &gt; 0) {
+        TipLayer(this.tipMsg)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .alignContent(Alignment.Center)
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/pages/WebdavPage.ets    （共 759 行）
+// ==========================================================================
+/**
+ * WebDAV 网盘 —— 挂载 WebDAV 服务器，浏览目录并识别影视资源。
+ *
+ * 三种视图：
+ *   sources —— 源列表（添加 / 编辑 / 删除 / 进入）
+ *   browse  —— 浏览目录（点目录进入、点视频播放），可一键「识别影视」
+ *   scan    —— 识别结果（按片名聚合的电影/剧集），点开选集播放
+ *</div><div class="ft">38</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code"> * 播放走 Player 的「直连」链路，通过 PlayParam.header 把 Basic Auth 带过去，
+ * 剧集用 Playlist 共享，遥控器可切上/下一集。
+ */
+import { Feedback } from '../common/Feedback';
+import router from '@ohos.router';
+import common from '@ohos.app.ability.common';
+import { Store } from '../common/Store';
+import { PlayParam, WebdavSource, WebdavEntry, WebdavVod, WebdavEp, Episode, WdHis
+tory, T } from '../common/Model';
+import { Webdav } from '../common/Webdav';
+import { Playlist } from '../common/Playlist';
+import { Device, KEY_IS_PHONE } from '../common/Device';
+@Entry
+@Component
+struct WebdavPage {
+  @State sources: WebdavSource[] = [];
+  @State view: string = 'sources';
+  @State hoverKey: string = '';
+  @State loading: boolean = false;
+  @State msg: string = '';
+  @State msgColor: string = T.SUB;
+  // 当前浏览的源与路径
+  @State cur: WebdavSource = new WebdavSource();
+  @State curPath: string = '/';
+  @State entries: WebdavEntry[] = [];
+  // 识别结果
+  @State vods: WebdavVod[] = [];
+  // 网盘续播记录
+  @State wdHist: WdHistory[] = [];
+  // 选集弹窗
+  @State epOpen: boolean = false;
+  @State selVod: WebdavVod = new WebdavVod();
+  @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  async aboutToAppear(): Promise&lt;void&gt; {
+    await Store.init(getContext(this) as common.UIAbilityContext);
+    await this.refreshData();
+  }
+  /** 从播放页/设置页返回时刷新源列表与续播记录 */
+  onPageShow(): void {
+    this.refreshData();
+    // 播放页退出时续播记录是异步落盘的（saveWdPos fire-and-forget），
+    // 刚回来那一刻 prefs 可能还没 flush 完，读到旧值 → 「继续观看」不显示。
+    // 延迟再读一次，等写入落盘后把记录补出来。
+    setTimeout(() =&gt; {
+      this.refreshData();
+    }, 350);
+  }
+  async refreshData(): Promise&lt;void&gt; {
+    this.sources = await Store.webdavSources();
+    this.wdHist = await Store.wdHistory();</div><div class="ft">39</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  }
+  // ---------- 焦点 ----------
+  hi(key: string): boolean {
+    return this.hoverKey === key;
+  }
+  hover(key: string, on: boolean): void {
+    if (on) {
+      this.hoverKey = key;
+    } else if (this.hoverKey === key) {
+      this.hoverKey = '';
+    }
+  }
+  onBackPress(): boolean {
+    if (this.epOpen) {
+      this.epOpen = false;
+      return true;
+    }
+    if (this.view !== 'sources') {
+      this.backToSources();
+      return true;
+    }
+    router.back();
+    return true;
+  }
+  backToSources(): void {
+    this.view = 'sources';
+    this.entries = [];
+    this.vods = [];
+    this.msg = '';
+  }
+  // ---------- 浏览 ----------
+  /**
+   * 进入一个源：优先读上次的识别缓存，有就直接展示；没有则自动扫描识别。
+   * 目录浏览不再作为默认视图，想看文件树再点「浏览文件」。
+   */
+  async enterSource(src: WebdavSource): Promise&lt;void&gt; {
+    this.cur = src;
+    this.curPath = Webdav.mountHref(src);
+    this.vods = [];
+    this.msg = '';
+    const cache: WebdavVod[] = await Store.webdavScanCache(src.id);
+    if (cache.length &gt; 0) {
+      this.vods = cache;
+      this.view = 'scan';
+      this.msg = '上次识别到 ' + cache.length + ' 部影视，点「重新扫描」可刷新';
+      this.msgColor = '#B7F0BC';
+      return;
+    }
+    // 无缓存 → 切到识别视图再自动扫描（扫描中能看到进度）
+    this.view = 'scan';</div><div class="ft">40</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    await this.scanVods();
+  }
+  async loadDir(): Promise&lt;void&gt; {
+    this.loading = true;
+    this.entries = [];
+    try {
+      this.entries = await Webdav.list(this.cur, this.curPath);
+    } catch (e) {
+      const err = e as Error;
+      this.msg = err.message;
+      this.msgColor = T.WARN;
+    }
+    this.loading = false;
+  }
+  /** 从识别结果视图切回目录浏览 */
+  async openBrowse(): Promise&lt;void&gt; {
+    this.view = 'browse';
+    this.msg = '';
+    await this.loadDir();
+  }
+  async enterDir(entry: WebdavEntry): Promise&lt;void&gt; {
+    this.curPath = Webdav.stripSlash(entry.href);
+    await this.loadDir();
+  }
+  async goUp(): Promise&lt;void&gt; {
+    const p: string = Webdav.stripSlash(this.curPath);
+    const i: number = p.lastIndexOf('/');
+    this.curPath = i &lt;= 0 ? '/' : p.substring(0, i);
+    await this.loadDir();
+  }
+  pathLabel(): string {
+    let p: string = this.curPath;
+    try {
+      p = decodeURIComponent(p);
+    } catch (e) {
+      // 保持原文
+    }
+    return p;
+  }
+  // ---------- 播放 ----------
+  playFile(entry: WebdavEntry): void {
+    const v = new WebdavVod();
+    v.name = Webdav.stripExt(entry.name);
+    v.kind = 'movie';
+    v.dir = Webdav.stripSlash(this.curPath);
+    const ep = new WebdavEp();
+    ep.name = entry.name;
+    ep.url = Webdav.absUrl(this.cur, entry.href);
+    ep.href = entry.href;
+    v.eps.push(ep);</div><div class="ft">41</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    this.playEp(v, 0);
+  }
+  openEp(vod: WebdavVod): void {
+    if (vod.eps.length === 1) {
+      this.playEp(vod, 0);
+      return;
+    }
+    this.selVod = vod;
+    this.epOpen = true;
+  }
+  epNameOf(vod: WebdavVod, ep: WebdavEp, i: number): string {
+    if (vod.kind === 'series') {
+      if (ep.season &gt; 0 &amp;&amp; ep.episode &gt; 0) {
+        return 'S' + WebdavPage.pad2(ep.season) + 'E' + WebdavPage.pad2(ep.episode
+);
+      }
+      if (ep.episode &gt; 0) {
+        return '第 ' + ep.episode + ' 集';
+      }
+    }
+    return Webdav.stripExt(ep.name);
+  }
+  playEp(vod: WebdavVod, idx: number): void {
+    if (idx &lt; 0 || idx &gt;= vod.eps.length) {
+      return;
+    }
+    // 交给播放列表，剧集可切上/下一集
+    const eps: Episode[] = [];
+    for (let i = 0; i &lt; vod.eps.length; i++) {
+      const e = new Episode();
+      e.name = this.epNameOf(vod, vod.eps[i], i);
+      e.url = vod.eps[i].url;
+      eps.push(e);
+    }
+    Playlist.set(eps, idx, vod.name);
+    this.epOpen = false;
+    const p = new PlayParam();
+    p.url = vod.eps[idx].url;
+    p.title = vod.name + (vod.eps.length &gt; 1 ? (' ' + eps[idx].name) : '');
+    p.siteKey = 'webdav';
+    p.vodId = 'webdav:' + this.cur.id + ':' + vod.name;
+    p.from = 'direct';
+    p.epIndex = idx;
+    p.header = Webdav.authHeader(this.cur);
+    // 网盘续播落盘所需字段
+    p.wdSrcId = this.cur.id;
+    p.wdSrcName = this.cur.name;
+    p.wdVod = vod.name;
+    p.wdDir = vod.dir;
+    p.wdSeries = vod.eps.length &gt; 1;</div><div class="ft">42</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    router.pushUrl({ url: 'pages/Player', params: p });
+  }
+  // ---------- 续播 ----------
+  /** 从续播记录继续观看：seek 到上次进度，能重建选集时仍可切上/下一集 */
+  async continueWatch(h: WdHistory): Promise&lt;void&gt; {
+    const srcs: WebdavSource[] = await Store.webdavSources();
+    let src: WebdavSource | null = null;
+    for (let i = 0; i &lt; srcs.length; i++) {
+      if (srcs[i].id === h.srcId) {
+        src = srcs[i];
+        break;
+      }
+    }
+    if (src === null) {
+      // 源都删了，这条续播记录必然失效，直接清掉
+      await Store.removeWdHistory(h);
+      this.wdHist = await Store.wdHistory();
+      return;
+    }
+    // 尝试从识别缓存重建整部剧的选集，续播时也能切上/下一集
+    let eps: Episode[] = [];
+    let startIdx: number = 0;
+    let playUrl: string = h.url;
+    let title: string = h.vodName;
+    const cache: WebdavVod[] = await Store.webdavScanCache(src.id);
+    let vod: WebdavVod | null = null;
+    for (let i = 0; i &lt; cache.length; i++) {
+      if (cache[i].name === h.vodName) {
+        vod = cache[i];
+        break;
+      }
+    }
+    if (vod !== null &amp;&amp; vod.eps.length &gt; 0) {
+      for (let i = 0; i &lt; vod.eps.length; i++) {
+        const e = new Episode();
+        e.name = this.epNameOf(vod, vod.eps[i], i);
+        e.url = vod.eps[i].url;
+        eps.push(e);
+      }
+      startIdx = (h.epIndex &gt;= 0 &amp;&amp; h.epIndex &lt; vod.eps.length) ? h.epIndex : 0;
+      playUrl = vod.eps[startIdx].url;
+      title = vod.name + (vod.eps.length &gt; 1 ? (' ' + eps[startIdx].name) : '');
+      Playlist.set(eps, startIdx, vod.name);
+    } else if (h.epName.length &gt; 0) {
+      title = h.vodName + ' ' + h.epName;
+    }
+    const p = new PlayParam();
+    p.url = playUrl;
+    p.title = title;
+    p.siteKey = 'webdav';</div><div class="ft">43</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    p.vodId = 'webdav:' + src.id + ':' + h.vodName;
+    p.from = 'direct';
+    p.epIndex = startIdx;
+    p.header = Webdav.authHeader(src);
+    p.seek = h.pos;
+    p.wdSrcId = src.id;
+    p.wdSrcName = src.name;
+    p.wdVod = h.vodName;
+    p.wdDir = h.dir;
+    // 是否剧集：能重建选集按集数判断；否则按历史记录粗略判断（epIndex&gt;0 或曾有集
+名）
+    if (vod !== null &amp;&amp; vod.eps.length &gt; 0) {
+      p.wdSeries = vod.eps.length &gt; 1;
+    } else {
+      p.wdSeries = h.epIndex &gt; 0 || h.epName.length &gt; 0;
+    }
+    router.pushUrl({ url: 'pages/Player', params: p });
+  }
+  async removeWd(h: WdHistory): Promise&lt;void&gt; {
+    await Store.removeWdHistory(h);
+    this.wdHist = await Store.wdHistory();
+  }
+  static pad2(n: number): string {
+    return n &lt; 10 ? '0' + n : String(n);
+  }
+  // ---------- 识别影视 ----------
+  async scanVods(): Promise&lt;void&gt; {
+    this.loading = true;
+    this.msg = '正在扫描目录识别影视资源…';
+    this.msgColor = T.SUB;
+    try {
+      const result: WebdavVod[] = await Webdav.scan(this.cur, 6,
+        (dirs: number, files: number): void =&gt; {
+          this.msg = '正在扫描… 已扫 ' + dirs + ' 个目录，发现 ' + files + ' 个视
+频';
+        });
+      this.vods = result;
+      // 识别结果落盘，下次进入直接读缓存
+      await Store.saveWebdavScan(this.cur.id, result);
+      this.view = 'scan';
+      this.msg = '识别到 ' + result.length + ' 部影视';
+      this.msgColor = '#B7F0BC';
+    } catch (e) {
+      const err = e as Error;
+      this.msg = err.message;
+      this.msgColor = T.WARN;
+      // 扫描失败保留在 browse 视图（如果本来就在 browse），否则停在 sources
+      if (this.view !== 'browse') {
+        this.view = 'browse';
+        await this.loadDir();</div><div class="ft">44</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      }
+    }
+    this.loading = false;
+  }
+  // ---------- UI ----------
+  @Builder
+  Btn(label: string, key: string, primary: boolean, act: () =&gt; void) {
+    Text(label)
+      .fontSize(15)
+      .height(44)
+      .padding({ left: 22, right: 22 })
+      .borderRadius(T.RADIUS_PILL)
+      .backgroundColor(primary ? T.ACCENT : (this.hi(key) ? T.CARD_HI : T.CARD))
+      .fontColor(primary ? T.BG : (this.hi(key) ? T.SELECTED : T.TXT))
+      .border({ width: T.BORDER, color: this.hi(key) ? (primary ? T.SELECTED : T.T
+XT) : '#00000000' })
+      .textAlign(TextAlign.Center)
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .focusable(true)
+      .onFocus(() =&gt; this.hover(key, true))
+      .onBlur(() =&gt; this.hover(key, false))
+      .onHover((hv: boolean) =&gt; this.hover(key, hv))
+      .onClick(() =&gt; {
+        Feedback.tap();
+        act();
+      })
+  }
+  /** 通用行底板：标题 + 说明 + 右侧操作文字，焦点高亮 */
+  @Builder
+  RowItem(key: string, title: string, sub: string, right: string, act: () =&gt; void)
+ {
+    Row() {
+      Column() {
+        Text(title).fontSize(15).fontColor(T.TXT).maxLines(1).textOverflow({ overf
+low: TextOverflow.Ellipsis })
+        if (sub.length &gt; 0) {
+          Text(sub).fontSize(12).fontColor(T.DIM).margin({ top: 3 }).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      if (right.length &gt; 0) {
+        Text(right).fontSize(13).fontColor(T.SELECTED).margin({ left: 10 })
+      }
+    }
+    .width('100%')
+    .height(56)
+    .padding({ left: 14, right: 14 })
+    .borderRadius(T.RADIUS_SM)</div><div class="ft">45</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    .backgroundColor(this.hi(key) ? T.CARD_HI : T.CARD)
+    .border({ width: T.BORDER, color: this.hi(key) ? T.TXT : '#00000000' })
+    .margin({ bottom: 8 })
+    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+    .focusable(true)
+    .onFocus(() =&gt; this.hover(key, true))
+    .onBlur(() =&gt; this.hover(key, false))
+    .onHover((hv: boolean) =&gt; this.hover(key, hv))
+    .onClick(() =&gt; {
+      Feedback.tap();
+      act();
+    })
+  }
+  @Builder
+  TopBar(title: string) {
+    Row() {
+      Text('‹')
+        .fontSize(34)
+        .fontColor(this.hi('back') ? T.TXT : T.SUB)
+        .width(40)
+        .textAlign(TextAlign.Center)
+        .focusable(true)
+        .defaultFocus(true)
+        .onFocus(() =&gt; this.hover('back', true))
+        .onBlur(() =&gt; this.hover('back', false))
+        .onHover((hv: boolean) =&gt; this.hover('back', hv))
+        .onClick(() =&gt; {
+          Feedback.tap();
+          if (this.view === 'sources') {
+            router.back();
+          } else {
+            this.backToSources();
+          }
+        })
+      Text(title).fontSize(24).fontColor(T.TXT).margin({ left: 8 })
+      if (this.view === 'browse') {
+        Text(this.cur.name + '  ·  ' + this.pathLabel())
+          .fontSize(14).fontColor(T.DIM).margin({ left: 16 }).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+      } else if (this.view === 'scan') {
+        Text(this.cur.name)
+          .fontSize(14).fontColor(T.DIM).margin({ left: 16 }).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+      }
+    }
+    .width('100%')
+    .padding({ left: 24, right: 24, top: 24, bottom: 8 })
+  }
+  build() {
+    Stack({ alignContent: Alignment.Center }) {</div><div class="ft">46</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      Column() {
+        this.TopBar(this.view === 'sources' ? 'WebDAV 网盘' : (this.view === 'brow
+se' ? '浏览文件' : '识别影视'))
+        Scroll() {
+          Column() {
+            if (this.view === 'sources') {
+              this.sourcesView()
+            } else if (this.view === 'browse') {
+              this.browseView()
+            } else {
+              this.scanView()
+            }
+          }
+          .width('100%')
+          .padding({ left: 24, right: 24, bottom: 30 })
+          .alignItems(HorizontalAlign.Start)
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .scrollBar(BarState.Off)
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(T.BG)
+      if (this.epOpen) {
+        this.epPanel()
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+  @Builder
+  sourcesView() {
+    Column() {
+      // 继续观看：网盘播放记录，点击从上次进度续播
+      if (this.wdHist.length &gt; 0) {
+        Row() {
+          Text('继续观看').fontSize(17).fontColor(T.TXT)
+          Blank()
+          Text('清空').fontSize(13).fontColor(T.DIM)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .borderRadius(T.RADIUS_PILL)
+            .backgroundColor(this.hi('clearWd') ? T.CARD_HI : T.CARD)
+            .border({ width: T.BORDER, color: this.hi('clearWd') ? T.TXT : '#00000
+000' })
+            .focusable(true)
+            .onFocus(() =&gt; this.hover('clearWd', true))
+            .onBlur(() =&gt; this.hover('clearWd', false))
+            .onHover((hv: boolean) =&gt; this.hover('clearWd', hv))
+            .onClick(() =&gt; {</div><div class="ft">47</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">              Feedback.tap();
+              this.clearWd();
+            })
+        }
+        .width('100%')
+        .margin({ top: 6, bottom: 8 })
+        ForEach(this.wdHist, (h: WdHistory) =&gt; {
+          this.wdHistItem(h)
+        }, (h: WdHistory) =&gt; h.srcId + '_' + h.vodName)
+        Text('挂载的网盘在这里浏览目录、识别并播放影视资源；新增 / 编辑 / 删除网盘
+请到「设置 → 网盘」。')
+          .fontSize(14).fontColor(T.SUB).width('100%').lineHeight(22).margin({ top
+: 18 })
+      } else {
+        Text('挂载的网盘在这里浏览目录、识别并播放影视资源；新增 / 编辑 / 删除网盘
+请到「设置 → 网盘」。')
+          .fontSize(14).fontColor(T.SUB).width('100%').lineHeight(22)
+      }
+      Row() {
+        this.Btn('去设置页添加', 'go_setting', true, () =&gt; {
+          router.pushUrl({ url: 'pages/SettingPage' });
+        })
+        Blank()
+      }
+      .width('100%')
+      .margin({ top: 16, bottom: 6 })
+      if (this.sources.length === 0) {
+        Text('还没有挂载任何网盘。点上方「去设置页添加」，填服务器地址、账号密码即
+可。')
+          .fontSize(14).fontColor(T.DIM).width('100%').margin({ top: 20 }).lineHei
+ght(22)
+      } else {
+        ForEach(this.sources, (s: WebdavSource) =&gt; {
+          this.RowItem('s_' + s.id, s.name, s.url, '进入 ›', () =&gt; {
+            this.enterSource(s);
+          })
+        }, (s: WebdavSource) =&gt; s.id)
+      }
+    }
+  }
+  /** 单条续播记录 */
+  @Builder
+  wdHistItem(h: WdHistory) {
+    Row() {
+      Column() {
+        Text(h.vodName).fontSize(15).fontColor(T.TXT).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row() {
+          Text(h.epName.length &gt; 0 ? ('看到 ' + h.epName) : '电影')
+            .fontSize(12).fontColor(T.DIM)</div><div class="ft">48</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">          if (h.pos &gt; 0) {
+            Text(' · 已看 ' + WebdavPage.fmtPos(h.pos) + (h.dur &gt; 0 ? (' / ' + Web
+davPage.fmtPos(h.dur)) : ''))
+              .fontSize(12).fontColor(T.SELECTED)
+          }
+        }
+        .margin({ top: 3 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .onClick(() =&gt; {
+        Feedback.tap();
+        this.continueWatch(h);
+      })
+      Text('继续播放 ›')
+        .fontSize(13).fontColor(T.SELECTED).margin({ left: 10 })
+        .onClick(() =&gt; {
+          Feedback.tap();
+          this.continueWatch(h);
+        })
+      Text('✕')
+        .fontSize(15).fontColor(T.DIM)
+        .width(36).height(36).textAlign(TextAlign.Center).borderRadius(18)
+        .margin({ left: 8 })
+        .onClick(() =&gt; {
+          Feedback.tap();
+          this.removeWd(h);
+        })
+    }
+    .width('100%')
+    .height(56)
+    .padding({ left: 14, right: 14 })
+    .borderRadius(T.RADIUS_SM)
+    .backgroundColor(this.hi('w_' + h.srcId + '_' + h.vodName) ? T.CARD_HI : T.CAR
+D)
+    .border({ width: T.BORDER, color: this.hi('w_' + h.srcId + '_' + h.vodName) ? 
+T.TXT : '#00000000' })
+    .margin({ bottom: 8 })
+    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+    .focusable(true)
+    .onFocus(() =&gt; this.hover('w_' + h.srcId + '_' + h.vodName, true))
+    .onBlur(() =&gt; this.hover('w_' + h.srcId + '_' + h.vodName, false))
+    .onHover((hv: boolean) =&gt; this.hover('w_' + h.srcId + '_' + h.vodName, hv))
+  }
+  async clearWd(): Promise&lt;void&gt; {
+    await Store.clearWdHistory();
+    this.wdHist = [];
+  }
+  @Builder
+  browseView() {</div><div class="ft">49</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    Column() {
+      Row() {
+        this.Btn('识别影视', 'scan', true, () =&gt; {
+          this.scanVods();
+        })
+        this.Btn('上级目录', 'up', false, () =&gt; {
+          this.goUp();
+        })
+        this.Btn('刷新', 'refresh', false, () =&gt; {
+          this.loadDir();
+        })
+        Blank()
+      }
+      .width('100%')
+      .margin({ top: 8, bottom: 12 })
+      if (this.loading) {
+        Row() {
+          LoadingProgress().width(24).height(24).color(T.SUB)
+          Text('加载中…').fontSize(14).fontColor(T.DIM).margin({ left: 10 })
+        }
+        .width('100%').margin({ top: 20 })
+      } else if (this.entries.length === 0) {
+        Text(this.msg.length &gt; 0 ? this.msg : '这个目录是空的。')
+          .fontSize(14).fontColor(this.msgColor).width('100%').margin({ top: 16 })
+.lineHeight(22)
+      } else {
+        ForEach(this.entries, (e: WebdavEntry, i: number) =&gt; {
+          this.RowItem(
+            'f_' + i,
+            (e.isDir ? '📁 ' : '🎬 ') + e.name,
+            e.isDir ? '目录' : (WebdavPage.sizeLabel(e.size) + (e.mtime.length &gt; 0
+ ? ' · ' + e.mtime : '')),
+            e.isDir ? '进入' : '播放',
+            () =&gt; {
+              if (e.isDir) {
+                this.enterDir(e);
+              } else if (Webdav.isVideo(e.name)) {
+                this.playFile(e);
+              }
+            })
+        }, (e: WebdavEntry, i: number) =&gt; e.href + i)
+      }
+    }
+  }
+  @Builder
+  scanView() {
+    Column() {
+      Row() {
+        this.Btn('浏览文件', 'browse', false, () =&gt; {
+          this.openBrowse();</div><div class="ft">50</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">        })
+        this.Btn('重新扫描', 'rescan', true, () =&gt; {
+          this.scanVods();
+        })
+        Blank()
+      }
+      .width('100%')
+      .margin({ top: 8, bottom: 12 })
+      if (this.loading) {
+        Column() {
+          Row() {
+            LoadingProgress().width(24).height(24).color(T.SUB)
+            Text('扫描中…').fontSize(14).fontColor(T.DIM).margin({ left: 10 })
+          }
+          if (this.msg.length &gt; 0) {
+            Text(this.msg).fontSize(13).fontColor(T.DIM).width('100%').margin({ to
+p: 10 }).lineHeight(20)
+          }
+        }
+        .width('100%').margin({ top: 20 })
+      } else if (this.vods.length === 0) {
+        Text(this.msg.length &gt; 0 ? this.msg : '没有识别到视频资源。')
+          .fontSize(14).fontColor(this.msgColor).width('100%').margin({ top: 16 })
+.lineHeight(22)
+      } else {
+        ForEach(this.vods, (v: WebdavVod, i: number) =&gt; {
+          this.RowItem('v_' + i, v.name, this.vodMeta(v), '播放', () =&gt; {
+            this.openEp(v);
+          })
+        }, (v: WebdavVod, i: number) =&gt; v.name + i)
+      }
+    }
+  }
+  @Builder
+  epPanel() {
+    Stack() {
+      Column()
+        .width('100%').height('100%')
+        .backgroundColor(T.BLACK_70)
+        .onClick(() =&gt; {
+          Feedback.tap();
+          this.epOpen = false;
+        })
+      Column() {
+        Row() {
+          Text(this.selVod.name).fontSize(19).fontColor(T.TXT).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+          Blank()
+          Text('✕').fontSize(19).fontColor(this.hi('ex') ? T.TXT : T.SUB)
+            .width(42).height(42).textAlign(TextAlign.Center).borderRadius(T.RADIU</div><div class="ft">51</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">S_SM)
+            .backgroundColor(this.hi('ex') ? T.CARD_HI : '#00000000')
+            .focusable(true).defaultFocus(true)
+            .onFocus(() =&gt; this.hover('ex', true))
+            .onBlur(() =&gt; this.hover('ex', false))
+            .onHover((hv: boolean) =&gt; this.hover('ex', hv))
+            .onClick(() =&gt; {
+              Feedback.tap();
+              this.epOpen = false;
+            })
+        }
+        .width('100%')
+        Scroll() {
+          Column() {
+            ForEach(this.selVod.eps, (ep: WebdavEp, i: number) =&gt; {
+              this.RowItem('ep_' + i, this.epNameOf(this.selVod, ep, i), '', '播放
+', () =&gt; {
+                this.playEp(this.selVod, i);
+              })
+            }, (ep: WebdavEp, i: number) =&gt; ep.href + i)
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .height(this.isPhone ? 320 : 360)
+        .margin({ top: 14 })
+        .scrollBar(BarState.Off)
+      }
+      .width(Device.panelW(520))
+      .padding(24)
+      .backgroundColor(T.SURFACE)
+      .borderRadius(28)
+      .alignItems(HorizontalAlign.Start)
+      .focusScopeId('ep_panel', true)
+    }
+    .width('100%')
+    .height('100%')
+  }
+  vodMeta(v: WebdavVod): string {
+    return (v.kind === 'series' ? '剧集 · ' : '电影 · ') +
+      (v.year.length &gt; 0 ? v.year + ' · ' : '') + v.eps.length + ' 集';
+  }
+  static sizeLabel(size: number): string {
+    if (size &lt;= 0) {
+      return '';
+    }
+    if (size &gt;= 1024 * 1024 * 1024) {
+      return (size / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    }
+    if (size &gt;= 1024 * 1024) {</div><div class="ft">52</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      return (size / 1024 / 1024).toFixed(1) + ' MB';
+    }
+    if (size &gt;= 1024) {
+      return (size / 1024).toFixed(0) + ' KB';
+    }
+    return size + ' B';
+  }
+  static fmtPos(ms: number): string {
+    if (ms &lt;= 0) {
+      return '0:00';
+    }
+    const t: number = Math.floor(ms / 1000);
+    const h: number = Math.floor(t / 3600);
+    const m: number = Math.floor((t % 3600) / 60);
+    const s: number = t % 60;
+    const mm: string = (m &lt; 10 ? '0' : '') + m;
+    const ss: string = (s &lt; 10 ? '0' : '') + s;
+    return h &gt; 0 ? (h + ':' + mm + ':' + ss) : (mm + ':' + ss);
+  }
+}
+// ==========================================================================
+// 文件：entry/src/main/ets/common/Quality.ets    （共 368 行）
+// ==========================================================================
+/**
+ * 清晰度与网络自适应。
+ *
+ * 卡顿的根子通常是「码率 &gt; 实际带宽」。能做的三件事：
+ *  1. 认出 HLS master playlist 里的多档码率，让用户能选，也能自动选；
+ *  2. 用 AVPlayer 的 PlaybackStrategy.preferredHeight 把档位钉在选定值上
+ *     （保留 master 地址，系统的 ABR 仍然能工作，比我们自己换流地址稳）；
+ *  3. 缓冲水位 preferredBufferDuration 按实测网速抬高，慢网多垫几秒就不容易断。
+ */
+import http from '@ohos.net.http';
+const UA: string = 'Mozilla/5.0 (Linux; HarmonyOS; SmartScreen) AppleWebKit/537.36
+ (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+/** 一档清晰度 */
+export class QLevel {
+  /** 竖向分辨率，0 表示源没标 RESOLUTION */
+  height: number = 0;
+  width: number = 0;
+  /** 声明峰值码率，bps */
+  bps: number = 0;
+  /** 这一档的媒体播放列表地址 */
+  url: string = '';
+  /** 源里自带的名字，如 "高清"、"1080p" */
+  name: string = '';
+}
+/** 一次测速结果 */
+export class QSpeed {
+  /** 实测下行速率 kbps，-1 表示没测出来 */</div><div class="ft">53</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  kbps: number = -1;
+  bytes: number = 0;
+  ms: number = 0;
+}
+export class Quality {
+  /** 「自动」档 */
+  static readonly AUTO: number = 0;
+  /** 「原画」= 不设上限，取源里最高 */
+  static readonly TOP: number = 9999;
+  /**
+   * 解析 master playlist。
+   * 形如：
+   *   #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1920x1080,NAME="高清"
+   *   1080p/index.m3u8
+   * 只有带 EXT-X-STREAM-INF 的才算多档；普通媒体列表返回空数组。
+   */
+  static parseMaster(text: string, base: string): QLevel[] {
+    const out: QLevel[] = [];
+    if (text.indexOf('#EXT-X-STREAM-INF') &lt; 0) {
+      return out;
+    }
+    const lines: string[] = text.replace(/\r\n/g, '\n').split('\n');
+    let pending: QLevel | null = null;
+    for (let i = 0; i &lt; lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0) {
+        continue;
+      }
+      if (line.startsWith('#EXT-X-STREAM-INF')) {
+        const lv = new QLevel();
+        lv.bps = Quality.numAttr(line, 'AVERAGE-BANDWIDTH');
+        const peak: number = Quality.numAttr(line, 'BANDWIDTH');
+        if (peak &gt; 0) {
+          lv.bps = peak;
+        }
+        const res: string = Quality.strAttr(line, 'RESOLUTION');
+        if (res.length &gt; 0) {
+          const x: number = res.toLowerCase().indexOf('x');
+          if (x &gt; 0) {
+            lv.width = Quality.toNum(res.substring(0, x));
+            lv.height = Quality.toNum(res.substring(x + 1));
+          }
+        }
+        lv.name = Quality.strAttr(line, 'NAME');
+        if (lv.name.length === 0) {
+          lv.name = Quality.strAttr(line, 'VIDEO-RANGE');
+        }
+        pending = lv;
+        continue;
+      }</div><div class="ft">54</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      if (line.startsWith('#')) {
+        continue;
+      }
+      if (pending !== null) {
+        pending.url = Quality.abs(base, line);
+        out.push(pending);
+        pending = null;
+      }
+    }
+    // 按清晰度升序，没有 RESOLUTION 的按码率排
+    out.sort((a: QLevel, b: QLevel): number =&gt; {
+      const ha: number = a.height &gt; 0 ? a.height : Math.floor(a.bps / 20000);
+      const hb: number = b.height &gt; 0 ? b.height : Math.floor(b.bps / 20000);
+      if (ha !== hb) {
+        return ha - hb;
+      }
+      return a.bps - b.bps;
+    });
+    return out;
+  }
+  /** 显示名。优先用分辨率，没标就用码率折算 */
+  static labelOf(h: number, bps: number): string {
+    if (h &gt;= 2160) {
+      return '4K';
+    }
+    if (h &gt;= 1440) {
+      return '2K';
+    }
+    if (h &gt;= 1080) {
+      return '1080P';
+    }
+    if (h &gt;= 720) {
+      return '720P';
+    }
+    if (h &gt;= 540) {
+      return '540P';
+    }
+    if (h &gt;= 480) {
+      return '480P';
+    }
+    if (h &gt;= 360) {
+      return '360P';
+    }
+    if (bps &gt;= 4000000) {
+      return '高清';
+    }
+    if (bps &gt;= 1500000) {
+      return '标清';
+    }
+    return bps &gt; 0 ? '流畅' : '原画';</div><div class="ft">55</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">  }
+  static labelOfLevel(l: QLevel): string {
+    const s: string = Quality.labelOf(l.height, l.bps);
+    if (s === '原画' &amp;&amp; l.name.length &gt; 0) {
+      return l.name;
+    }
+    // labelOf 只认 360/480/540/720/1080 这些标准高度，其余一律落到
+    // 「流畅/标清/高清」三档，于是 240P 和 180P 会显示成两个一模一样的「流畅」，
+    // 面板上根本分不清。这类档位直接显示真实高度。
+    const vague: boolean = s === '流畅' || s === '标清' || s === '高清';
+    if (vague &amp;&amp; l.height &gt; 0) {
+      return l.height + 'P';
+    }
+    // 连高度都没写的 master 只能靠码率区分
+    if (vague &amp;&amp; l.bps &gt; 0) {
+      return s + ' ' + Math.round(l.bps / 1000) + 'K';
+    }
+    return s;
+  }
+  /**
+   * 按实测速率挑档：留 30% 余量，取「码率不超过 0.7×速率」的最高一档。
+   * 一档都不满足（网太差）就退到最低档，至少别整个卡死。
+   */
+  static pickBySpeed(kbps: number, levels: QLevel[]): number {
+    if (levels.length === 0) {
+      return -1;
+    }
+    if (kbps &lt;= 0) {
+      return 0;
+    }
+    const budget: number = kbps * 0.7 * 1000;
+    let best: number = -1;
+    for (let i = 0; i &lt; levels.length; i++) {
+      const need: number = levels[i].bps &gt; 0 ? levels[i].bps : (levels[i].height &gt;
+ 0 ? levels[i].height * 4000 : 0);
+      if (need &lt;= budget) {
+        best = i;
+      }
+    }
+    return best &lt; 0 ? 0 : best;
+  }
+  /** 选「不高于 cap 的最高档」；cap 为 TOP 时直接取最高档 */
+  static pickByCap(cap: number, levels: QLevel[]): number {
+    if (levels.length === 0) {
+      return -1;
+    }
+    if (cap &gt;= Quality.TOP) {
+      return levels.length - 1;
+    }
+    let best: number = -1;</div><div class="ft">56</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    for (let i = 0; i &lt; levels.length; i++) {
+      if (levels[i].height &lt;= 0 || levels[i].height &lt;= cap) {
+        best = i;
+      }
+    }
+    return best &lt; 0 ? 0 : best;
+  }
+  /** 从媒体列表里找第一个分片，用来实测网速 */
+  static firstSegment(playlist: string, base: string): string {
+    const lines: string[] = playlist.replace(/\r\n/g, '\n').split('\n');
+    let nextIsSeg: boolean = false;
+    for (let i = 0; i &lt; lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0) {
+        continue;
+      }
+      if (line.startsWith('#EXTINF')) {
+        nextIsSeg = true;
+        continue;
+      }
+      if (line.startsWith('#')) {
+        continue;
+      }
+      if (nextIsSeg || line.indexOf('.ts') &gt; 0 || line.indexOf('.m4s') &gt; 0 ||
+        line.indexOf('.mp4') &gt; 0 || line.indexOf('.flv') &gt; 0) {
+        return Quality.abs(base, line);
+      }
+    }
+    return '';
+  }
+  /**
+   * 实测下行速率。
+   *
+   * 用 dataReceive 边收边计数，收到 limit 就主动 destroy——
+   * 不这样做的话，遇到不支持 Range 的 CDN 会把整个 mp4 拉下来，几百兆。
+   */
+  static measure(url: string, ms: number, limit: number): Promise&lt;QSpeed&gt; {
+    return new Promise&lt;QSpeed&gt;((resolve) =&gt; {
+      const st = new QSpeed();
+      if (url.length === 0) {
+        resolve(st);
+        return;
+      }
+      const req = http.createHttp();
+      let bytes: number = 0;
+      let settled: boolean = false;
+      let timer: number = -1;
+      const t0: number = Date.now();
+      const finish = (): void =&gt; {
+        if (settled) {</div><div class="ft">57</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">          return;
+        }
+        settled = true;
+        if (timer &gt;= 0) {
+          clearTimeout(timer);
+          timer = -1;
+        }
+        try {
+          req.off('dataReceive');
+        } catch (e) {
+          // 忽略
+        }
+        try {
+          req.destroy();
+        } catch (e) {
+          // 忽略
+        }
+        st.bytes = bytes;
+        st.ms = Date.now() - t0;
+        // bits/ms 就是 kbps：1 字节/毫秒 = 8 kbps
+        if (st.ms &gt; 150 &amp;&amp; bytes &gt; 16384) {
+          st.kbps = Math.floor(bytes * 8 / st.ms);
+        }
+        resolve(st);
+      };
+      try {
+        req.on('dataReceive', (buf: ArrayBuffer) =&gt; {
+          bytes += buf.byteLength;
+          if (bytes &gt;= limit) {
+            finish();
+          }
+        });
+      } catch (e) {
+        // 老版本没有 dataReceive，退化成「只测得没测速」
+      }
+      timer = setTimeout(finish, ms);
+      const opt: http.HttpRequestOptions = {
+        method: http.RequestMethod.GET,
+        header: { 'User-Agent': UA, 'Accept': '*/*', 'Range': 'bytes=0-' + (limit 
+- 1) },
+        connectTimeout: ms,
+        readTimeout: ms,
+        usingCache: false
+      };
+      req.request(url, opt).then(() =&gt; {
+        finish();
+      }).catch(() =&gt; {
+        // 连接失败/被 destroy：有多少算多少，够 16KB 就给结果
+        finish();
+      });</div><div class="ft">58</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">    });
+  }
+  static fmtKbps(kbps: number): string {
+    if (kbps &lt;= 0) {
+      return '';
+    }
+    if (kbps &gt;= 1000) {
+      return (Math.round(kbps / 100) / 10) + ' MB/s';
+    }
+    return kbps + ' KB/s';
+  }
+  // ---------- 内部 ----------
+  private static toNum(s: string): number {
+    const n: number = parseInt(s.trim(), 10);
+    return isNaN(n) ? 0 : n;
+  }
+  private static numAttr(line: string, key: string): number {
+    return Quality.toNum(Quality.strAttr(line, key));
+  }
+  private static strAttr(line: string, key: string): string {
+    const i: number = line.indexOf(key + '=');
+    if (i &lt; 0) {
+      return '';
+    }
+    let s: number = i + key.length + 1;
+    let e: number = line.length;
+    if (line.charAt(s) === '"') {
+      s = s + 1;
+      const q: number = line.indexOf('"', s);
+      return q &lt; 0 ? line.substring(s) : line.substring(s, q);
+    }
+    const comma: number = line.indexOf(',', s);
+    if (comma &gt;= 0) {
+      e = comma;
+    }
+    return line.substring(s, e).trim();
+  }
+  /** 相对地址转绝对（HLS 里分片地址常见 "../xxx/seg.ts"） */
+  static abs(base: string, ref: string): string {
+    const r: string = ref.trim();
+    if (r.startsWith('http://') || r.startsWith('https://')) {
+      return r;
+    }
+    const scheme: number = base.indexOf('://');
+    if (scheme &lt; 0) {
+      return r;
+    }
+    const hostEnd: number = base.indexOf('/', scheme + 3);
+    const origin: string = hostEnd &lt; 0 ? base : base.substring(0, hostEnd);
+    if (r.startsWith('//')) {</div><div class="ft">59</div></div><div class="page"><div class="hd">夜帧影视软件&nbsp;&nbsp;V1.0&nbsp;&nbsp;&nbsp;源程序</div><div class="code">      return base.substring(0, scheme) + ':' + r;
+    }
+    if (r.startsWith('/')) {
+      return origin + r;
+    }
+    const cut: number = base.indexOf('?');
+    const clean: string = cut &gt;= 0 ? base.substring(0, cut) : base;
+    const dir: string = clean.substring(0, clean.lastIndexOf('/') + 1);
+    const path: string = dir + r;
+    // 只对 origin 之后的路径段做 ../ 归一，否则会把 http:// 里的斜杠吃掉
+    const rest: string = path.length &gt; origin.length ? path.substring(origin.lengt
+h) : path;
+    const parts: string[] = rest.split('/');
+    const stack: string[] = [];
+    for (let i = 0; i &lt; parts.length; i++) {
+      const p: string = parts[i];
+      if (p === '..') {
+        if (stack.length &gt; 0) {
+          stack.pop();
+        }
+      } else if (p !== '.' &amp;&amp; p.length &gt; 0) {
+        stack.push(p);
+      }
+    }
+    return origin + '/' + stack.join('/');
+  }
+}
+// ==========================================================================
+// 源程序结束
+// 软件名称：夜帧影视软件    版本号：V1.0
+// 开发完成日期：2026 年 11 月 04 日
+// ==========================================================================
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//</div><div class="ft">60</div></div></body></html>

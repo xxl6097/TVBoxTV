@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "夜帧影视 主模块：为 HarmonyOS 电视与折叠屏适配的点播直播客户端"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "夜帧影视 —— 原生鸿蒙（ArkTS + ArkUI）实现的电视端影视客户端，适配智慧屏大屏与遥控器指针操作，支持扫码录入片源、点播、直播与本地历史收藏。"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "夜帧影视"
+    }
+  ]
+}

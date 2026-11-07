@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.5",
+  "name": "boxtv",
+  "version": "1.0.0",
+  "description": "夜帧影视 - 华为智慧屏 TVBox 客户端",
+  "dependencies": {},
+  "devDependencies": {}
+}

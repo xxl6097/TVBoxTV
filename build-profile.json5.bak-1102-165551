@@ -1,0 +1,55 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/uuxia/.ohos/config/default_ZspaceTV_I2_SsjE2iSxAwIJj5F3eP0DcG_W53gzldod8t1Kldg4=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001B3FF4A1E2F277DF0A28E01478894B9B211779C05A78E865AE4C1FA9D05721DA03231974F424413E",
+          "profile": "/Users/uuxia/.ohos/config/default_ZspaceTV_I2_SsjE2iSxAwIJj5F3eP0DcG_W53gzldod8t1Kldg4=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/uuxia/.ohos/config/default_ZspaceTV_I2_SsjE2iSxAwIJj5F3eP0DcG_W53gzldod8t1Kldg4=.p12",
+          "storePassword": "0000001B10F278F0DFADD59DB3CB7BF7D83A203E756C15CDC9D6DCCA77EBACF86F8AB3C535108D3229AD7A"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

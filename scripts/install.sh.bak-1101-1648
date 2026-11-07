@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# 把编译好的 HAP 装到智慧屏并启动。
+#   ./scripts/install.sh                  # 默认电视 10.140.253.182
+#   ./scripts/install.sh 192.168.1.50     # 指定电视 IP（无线调试）
+#   ./scripts/install.sh 192.168.1.50 x.hap
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEVECO="${DEVECO_HOME:-/Applications/DevEco-Studio.app/Contents}"
+HAP="${2:-$ROOT/entry/build/default/outputs/default/entry-default-signed.hap}"
+TV_IP="${1:-10.140.253.182}"
+
+# --- 找 hdc ---
+HDC="${HDC:-}"
+if [ -z "$HDC" ]; then
+  for c in "$DEVECO"/sdk/*/openharmony/toolchains/hdc "$DEVECO"/sdk/*/*/toolchains/hdc \
+           "$DEVECO"/tools/hdc "$HOME"/ohsdk/sdk/*/darwin/toolchains/hdc; do
+    [ -x "$c" ] && HDC="$c" && break
+  done
+fi
+if [ -z "$HDC" ] && command -v hdc >/dev/null 2>&1; then
+  HDC="$(command -v hdc)"
+fi
+if [ -z "$HDC" ]; then
+  echo "✗ 找不到 hdc（它在 DevEco Studio 的 SDK toolchains 里）"
+  echo "  装好 DevEco 后重试，或指定：DEVECO_HOME=... ./scripts/install.sh"
+  exit 1
+fi
+echo "→ hdc : $HDC"
+
+if [ ! -f "$HAP" ]; then
+  echo "✗ 找不到 HAP：$HAP"
+  echo "  先跑 ./scripts/build.sh"
+  exit 2
+fi
+echo "→ HAP : $HAP ($(du -h "$HAP" | cut -f1))"
+
+# --- 连设备 ---
+"$HDC" start server >/dev/null 2>&1
+if [ -n "$TV_IP" ]; then
+  echo "→ 连接电视 $TV_IP:5555 …（电视端会弹『允许调试』，请用遥控器确认）"
+  "$HDC" tconn "$TV_IP":5555 || true
+fi
+
+TARGETS="$("$HDC" list targets 2>/dev/null | grep -v '^\s*$' | grep -v 'Empty')"
+if [ -z "$TARGETS" ]; then
+  cat <<'EOF'
+✗ 没有可用设备。按顺序检查：
+
+  1) 智慧屏：设置 → 关于本机 → 连点「软件版本号」5 次 → 开发者选项
+     → 打开「USB 调试」和「无线调试」
+  2) 电视和这台 Mac 必须在同一个局域网（现在这台 Mac 在别的网段就不行）
+  3) 电视 IP 在：设置 → 网络 → 当前网络；然后重跑：
+       ./scripts/install.sh <电视IP>
+  4) hdc 版本太旧也会认不到设备，用 DevEco 自带的那份（脚本已自动优先用）
+EOF
+  exit 3
+fi
+echo "→ 设备 : $TARGETS"
+
+# --- 打印 UDID（签名要把这串加进调试证书）---
+UDID="$("$HDC" shell bm get -u 2>/dev/null | tr -d '\r' | tail -1)"
+[ -n "$UDID" ] && echo "→ UDID : $UDID"
+
+# --- 装 ---
+echo "→ 安装中…"
+OUT="$("$HDC" install -r "$HAP" 2>&1)"
+echo "$OUT"
+case "$OUT" in
+  *"success"*|*"Success"*)
+    echo "→ 启动…"
+    "$HDC" shell aa start -a EntryAbility -b com.fanren.boxtv || true
+    echo "✓ 完事，去电视上找「影盒 TV」"
+    ;;
+  *"9568289"*|*"signature"*|*"verify"*)
+    cat <<'EOF'
+✗ 签名校验失败。常见原因：签名证书里没有这台电视的 UDID。
+
+  打开 DevEco → 连上电视 → Project Structure → Signing Configs
+  → 重新勾一次自动签名（会重新拉设备列表），再 build 一次。
+EOF
+    exit 4
+    ;;
+  *)
+    echo "✗ 安装失败，看上面的原始输出"
+    exit 5
+    ;;
+esac

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>夜帧影视 · 隐私政策</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 64px; background: #141218; color: #ECEAEE;
+    font-family: -apple-system, BlinkMacSystemFont, "HarmonyOS Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 16px; line-height: 1.75;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 8px; letter-spacing: .5px; }
+  h2 { font-size: 19px; margin: 40px 0 12px; padding-top: 20px; border-top: 1px solid #2A2830; color: #FFEB3B; }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  .meta { color: #9C97A6; font-size: 14px; margin-bottom: 28px; }
+  .meta span { margin-right: 18px; }
+  p { margin: 10px 0; color: #D6D2DC; }
+  strong { color: #fff; }
+  ul { padding-left: 22px; color: #D6D2DC; }
+  li { margin: 6px 0; }
+  code {
+    background: #26242B; padding: 2px 6px; border-radius: 5px;
+    font-size: 14px; color: #FFEB3B; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 15px; }
+  th, td { border: 1px solid #2F2C36; padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #1C1B1F; color: #fff; font-weight: 600; }
+  td { color: #C9C4D0; }
+  .note {
+    background: #1C1B1F; border-left: 3px solid #FFEB3B;
+    padding: 14px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; color: #D6D2DC;
+  }
+  hr { border: 0; border-top: 1px solid #2A2830; margin: 40px 0 20px; }
+  footer { color: #7E7889; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>夜帧影视 · 隐私政策</h1>
+  <div class="meta"><span>生效日期：2026 年 11 月 2 日</span><span>最后更新：2026 年 11 月 2 日</span></div>
+
+  <p>本政策适用于「夜帧影视」（HarmonyOS 应用，包名 <code>com.hong.tv</code>，以下称“本应用”）。本应用是一款<strong>本地运行的影视内容浏览与播放工具</strong>，不设服务器、不设账号体系。</p>
+
+  <h2>一、我们不收集任何个人信息</h2>
+  <p>本应用<strong>没有</strong>用户注册、登录、手机号、邮箱、实名认证等任何账号功能。开发者在<strong>任何服务器上都不存储</strong>你的任何数据——原因很简单：本应用没有自己的服务器。</p>
+  <p>以下信息<strong>始终只保存在你的设备本地</strong>，开发者无法读取：</p>
+  <table>
+    <tr><th style="width:44%">本地数据</th><th>用途</th><th style="width:16%">是否上传</th></tr>
+    <tr><td>你填写的点播配置地址（TVBox 格式 JSON 的 URL）</td><td>拉取影片列表</td><td>否</td></tr>
+    <tr><td>你填写的直播源地址（m3u / txt）</td><td>拉取直播频道</td><td>否</td></tr>
+    <tr><td>收藏、观看历史、播放进度</td><td>本地展示与续播</td><td>否</td></tr>
+    <tr><td>画质偏好、站源启停开关</td><td>记住你的选择</td><td>否</td></tr>
+    <tr><td>搜索关键词历史</td><td>本地搜索建议</td><td>否</td></tr>
+  </table>
+  <p>卸载本应用即清除上述全部数据。</p>
+
+  <h2>二、本应用会访问网络，但只做这些事</h2>
+  <p>本应用需要「网络访问」权限，用途仅限于：</p>
+  <ul>
+    <li>请求<strong>你自己填写的</strong>点播配置地址，读取其中的站点接口地址；</li>
+    <li>请求<strong>你自己填写的</strong>直播源地址，读取频道列表；</li>
+    <li>请求上述配置中列出的第三方影视站点接口，获取影片信息、剧集列表与播放地址；</li>
+    <li>连接第三方视频流地址（http/https 的 m3u8、mp4 等）播放内容；</li>
+    <li>在你主动点击「测速排行」时，向这些地址发送一次探测请求以判断可用性与延迟。</li>
+  </ul>
+  <div class="note">这些请求由你的设备<strong>直接</strong>发往对应第三方站点，<strong>不经过开发者</strong>。因此这些第三方站点可能按它们自己的隐私政策记录你的 IP 地址、请求时间等信息。本应用无法控制也无法获知第三方站点的数据处理行为。<strong>你填写的源来自何处、信任与否，由你自行判断。</strong></div>
+
+  <h2>三、设备权限用途说明</h2>
+  <table>
+    <tr><th style="width:38%">权限</th><th>用途</th><th style="width:22%">是否必须</th></tr>
+    <tr><td><code>ohos.permission.INTERNET</code></td><td>访问网络，获取你配置的片源与播放视频</td><td>必须，拒绝则应用无法使用</td></tr>
+    <tr><td><code>ohos.permission.GET_NETWORK_INFO</code></td><td>读取本机局域网 IP，用于「手机扫码录入」在电视上开一个临时服务</td><td>必须，拒绝则扫码录入不可用（仍可手动输入）</td></tr>
+  </table>
+  <p><strong>本应用不申请</strong>：位置、通讯录、短信、通话记录、相机、麦克风、相册 / 文件读写、设备标识符（IMEI / OAID）、剪贴板读取、应用列表读取等任何敏感权限。</p>
+
+  <h2>四、手机扫码录入时的局域网服务</h2>
+  <p>在<strong>电视端</strong>点击源地址输入框时，本应用会在电视上临时启动一个 HTTP 服务（默认端口 <code>8788</code>），仅用于让同一局域网内的手机扫码打开录入页面并提交地址；<strong>手机端</strong>直接在本机输入，不启动该服务。</p>
+  <ul>
+    <li>该服务<strong>不连接任何外部服务器</strong>，不上报任何数据；</li>
+    <li>提交的内容直接写入本机本地存储；</li>
+    <li>离开设置页后服务即停止接受写入；</li>
+    <li>页面无登录、无 Cookie、无统计脚本；</li>
+    <li>仅在同一 Wi-Fi 下可访问，请勿在不可信的公共网络上开启此功能。</li>
+  </ul>
+
+  <h2>五、本应用不包含以下内容</h2>
+  <ul>
+    <li>无第三方广告 SDK；</li>
+    <li>无数据统计 / 埋点 SDK（华为分析、友盟、神策等一概没有）；</li>
+    <li>无推送 SDK、无社交分享 SDK；</li>
+    <li>无崩溃上报 SDK（崩溃日志仅留在系统日志中，开发者不收集）。</li>
+  </ul>
+  <p>本应用为纯 ArkTS + ArkUI 实现，未引入任何第三方闭源二进制库。</p>
+
+  <h2>六、儿童个人信息</h2>
+  <p>本应用不面向儿童单独设计，也不收集任何个人信息（含儿童个人信息）。是否允许未成年人使用、以及观看何种内容，由监护人自行管理。</p>
+
+  <h2>七、内容来源声明</h2>
+  <p>本应用<strong>不提供、不存储、不分发任何影视内容</strong>。它是一个播放器与源管理工具，内容全部来自用户自行填写的第三方接口。</p>
+  <p>开发者不对第三方内容的合法性、准确性、可用性作任何保证，也不承担由此产生的责任。请确保你使用的内容来源合法，并遵守当地法律法规。若你是权利人认为某来源侵权，请向该来源的提供方主张权利。</p>
+
+  <h2>八、你的权利</h2>
+  <p>由于开发者不持有你的任何数据，因此不存在“申请导出 / 删除个人数据”的流程。你可以在应用内随时：</p>
+  <ul>
+    <li>修改或清空源地址（设置页）；</li>
+    <li>删除单条收藏 / 历史（收藏页、历史页）；</li>
+    <li>清空全部本地数据（系统设置 → 应用 → 夜帧影视 → 存储 → 清除数据）。</li>
+  </ul>
+
+  <h2>九、政策变更</h2>
+  <p>若本政策发生实质性变更，会在应用内与发布页面同步更新，并更新本文顶部日期。继续使用即表示接受更新后的政策。</p>
+
+  <h2>十、联系方式</h2>
+  <p>如对本政策有疑问，可通过应用市场详情页公示的开发者联系方式与我们联系。</p>
+
+  <hr>
+  <footer>夜帧影视 · com.hong.tv · 本页可离线保存，作为应用市场隐私政策链接使用。</footer>
+</main>
+</body>
+</html>

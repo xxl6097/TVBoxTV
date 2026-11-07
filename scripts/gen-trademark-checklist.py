@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+# 生成「商标查询结果与更名建议」PDF（软著/上架前的名称风险结论）。
+#
+# 数据来源说明：中国商标网在线查询需注册登录 + 图形验证码，无法直接抓取，
+# 因此本文件的数据取自公开商标数据库（阿里云商标、标库网、企查查/爱企查、
+# 启明白等）的交叉核对结果，并逐条标注注册号，便于到官网按注册号复核真伪。
+# 这不是法律意见；正式判断请以商标局审查结论或代理人意见为准。
+#
+# 用法：python3 scripts/gen-trademark-checklist.py
+
+import os
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT_DIR = os.path.join(ROOT, 'docs', 'copyright')
+OUT_HTML = os.path.join(OUT_DIR, '夜帧影视_商标查询清单.html')
+OUT_PDF = os.path.join(OUT_DIR, '夜帧影视_商标查询清单.pdf')
+
+CSS = """
+@page { size: A4; margin: 0; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: "Songti SC", "SimSun", serif; color: #000;
+       font-size: 10.2pt; line-height: 1.48; }
+.title { font-size: 17pt; font-weight: bold; text-align: center; letter-spacing: 2pt;
+         margin: 0 0 2pt; }
+.sub { font-size: 9.4pt; text-align: center; color: #444; margin-bottom: 8pt; }
+.h { font-size: 11pt; font-weight: bold; margin: 7pt 0 3pt;
+     border-left: 3pt solid #333; padding-left: 5pt; }
+.p { margin-bottom: 2.4pt; text-align: justify; }
+.li { padding-left: 1.3em; text-indent: -1.3em; margin-bottom: 1.6pt; text-align: justify; }
+table { width: 100%; border-collapse: collapse; margin: 3pt 0 2pt; font-size: 8.9pt; }
+th, td { border: 0.5pt solid #000; padding: 2.2pt 3.5pt; vertical-align: top; line-height: 1.34; }
+th { background: #ececec; font-weight: bold; text-align: center; }
+td.c { text-align: center; }
+.bad { font-weight: bold; }
+.verdict { border: 1pt solid #000; padding: 5pt 7pt; margin: 4pt 0 3pt; background: #f4f4f4; }
+.verdict .k { font-weight: bold; }
+.note { font-size: 8.2pt; color: #333; margin-top: 5pt; line-height: 1.42; }
+.pb { page-break-after: always; height: 0; }
+"""
+
+PAGE1 = """
+<div class="title">名称核验与更名决定</div>
+<div class="sub">原名「凡人影视」（已弃用）· 新名「夜帧影视」· 核验日 2026-11-07 · 覆盖第 9 / 41 类</div>
+
+<div class="verdict">
+<div class="p"><span class="k">决定：软件更名为「夜帧影视」。</span></div>
+<div class="p"><b>新名核验结果</b>：第 9 类、第 41 类在商标数据开放系统（批次 2026/9）中<b>均无任何记录</b>，
+也未检索到同名影视应用，可安全用于应用名称与图标。<b>弃用原名的两条理由</b>（任一条都足以构成障碍）：
+①「凡人」二字在第 9 类（软件）与第 41 类（娱乐）已被密集占位，其中 3 件已注册并直接覆盖
+「可下载的计算机应用软件」「计算机软件（已录制）」「娱乐服务」「电视文娱节目」；
+②「凡人影视」在影音 App 领域已被一款在流通的安卓影视应用占用（v8.5，约 30 MB，多站收录，
+标注为内置资源的会员壳），同名会带来混淆与被连带投诉的风险。</div>
+</div>
+
+<div class="h">一、原拟名「凡人影视」的第 9 类在先商标</div>
+<table>
+  <tr><th style="width:22%">商标</th><th style="width:26%">申请人</th><th style="width:13%">注册号</th>
+      <th style="width:19%">状态</th><th style="width:20%">覆盖的关键项目</th></tr>
+  <tr><td>凡人智能科技</td><td>凡人智能科技河北雄安有限公司</td><td class="c">77489387</td>
+      <td>已注册（2024-12-07 至 2034-12-07）</td><td class="bad">0901 可下载的计算机应用软件</td></tr>
+  <tr><td>凡人英雄传<br/>MORTAL HEROES' SAGA</td><td>北京天马时空网络技术有限公司</td><td class="c">90916681</td>
+      <td>已注册（2026-10-14 至 2036-10-13）</td><td class="bad">0901 计算机软件（已录制）</td></tr>
+  <tr><td>凡人仙剑传</td><td>广州乐牛软件科技有限公司</td><td class="c">71681239</td>
+      <td>曾注册，2024-03-20 有无效公告（状态存疑）</td><td>0901 电子出版物、游戏软件</td></tr>
+</table>
+
+<div class="h">二、原拟名「凡人影视」的第 41 类在先商标</div>
+<table>
+  <tr><th style="width:22%">商标</th><th style="width:26%">申请人</th><th style="width:13%">注册号</th>
+      <th style="width:19%">状态</th><th style="width:20%">覆盖的关键项目</th></tr>
+  <tr><td>凡人单机版</td><td>（公开库未显示）</td><td class="c">49333628</td>
+      <td>已注册</td><td class="bad">4105 娱乐服务、电视文娱节目</td></tr>
+  <tr><td>凡人遮天</td><td>上海巨人网络科技有限公司</td><td class="c">86518498</td>
+      <td>已初审（2026-03-20 公告，异议中）</td><td class="bad">4105 娱乐服务</td></tr>
+  <tr><td>凡人</td><td>佛山市橡树文化传播有限公司</td><td class="c">80601691</td>
+      <td>审中（2024-08-28 申请）</td><td>4105 等</td></tr>
+  <tr><td>凡人</td><td>上海市徐汇区凡人摄影室</td><td class="c">7567062</td>
+      <td>无权（专用期 2010-12-21 至 2020-12-20 已届满）</td><td>4105 摄影、数字成像</td></tr>
+  <tr><td>凡人计划</td><td>杭州哇啦哇啦科技有限公司</td><td class="c">27228434</td>
+      <td>有权（2018-10-14 至 2028-10-13）</td><td>4101—4105</td></tr>
+  <tr><td>凡人铺子 / 凡人帮 / 凡人之躯</td><td>广东凡人铺子文化等</td><td class="c">70244821<br/>66318558<br/>58356633</td>
+      <td>均有权</td><td>4105 娱乐服务等</td></tr>
+</table>
+<div class="p">另有多件「凡人客栈」「凡人修行」「凡人食盒」「凡人发声」等，不再逐一列出。
+共同点：<b>「凡人」+ 二至三字</b> 的结构在第 41 类几乎被占满。</div>
+
+<div class="h">三、原拟名的同名软件冲突（弃用理由之二）</div>
+<div class="p">「夜帧影视」这个名字目前已被一款安卓影视应用使用，多个下载站收录，特征为：</div>
+<div class="li">· 版本 <b>v8.5</b>，安装包约 <b>30.5 MB</b>，包名与厂商在各站显示为空白；</div>
+<div class="li">· 站内标注为「<b>[会员壳] 内置资源</b>」「内置接口资源」，即自带影视源、无需用户配置；</div>
+<div class="li">· 同时存在手机版与「<b>夜帧影视 TV</b>」电视版，2025—2026 年持续更新。</div>
+<div class="p">对本项目的影响有两层：<b>上架层</b>——华为应用市场审核若检索到同名在流通应用，会重点核查是否同一主体，
+或被判「名称与他人应用混淆」；<b>维权层</b>——版权方取证时按名称检索，容易把两个应用混为一谈，
+而对方的形态（内置盗版源）恰恰是最容易被追责的那种。</div>
+
+<div class="pb"></div>
+"""
+
+PAGE2 = """
+<div class="h">四、当时的三个选项（已选 A：换名）</div>
+<table>
+  <tr><th style="width:8%">方案</th><th style="width:26%">做法</th><th style="width:33%">代价</th><th style="width:33%">残留风险</th></tr>
+  <tr><td class="c">A</td><td><b>换名</b>，脱离「凡人」词根</td>
+      <td>改显示名 + 重出软著（变更登记免费）+ 重拍截图 + 重打包，脚本化约 40 分钟</td>
+      <td>低。名称层面基本清空</td></tr>
+  <tr><td class="c">B</td><td><b>保留名称，只私有分发</b>，不上架</td>
+      <td>无</td>
+      <td>中。仍与在流通的同名应用混淆，且无法上架</td></tr>
+  <tr><td class="c">C</td><td>保留并加限定词，如「夜帧影视播放器」</td>
+      <td>小</td>
+      <td><b>高</b>。首两字相同仍属近似，同名混淆问题一点没解决</td></tr>
+</table>
+
+<div class="h">五、换名的命名要求（避免再踩一次）</div>
+<div class="li">· 不要用「凡人」「鸿蒙」这类<b>已被占位或属于他人商标</b>的词根；</div>
+<div class="li">· 不要用「XX 影视」「XX 影院」这种<b>影音类通用词组合</b>——同名盗版应用最密集的就是这类；</div>
+<div class="li">· 优先造词或意象词（2—3 字），并在第 9 类 + 第 41 类各检索一次；</div>
+<div class="li">· 定名前在同一批检索里同时查：全称、词根、拼音、首字母。</div>
+
+<div class="h">六、自行复核（本文件数据来自公开商标库，需官网确认）</div>
+<div class="li">1. 打开 <b>sbj.cnipa.gov.cn</b> →「商标查询」，需先注册登录（免费）；</div>
+<div class="li">2. 用「商标综合查询」按上表的<b>注册号</b>逐条查，核对状态是否与本文一致；</div>
+<div class="li">3. 再用「商标近似查询」按名称查「凡人」「夜帧影视」，限定第 9、41 类，看是否有本文未收录的新申请；</div>
+<div class="li">4. 结论以商标局审查为准；如决定换名，先查新名的可用性，再动材料。</div>
+
+<div class="h">七、若决定换名：要动的文件（已有脚本，逐个可重跑）</div>
+<table>
+  <tr><th style="width:34%">要改的东西</th><th style="width:38%">位置</th><th style="width:28%">方式</th></tr>
+  <tr><td>应用显示名</td><td>AppScope/resources/base/element/string.json、entry 同名文件</td><td>改 app_name 字段</td></tr>
+  <tr><td>图标里的文字</td><td>图标美术稿上的名称字样</td><td>重跑 scripts/rebrand-icon.py 改字后重出全套图标</td></tr>
+  <tr><td>界面内出现的软件名</td><td>首页标题、隐私政策页、扫码页、设置页</td><td>全局替换</td></tr>
+  <tr><td>软著材料</td><td>申请表、源程序页眉、说明书封面与正文、三份证明文件</td><td>重跑软著五个生成脚本（变更登记免费）</td></tr>
+  <tr><td>商店素材</td><td>18 张横屏截图、5 张竖版、2 张推荐图</td><td>重跑 scripts/shoot.py 与两个图片脚本</td></tr>
+  <tr><td>线上资源</td><td>privacy.html、subscribe.json（订阅名）</td><td>重新上传至对象存储</td></tr>
+  <tr><td><b>不用改</b></td><td>包名 com.hong.tv</td><td>用户不可见，且与调试/发布 Profile 绑定，改则需重新签发证书</td></tr>
+</table>
+<div class="p">全部由脚本生成，一轮重跑约 40 分钟。换名越早越省事：材料提交后再改，软著要走变更登记，
+应用市场要下架重审。</div>
+
+<div class="h">八、候选名核验（2026-11-07，商标数据开放系统批次 2026/9）</div>
+<table>
+  <tr><th style="width:12%">候选</th><th style="width:10%">拼音</th><th style="width:30%">第 9 / 41 类</th>
+      <th style="width:24%">同名软件</th><th style="width:24%">结论</th></tr>
+  <tr><td><b>夜帧</b></td><td class="c">yezhen</td><td>无任何记录</td><td>未检索到</td>
+      <td class="bad">可用，首推</td></tr>
+  <tr><td>幕屿</td><td class="c">muyu</td><td>无记录（其他类：43 / 35 / 30）</td><td>无 App；有同名小公司（剧创、文艺工作室）</td>
+      <td>可用</td></tr>
+  <tr><td>帧屿</td><td class="c">zhenyu</td><td>无任何记录</td><td>未检索到</td><td>可用</td></tr>
+  <tr><td>幕光</td><td class="c">muguang</td><td>无记录</td><td class="bad">已有「暮光影视」「暮光影院」「暮光视频」多个影视 App</td>
+      <td class="bad">淘汰（同音混淆）</td></tr>
+  <tr><td>光匣</td><td class="c">guangxia</td><td class="bad">9 类已注册 67995751；41 类 3 件已注册</td><td>—</td><td class="bad">淘汰</td></tr>
+  <tr><td>廿四格</td><td class="c">niansige</td><td class="bad">与「二十四格」29691315 / 22934950 / 24格 50739776 近似，均 41 类已注册</td><td>—</td>
+      <td class="bad">淘汰（读音含义相同）</td></tr>
+  <tr><td>影屿 / 拾帧</td><td class="c">—</td><td class="bad">41 类已注册（33395285 / 42174433）</td><td>—</td><td class="bad">淘汰</td></tr>
+</table>
+<div class="p"><b>推荐「夜帧」</b>：两字、影院感强（夜场观影 + 胶片帧）、拼音 yezhen 与首字母 yz 都好打，
+第 9 / 41 类在开放数据里完全空白，也没有同名影视应用。次选「幕屿」，独特性最高但读音接近「幕雨」，
+且已有一家同名文艺工作室（不同类别，不构成商标障碍）。</div>
+<div class="p">另注：换成两字名后，图标上的名称字样从四字变两字，小尺寸反而更清楚，图标需按新名重绘一次。</div>
+
+<div class="note">
+说明：中国商标网在线查询需登录与验证码，无法程序化抓取，故本文数据取自阿里云商标、标库网、
+爱企查、启明白等公开数据库的交叉核对，注册号已逐条标注以便复核。本文件为风险提示，不构成法律意见。
+官费标准：网上申请 270 元/类（限 10 个商品或服务项目）；软著变更或补充登记自 2017-04-01 起已停征费用。
+</div>
+"""
+
+
+def html(body):
+    body = body.replace('\n', '')
+    return ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+            '<title>夜帧影视 商标查询结果</title>'
+            '<style>%s</style></head><body>%s</body></html>' % (CSS, body))
+
+
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+    open(OUT_HTML, 'w', encoding='utf-8').write(html(PAGE1 + PAGE2))
+    print('→ HTML：%s' % os.path.basename(OUT_HTML))
+
+    node = subprocess.run(['which', 'node'], capture_output=True, text=True).stdout.strip()
+    if not node:
+        print('✗ 未找到 node，无法打印 PDF')
+        return 1
+
+    r = subprocess.run(
+        [node, os.path.join(ROOT, 'scripts', 'cdp-print-pdf.mjs'),
+         OUT_HTML, OUT_PDF, ''],
+        capture_output=True, text=True, timeout=240)
+    sys.stdout.write(r.stdout)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr[-800:])
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,15 @@
+{
+  "src": [
+    "pages/Home",
+    "pages/VodPage",
+    "pages/LivePage",
+    "pages/CollectPage",
+    "pages/HistoryPage",
+    "pages/SettingPage",
+    "pages/Detail",
+    "pages/Search",
+    "pages/Player",
+    "pages/Direct",
+    "pages/WebdavPage"
+  ]
+}

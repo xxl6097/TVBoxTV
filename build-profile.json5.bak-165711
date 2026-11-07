@@ -1,0 +1,45 @@
+{
+  "app": {
+    // 换设备后必须重新签发调试描述文件：.p7b 的 device-ids 里白名单的是旧设备 UDID。
+    // 留着旧的 signingConfigs，DevEco 会直接用旧凭证打包（点 Run 装上去就是
+    // 9568423 device is unauthorized），根本不弹「Automatically generate signature」。
+    // 所以这里清空，逼 IDE 重新走一次自动签名；签完 DevEco 会自己把这段填回来。
+    // 旧配置备份在同目录 build-profile.json5.bak-1102-165551
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "compatibleSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}
