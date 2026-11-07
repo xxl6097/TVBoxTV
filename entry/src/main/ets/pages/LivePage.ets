@@ -97,11 +97,10 @@ struct LivePage {
   }
 
   onBackPress(): boolean {
-    // 遥控器返回键：测速面板打开时先关面板，否则退出页面
+    // 遥控器返回键：面板打开时先关面板，否则退出页面。
+    // 测速中也允许关——面板只是查看窗口，关掉不影响后台测速继续跑完。
     if (this.showSpeed) {
-      if (!this.testing) {
-        this.showSpeed = false;
-      }
+      this.showSpeed = false;
       return true;
     }
     router.back();
@@ -343,11 +342,35 @@ struct LivePage {
   openSpeed(): void {
     this.showSpeed = true;
     this.openAt = Date.now();
-    // 已经测过就直接展示上次结论，不重复跑 —— 一次排行要十几秒，
-    // 用户只是想回来看一眼哪个最快，不该被强制再等一遍。
+    // 打开面板先直接列出所有源（不测速），让用户能「点一下就换源」；
+    // 测速变成面板里的可选动作（点「测速」），不再强制在打开时跑一轮。
+    // 已经测过就直接展示上次结论，不重复跑。
     if (this.scores.length === 0 && !this.testing) {
-      this.runSpeed();
+      this.listSources();
     }
+  }
+
+  /**
+   * 只列出所有候选源（不测速），供「换源」面板直接切换用。
+   *
+   * 每一条 state 标「待测」，点「使用」就能换，不强制用户先等一轮测速。
+   */
+  async listSources(): Promise<void> {
+    const list: LivePreset[] = await this.targets();
+    if (list.length === 0) {
+      this.showSpeed = false;
+      Tip.show('还没有直播源,先去「设置 → 订阅」导入');
+      return;
+    }
+    const seeds: LiveScore[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const it = new LiveScore();
+      it.name = list[i].name;
+      it.url = list[i].url;
+      it.state = '待测';
+      seeds.push(it);
+    }
+    this.scores = seeds;
   }
 
   /**
@@ -528,7 +551,7 @@ struct LivePage {
   @Builder
   SpeedPanel() {
     Stack() {
-      // 点空白关闭。测速中不关，避免用户以为测到一半就没结果
+      // 点空白关闭。测速中也允许关——关掉面板不代表取消测速，后台会继续跑完
       Column()
         .width('100%')
         .height('100%')
@@ -536,23 +559,30 @@ struct LivePage {
         .onClick(() => {
           Feedback.tap();
           // 刚打开 300ms 内的点击一定是「打开它的那一次」，忽略掉
-          if (!this.testing && Date.now() - this.openAt > 300) {
+          if (Date.now() - this.openAt > 300) {
             this.showSpeed = false;
           }
         })
 
       Column() {
         Row() {
-          Text('直播源测速排行')
+          Text(this.isPhone ? '直播源' : '直播源测速排行')
             .fontSize(19)
             .fontColor(T.TXT)
+          // 状态文字占据剩余空间并可收缩：手机窄屏下它一收缩，「测速」「关闭」
+          // 两个按钮就不会被挤出屏幕（之前固定宽导致「关闭」被顶到屏外）。
           Text(this.testing
             ? ('  测速中 ' + this.testProgress)
-            : ('  可播率 70% + 响应速度 30% 综合排序'))
+            : (this.scores.length > 0 && this.scores[0].ok
+              ? '  可播率 70% + 响应速度 30% 综合排序'
+              : '  点「使用」直接换源，或点「测速」对比'))
             .fontSize(13)
             .fontColor(T.DIM)
-          Blank()
-          Text(this.testing ? '测速中…' : '重新测速')
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ right: 8 })
+          Text(this.testing ? '测速中…' : (this.scores.length > 0 && this.scores[0].ok ? '重新测速' : '测速'))
             .fontSize(14)
             .fontColor(this.testing ? T.DIM : T.ACCENT)
             .height(34)
@@ -584,9 +614,8 @@ struct LivePage {
             .onHover((hv: boolean) => this.hover('sclose', hv))
             .onClick(() => {
               Feedback.tap();
-              if (!this.testing) {
-                this.showSpeed = false;
-              }
+              // 无条件关闭：测速中也允许关面板，后台测速继续跑
+              this.showSpeed = false;
             })
         }
         .width('100%')
@@ -703,267 +732,280 @@ struct LivePage {
 
   build() {
     Stack() {
-    Column() {
-      Row() {
-        Text('‹')
-          .fontSize(34)
-          .fontColor(this.hi('back') ? T.TXT : T.SUB)
-          .width(40)
-          .textAlign(TextAlign.Center)
-          .focusable(true)
-          .defaultFocus(true)
-          .onFocus(() => this.hover('back', true))
-          .onBlur(() => this.hover('back', false))
-          .onHover((hv: boolean) => this.hover('back', hv))
-          .onClick(() => {
-            Feedback.tap();
-            router.back();
-          })
-        Text('直播')
-          .fontSize(24)
-          .fontColor(T.TXT)
-          .margin({ left: 8 })
-        // 电视端顶栏单行就能放下；手机竖屏把这行台数/面包屑挪到第二行，给右侧三个按钮腾地方
-        if (!this.isPhone) {
-          Text(this.root.count > 0 ? ('  ' + this.root.count + ' 台 · ' + this.gnum + ' 组') : '')
-            .fontSize(14)
-            .fontColor(T.SUB)
-          // 一条频道都没有时别显示「全部 › 全部」——空态下这行没有信息量，
-          // 还容易让人以为已经选过了某个分组
-          if (this.root.count > 0) {
-            Text('  ' + this.crumb())
+      Column() {
+        Row() {
+          Text('‹')
+            .fontSize(34)
+            .fontColor(this.hi('back') ? T.TXT : T.SUB)
+            .width(40)
+            .textAlign(TextAlign.Center)
+            .focusable(true)
+            .defaultFocus(true)
+            .onFocus(() => this.hover('back', true))
+            .onBlur(() => this.hover('back', false))
+            .onHover((hv: boolean) => this.hover('back', hv))
+            .onClick(() => {
+              Feedback.tap();
+              router.back();
+            })
+          Text('直播')
+            .fontSize(24)
+            .fontColor(T.TXT)
+            .margin({ left: 8 })
+          // 电视端顶栏单行就能放下；手机竖屏把这行台数/面包屑挪到第二行，给右侧三个按钮腾地方
+          if (!this.isPhone) {
+            Text(this.root.count > 0 ? ('  ' + this.root.count + ' 台 · ' + this.gnum + ' 组') : '')
               .fontSize(14)
+              .fontColor(T.SUB)
+            // 一条频道都没有时别显示「全部 › 全部」——空态下这行没有信息量，
+            // 还容易让人以为已经选过了某个分组
+            if (this.root.count > 0) {
+              Text('  ' + this.crumb())
+                .fontSize(14)
+                .fontColor(T.DIM)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+          }
+          Blank()
+          // 三个按钮的顺序按「越常用越靠右」排：刷新最常用，换源其次。
+          // 「换源」打开源列表面板：点一下就能换源，测速只是面板里的可选动作。
+          Text(this.testing ? ('测速 ' + this.testProgress) : '换源')
+            .fontSize(15)
+            .fontColor(this.testing ? T.SUB : (this.hi('spd') ? T.TXT : T.SUB))
+            .height(40)
+            .padding({ left: 14, right: 14 })
+            .borderRadius(T.RADIUS)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.hi('spd') ? T.CARD_HI : '#00000000')
+            .border({ width: T.BORDER, color: this.hi('spd') ? T.TXT : '#00000000' })
+            .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+            .focusable(true)
+            .onFocus(() => this.hover('spd', true))
+            .onBlur(() => this.hover('spd', false))
+            .onHover((hv: boolean) => this.hover('spd', hv))
+            .onClick(() => {
+              Feedback.tap();
+              this.openSpeed();
+            })
+          Text(this.checking ? ('检测 ' + this.checkProgress) : '检测')
+            .fontSize(15)
+            .fontColor(this.checking ? T.SUB : (this.hi('chk') ? T.TXT : T.SUB))
+            .height(40)
+            .padding({ left: 14, right: 14 })
+            .margin({ left: 4 })
+            .borderRadius(T.RADIUS)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.hi('chk') ? T.CARD_HI : '#00000000')
+            .border({ width: T.BORDER, color: this.hi('chk') ? T.TXT : '#00000000' })
+            .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+            .focusable(true)
+            .onFocus(() => this.hover('chk', true))
+            .onBlur(() => this.hover('chk', false))
+            .onHover((hv: boolean) => this.hover('chk', hv))
+            .onClick(() => {
+              Feedback.tap();
+              this.checkChannels();
+            })
+          Text('刷新')
+            .fontSize(15)
+            .fontColor(T.TXT)
+            .height(40)
+            .padding({ left: 14, right: 14 })
+            .margin({ left: 4 })
+            .borderRadius(T.RADIUS)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.hi('re') ? T.CARD_HI : '#00000000')
+            .border({ width: T.BORDER, color: this.hi('re') ? T.TXT : '#00000000' })
+            .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+            .focusable(true)
+            .onFocus(() => this.hover('re', true))
+            .onBlur(() => this.hover('re', false))
+            .onHover((hv: boolean) => this.hover('re', hv))
+            .onClick(() => {
+              Feedback.tap();
+              // 主动刷新时把上一轮的失效标记清掉，否则新数据里的台会被旧结论误标
+              this.deadUrls = [];
+              this.reload();
+            })
+        }
+        .width('100%')
+        .padding({ left: 24, right: 24, top: 24, bottom: 8 })
+
+        // 手机竖屏：台数/面包屑放到顶栏第二行，避免和右侧按钮挤在一起把「刷新」顶出屏幕
+        if (this.isPhone && this.root.count > 0) {
+          Row() {
+            Text(this.root.count + ' 台 · ' + this.gnum + ' 组')
+              .fontSize(13)
+              .fontColor(T.SUB)
+            Text('  ' + this.crumb())
+              .fontSize(13)
               .fontColor(T.DIM)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
+          .width('100%')
+          .padding({ left: 24, right: 24 })
+          .margin({ top: 2, bottom: 6 })
         }
-        Blank()
-        // 三个按钮的顺序按「越常用越靠右」排：刷新最常用，测速其次
-        Text(this.testing ? ('测速 ' + this.testProgress) : '测速')
-          .fontSize(15)
-          .fontColor(this.testing ? T.SUB : (this.hi('spd') ? T.TXT : T.SUB))
-          .height(40)
-          .padding({ left: 14, right: 14 })
-          .borderRadius(T.RADIUS)
-          .textAlign(TextAlign.Center)
-          .backgroundColor(this.hi('spd') ? T.CARD_HI : '#00000000')
-          .border({ width: T.BORDER, color: this.hi('spd') ? T.TXT : '#00000000' })
-          .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-          .focusable(true)
-          .onFocus(() => this.hover('spd', true))
-          .onBlur(() => this.hover('spd', false))
-          .onHover((hv: boolean) => this.hover('spd', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.openSpeed();
-          })
-        Text(this.checking ? ('检测 ' + this.checkProgress) : '检测')
-          .fontSize(15)
-          .fontColor(this.checking ? T.SUB : (this.hi('chk') ? T.TXT : T.SUB))
-          .height(40)
-          .padding({ left: 14, right: 14 })
-          .margin({ left: 4 })
-          .borderRadius(T.RADIUS)
-          .textAlign(TextAlign.Center)
-          .backgroundColor(this.hi('chk') ? T.CARD_HI : '#00000000')
-          .border({ width: T.BORDER, color: this.hi('chk') ? T.TXT : '#00000000' })
-          .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-          .focusable(true)
-          .onFocus(() => this.hover('chk', true))
-          .onBlur(() => this.hover('chk', false))
-          .onHover((hv: boolean) => this.hover('chk', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.checkChannels();
-          })
-        Text('刷新')
-          .fontSize(15)
-          .fontColor(T.TXT)
-          .height(40)
-          .padding({ left: 14, right: 14 })
-          .margin({ left: 4 })
-          .borderRadius(T.RADIUS)
-          .textAlign(TextAlign.Center)
-          .backgroundColor(this.hi('re') ? T.CARD_HI : '#00000000')
-          .border({ width: T.BORDER, color: this.hi('re') ? T.TXT : '#00000000' })
-          .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-          .focusable(true)
-          .onFocus(() => this.hover('re', true))
-          .onBlur(() => this.hover('re', false))
-          .onHover((hv: boolean) => this.hover('re', hv))
-          .onClick(() => {
-            Feedback.tap();
-            // 主动刷新时把上一轮的失效标记清掉，否则新数据里的台会被旧结论误标
-            this.deadUrls = [];
-            this.reload();
-          })
-      }
-      .width('100%')
-      .padding({ left: 24, right: 24, top: 24, bottom: 8 })
 
-      // 手机竖屏：台数/面包屑放到顶栏第二行，避免和右侧按钮挤在一起把「刷新」顶出屏幕
-      if (this.isPhone && this.root.count > 0) {
-        Row() {
-          Text(this.root.count + ' 台 · ' + this.gnum + ' 组')
-            .fontSize(13)
-            .fontColor(T.SUB)
-          Text('  ' + this.crumb())
-            .fontSize(13)
-            .fontColor(T.DIM)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .width('100%')
-        .padding({ left: 24, right: 24 })
-        .margin({ top: 2, bottom: 6 })
-      }
-
-      if (this.loading) {
-        Column() {
-          LoadingProgress().width(44).height(44).color(T.TXT)
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else if (this.err.length > 0) {
-        Column() {
-          Text(this.err).fontSize(16).fontColor(T.SUB).textAlign(TextAlign.Center).width('70%')
-          Text(this.url.length === 0 ? '去设置填直播源' : '重试')
-            .fontSize(16)
-            .fontColor(T.TXT)
-            .height(42)
-            .padding({ left: 28, right: 28 })
-            .borderRadius(T.RADIUS)
-            .margin({ top: 16 })
-            .border({ width: T.BORDER, color: T.TXT })
-            .focusable(true)
-            .onFocus(() => this.hover('empty', true))
-            .onBlur(() => this.hover('empty', false))
-            .onHover((hv: boolean) => this.hover('empty', hv))
-            .backgroundColor(this.hi('empty') ? T.CARD_HI : '#00000000')
-            .onClick(() => {
-              Feedback.tap();
-              if (this.url.length === 0) {
-                router.pushUrl({ url: 'pages/SettingPage' });
-              } else {
-                this.reload();
-              }
-            })
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      } else {
-        // 电视盒子的经典布局：左边分组树，右边频道网格
-        Row() {
-          Scroll() {
-            Column() {
-              this.TreeItem('全部频道', this.root.count, 0, this.sel1 < 0, 'all', () => {
-                this.pick1(-1);
+        if (this.loading) {
+          Column() {
+            LoadingProgress().width(44).height(44).color(T.TXT)
+          }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        } else if (this.err.length > 0) {
+          Column() {
+            Text(this.err).fontSize(16).fontColor(T.SUB).textAlign(TextAlign.Center).width('70%')
+            Text(this.url.length === 0 ? '去设置填直播源' : '重试')
+              .fontSize(16)
+              .fontColor(T.TXT)
+              .height(42)
+              .padding({ left: 28, right: 28 })
+              .borderRadius(T.RADIUS)
+              .margin({ top: 16 })
+              .border({ width: T.BORDER, color: T.TXT })
+              .focusable(true)
+              .onFocus(() => this.hover('empty', true))
+              .onBlur(() => this.hover('empty', false))
+              .onHover((hv: boolean) => this.hover('empty', hv))
+              .backgroundColor(this.hi('empty') ? T.CARD_HI : '#00000000')
+              .onClick(() => {
+                Feedback.tap();
+                if (this.url.length === 0) {
+                  router.pushUrl({ url: 'pages/SettingPage' });
+                } else {
+                  this.reload();
+                }
               })
-              ForEach(this.l1(), (d1: LiveDir, i1: number) => {
-                this.TreeItem(d1.name, d1.count, 0, this.sel1 === i1 && this.sel2 < 0, 'a' + d1.name, () => {
-                  this.pick1(i1);
+          }
+          .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+        } else {
+          // 电视盒子的经典布局：左边分组树，右边频道网格
+          Row() {
+            Scroll() {
+              Column() {
+                this.TreeItem('全部频道', this.root.count, 0, this.sel1 < 0, 'all', () => {
+                  this.pick1(-1);
                 })
-                ForEach(d1.children, (d2: LiveDir, i2: number) => {
-                  this.TreeItem(d2.name, d2.count, 1,
-                    this.sel1 === i1 && this.sel2 === i2 && this.sel3 < 0,
-                    'b' + d1.name + '/' + d2.name, () => {
-                      this.pick1(i1);
-                      this.pick2(i2);
-                    })
-                  ForEach(d2.children, (d3: LiveDir, i3: number) => {
-                    this.TreeItem(d3.name, d3.count, 2,
-                      this.sel1 === i1 && this.sel2 === i2 && this.sel3 === i3,
-                      'c' + d1.name + '/' + d2.name + '/' + d3.name, () => {
+                ForEach(this.l1(), (d1: LiveDir, i1: number) => {
+                  this.TreeItem(d1.name, d1.count, 0, this.sel1 === i1 && this.sel2 < 0, 'a' + d1.name, () => {
+                    this.pick1(i1);
+                  })
+                  ForEach(d1.children, (d2: LiveDir, i2: number) => {
+                    this.TreeItem(d2.name, d2.count, 1,
+                      this.sel1 === i1 && this.sel2 === i2 && this.sel3 < 0,
+                      'b' + d1.name + '/' + d2.name, () => {
                         this.pick1(i1);
                         this.pick2(i2);
-                        this.pick3(i3);
                       })
-                  }, (d3: LiveDir, i3: number) => 'c' + d3.name + '_' +
-                    (this.sel1 === i1 && this.sel2 === i2 && this.sel3 === i3 ? 'on' : 'off'))
-                }, (d2: LiveDir, i2: number) => 'b' + d2.name + '_' +
-                  (this.sel1 === i1 && this.sel2 === i2 && this.sel3 < 0 ? 'on' : 'off'))
-              }, (d1: LiveDir, i1: number) => 'a' + d1.name + '_' +
-                (this.sel1 === i1 && this.sel2 < 0 ? 'on' : 'off'))
-            }
-            .width('100%')
-          }
-          .width(200)
-          .height('100%')
-          .scrollBar(BarState.Off)
-
-          Grid() {
-            ForEach(this.channels(), (ch: Channel) => {
-              GridItem() {
-                Text(ch.name)
-                  .fontSize(14)
-                  // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
-                  // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
-                  .fontColor(this.isDead(ch.url) ? '#5AFFFFFF' : (this.isCur(ch) ? T.SELECTED : T.TXT))
-                  .decoration({
-                    type: this.isDead(ch.url) ? TextDecorationType.LineThrough : TextDecorationType.None,
-                    color: '#4DFFFFFF'
-                  })
-                  .width('100%')
-                  .height(58)
-                  .borderRadius(T.RADIUS_SM)
-                  .textAlign(TextAlign.Center)
-                  .maxLines(2)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .padding({ left: 6, right: 6 })
-                  .backgroundColor(this.isCur(ch) ? T.CARD_HI :
-                    (this.hi('ch_' + ch.name + ch.url) ? T.CARD_HI : '#00000000'))
-                  .border({
-                    width: T.BORDER,
-                    color: this.isCur(ch) ? T.SELECTED :
-                      (this.hi('ch_' + ch.name + ch.url) ? T.TXT : '#00000000')
-                  })
-                  .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-                  .focusable(true)
-                  .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
-                  .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
-                  .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
-                  .onClick(() => {
-                    Feedback.tap();
-                    this.play(ch);
-                  })
+                    ForEach(d2.children, (d3: LiveDir, i3: number) => {
+                      this.TreeItem(d3.name, d3.count, 2,
+                        this.sel1 === i1 && this.sel2 === i2 && this.sel3 === i3,
+                        'c' + d1.name + '/' + d2.name + '/' + d3.name, () => {
+                          this.pick1(i1);
+                          this.pick2(i2);
+                          this.pick3(i3);
+                        })
+                    }, (d3: LiveDir, i3: number) => 'c' + d3.name + '_' +
+                      (this.sel1 === i1 && this.sel2 === i2 && this.sel3 === i3 ? 'on' : 'off'))
+                  }, (d2: LiveDir, i2: number) => 'b' + d2.name + '_' +
+                    (this.sel1 === i1 && this.sel2 === i2 && this.sel3 < 0 ? 'on' : 'off'))
+                }, (d1: LiveDir, i1: number) => 'a' + d1.name + '_' +
+                  (this.sel1 === i1 && this.sel2 < 0 ? 'on' : 'off'))
               }
-            },
-            // key 里必须带上「是否失效 / 是否当前 / 是否悬停」：ForEach 只按 key 判断
-            // 要不要重建这一项，只看名字和地址的话，检测完或切换选中后 key 没变，
-            // 格子里那个 Text 不会重建，灰色删除线、当前高亮都刷不出来。
-            (ch: Channel) => 'ch' + ch.name + ch.url +
-              (this.isDead(ch.url) ? 'd' : 'a') +
-              (this.isCur(ch) ? 'c' : '') +
-              (this.hi('ch_' + ch.name + ch.url) ? 'h' : ''))
+              .width('100%')
+            }
+            .width(200)
+            .height('100%')
+            .scrollBar(BarState.Off)
+
+            Grid() {
+              ForEach(this.channels(), (ch: Channel) => {
+                GridItem() {
+                  Text(ch.name)
+                    .fontSize(14)
+                    // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
+                    // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
+                    .fontColor(this.isDead(ch.url) ? '#5AFFFFFF' : (this.isCur(ch) ? T.SELECTED : T.TXT))
+                    .decoration({
+                      type: this.isDead(ch.url) ? TextDecorationType.LineThrough : TextDecorationType.None,
+                      color: '#4DFFFFFF'
+                    })
+                    .width('100%')
+                    .height(58)
+                    .borderRadius(T.RADIUS_SM)
+                    .textAlign(TextAlign.Center)
+                    .maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .padding({ left: 6, right: 6 })
+                    .backgroundColor(this.isCur(ch) ? T.CARD_HI :
+                      (this.hi('ch_' + ch.name + ch.url) ? T.CARD_HI : '#00000000'))
+                    .border({
+                      width: T.BORDER,
+                      color: this.isCur(ch) ? T.SELECTED :
+                        (this.hi('ch_' + ch.name + ch.url) ? T.TXT : '#00000000')
+                    })
+                    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                    .focusable(true)
+                    .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
+                    .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
+                    .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
+                    .onClick(() => {
+                      Feedback.tap();
+                      this.play(ch);
+                    })
+                }
+              },
+              // key 里必须带上「是否失效 / 是否当前 / 是否悬停」：ForEach 只按 key 判断
+              // 要不要重建这一项，只看名字和地址的话，检测完或切换选中后 key 没变，
+              // 格子里那个 Text 不会重建，灰色删除线、当前高亮都刷不出来。
+              (ch: Channel) => 'ch' + ch.name + ch.url +
+                (this.isDead(ch.url) ? 'd' : 'a') +
+                (this.isCur(ch) ? 'c' : '') +
+                (this.hi('ch_' + ch.name + ch.url) ? 'h' : ''))
+            }
+            .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
+            .columnsGap(10)
+            .rowsGap(10)
+            // 这里只能留 layoutWeight(1)，**不能再加 height('100%')**：
+            // 两者同时存在时 Grid 的高度被钉成父容器高度，内部行数超出后不会滚动，
+            // 底下的频道直接看不见也够不到。layoutWeight 会分配「剩余空间」，
+            // 内容超出时 Grid 才会自己滚。
+            .layoutWeight(1)
+            .padding({ left: 12, right: 24, bottom: 24 })
+            .scrollBar(BarState.Off)
+            .cachedCount(20)
+            .edgeEffect(EdgeEffect.Spring)
           }
-          .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
-          .columnsGap(10)
-          .rowsGap(10)
-          // 这里只能留 layoutWeight(1)，**不能再加 height('100%')**：
-          // 两者同时存在时 Grid 的高度被钉成父容器高度，内部行数超出后不会滚动，
-          // 底下的频道直接看不见也够不到。layoutWeight 会分配「剩余空间」，
-          // 内容超出时 Grid 才会自己滚。
+          .width('100%')
           .layoutWeight(1)
-          .padding({ left: 12, right: 24, bottom: 24 })
-          .scrollBar(BarState.Off)
-          .cachedCount(20)
-          .edgeEffect(EdgeEffect.Spring)
+          .padding({ left: 24 })
         }
-        .width('100%')
-        .layoutWeight(1)
-        .padding({ left: 24 })
+        if (this.isPhone) {
+          PhoneTabBar('pages/LivePage')
+        }
       }
-      if (this.isPhone) {
-        PhoneTabBar('pages/LivePage')
-      }
-    }
-    .width('100%')
-    .height('100%')
-      if (this.showSpeed) {
+      .width('100%')
+      .height('100%')
+
+      // 用 Stack 包裹 + visibility 代替 if 条件渲染：
+      // ArkTS 中 @Builder 方法在 if 块里可能不触发重渲染
+      Stack() {
         this.SpeedPanel()
       }
-      if (this.tipMsg.length > 0) {
+      .width('100%')
+      .height('100%')
+      .visibility(this.showSpeed ? Visibility.Visible : Visibility.None)
+      .hitTestBehavior(this.showSpeed ? HitTestMode.Default : HitTestMode.None)
+
+      Stack() {
         TipLayer(this.tipMsg)
       }
+      .width('100%')
+      .height('100%')
+      .visibility(this.tipMsg.length > 0 ? Visibility.Visible : Visibility.None)
+      .hitTestBehavior(this.tipMsg.length > 0 ? HitTestMode.Default : HitTestMode.None)
     }
     .width('100%')
     .height('100%')
