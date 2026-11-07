@@ -451,7 +451,7 @@ struct SearchPage {
         } else {
           Text('搜索影片').fontSize(26).fontColor(T.SUB)
           Text('会在已启用的协议型站源里并发检索（最多 18 个）').fontSize(16).fontColor(T.DIM).margin({ top: 10 })
-          Text('用遥控器指针点一下输入框，输片名后点「搜索」').fontSize(15).fontColor(T.DIM).margin({ top: 18 })
+          Text(this.isPhone ? '点上方输入框，输片名后点「搜索」' : '用遥控器指针点一下输入框，输片名后点「搜索」').fontSize(15).fontColor(T.DIM).margin({ top: 18 })
         }
       }
       .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)

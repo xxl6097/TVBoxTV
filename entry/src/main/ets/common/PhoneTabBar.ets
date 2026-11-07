@@ -46,7 +46,13 @@ function TabItem(label: string, page: string, active: string) {
   .justifyContent(FlexAlign.Center)
   .onClick(() => {
     if (page !== active) {
-      router.pushUrl({ url: page });
+      // 从首页进子页用 push（保留首页在栈底，back 能回首页）；
+      // 子页之间切换用 replace（替换当前页，来回点 tab 不堆栈，back 直接回首页）。
+      if (active === '') {
+        router.pushUrl({ url: page });
+      } else {
+        router.replaceUrl({ url: page });
+      }
     }
   })
 }

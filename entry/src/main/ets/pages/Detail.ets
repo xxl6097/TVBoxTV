@@ -294,17 +294,17 @@ struct Detail {
                 // 左：海报。屏幕只有 366vp 高，海报不能按 240×340 摆，否则一屏装不下
                 Column() {
                   Image(this.vod.pic.length > 0 ? this.vod.pic : undefined)
-                    .width(200).height(282).objectFit(ImageFit.Cover)
+                    .width(this.isPhone ? 120 : 200).height(this.isPhone ? 169 : 282).objectFit(ImageFit.Cover)
                     .borderRadius(12).backgroundColor(T.CARD)
                   Text(this.vod.siteName).fontSize(13).fontColor(T.DIM).margin({ top: 10 })
                 }
-                .width(232)
+                .width(this.isPhone ? 140 : 232)
                 .alignItems(HorizontalAlign.Start)
 
                 // 右：元信息 + 简介 + 线路
                 Column() {
                   Text(this.metaLine()).fontSize(16).fontColor(T.SUB)
-                    .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%').maxLines(this.isPhone ? 4 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
                   Text(this.vod.content.length > 0 ? this.vod.content : '暂无简介')
                     .fontSize(16).fontColor(T.SUB).lineHeight(25)
                     .width('100%')
