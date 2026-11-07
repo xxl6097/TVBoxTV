@@ -128,7 +128,7 @@ struct ContinueCard {
           .backgroundColor('#73000000')
           .alignItems(HorizontalAlign.Start)
           .borderRadius({ bottomLeft: R.RADIUS, bottomRight: R.RADIUS })
-          .align(Alignment.Bottom)
+          .position({ x: 0, y: R.H - R.BAR_H })
         }
 
         // 单条删除：右上角小圆「✕」。触屏直接点；电视端悬停变亮后点。
