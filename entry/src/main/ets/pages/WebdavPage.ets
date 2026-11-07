@@ -511,7 +511,7 @@ struct WebdavPage {
       .margin({ top: 16, bottom: 6 })
 
       if (this.sources.length === 0) {
-        Text('还没有挂载任何网盘。点上方「去设置页添加」，填服务器地址、账号密码即可。')
+        Text(this.isPhone ? '还没有挂载任何网盘。点「去设置页添加」，填服务器地址、账号密码即可。' : '还没有挂载任何网盘。点上方「去设置页添加」，填服务器地址、账号密码即可。')
           .fontSize(14).fontColor(T.DIM).width('100%').margin({ top: 20 }).lineHeight(22)
       } else {
         ForEach(this.sources, (s: WebdavSource) => {

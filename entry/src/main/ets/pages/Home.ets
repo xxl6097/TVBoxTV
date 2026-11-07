@@ -836,7 +836,7 @@ struct Home {
                     .fontColor(T.SUB)
                     .margin({ left: this.crawling ? 10 : 0 })
                 }
-                Text('也可以直接点上方「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
+                Text(this.isPhone ? '也可以直接点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。' : '也可以直接点上方「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
                   .fontSize(13)
                   .fontColor(T.DIM)
                   .margin({ top: 8 })
@@ -1301,7 +1301,7 @@ struct Home {
           Text('1').fontSize(18).fontColor(T.SELECTED).width(30)
           Column() {
             Text('导入片源').fontSize(16).fontColor(T.TXT)
-            Text('设置 → 点播配置，手机扫码把配置地址粘进来；直播源同理。')
+            Text(this.isPhone ? '设置 → 点播配置，直接粘贴配置地址；直播源同理。' : '设置 → 点播配置，手机扫码把配置地址粘进来；直播源同理。')
               .fontSize(13).fontColor(T.SUB).margin({ top: 4 })
           }
           .alignItems(HorizontalAlign.Start).layoutWeight(1)

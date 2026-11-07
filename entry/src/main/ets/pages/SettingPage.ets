@@ -1505,7 +1505,7 @@ struct SettingPage {
       if (this.showPresets) {
         this.SDiv()
         if (this.presets.length === 0) {
-          Text('还没有直播源。先用上方「订阅」导入一个（一份订阅同时带点播站源和直播源），或手动填一个直播源地址')
+          Text(this.isPhone ? '还没有直播源。先用「订阅」导入一个（一份订阅同时带点播站源和直播源），或手动填一个直播源地址' : '还没有直播源。先用上方「订阅」导入一个（一份订阅同时带点播站源和直播源），或手动填一个直播源地址')
             .fontSize(13)
             .fontColor(T.DIM)
             .width('100%')
@@ -1599,7 +1599,7 @@ struct SettingPage {
       if (this.showSites) {
         this.SDiv()
         if (this.sites.length === 0) {
-          Text('还没有导入配置。点上方的「点播配置」用手机扫码录入。')
+          Text(this.isPhone ? '还没有导入配置。点「点播配置」直接粘贴地址录入。' : '还没有导入配置。点上方的「点播配置」用手机扫码录入。')
             .fontSize(13)
             .fontColor(T.DIM)
             .width('100%')
