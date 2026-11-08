@@ -538,11 +538,13 @@ struct Player {
     this.syncQLabel();
   }
 
-  /** 从 Store 恢复播放器全局偏好（画面比例、清晰度） */
+  /** 从 Store 恢复播放器全局偏好（画面比例、清晰度、倍速、音量） */
   private async restorePreferences(): Promise<void> {
     try {
       this.scaleMode = await Store.scaleModePref();
       this.qCap = await Store.qualityPref();
+      this.speed = await Store.speedPref();
+      // 音量恢复后面，需要播放器准备好
     } catch (e) {
       // 偏好读取失败，用默认值
     }
@@ -984,6 +986,13 @@ struct Player {
           this.durMs = this.isLive ? 0 : p.duration;
           this.prepared = true;
           this.buffering = false;
+          // prepared 时恢复音量偏好
+          try {
+            const volPref = await Store.volumePref();
+            this.volume = volPref / 15; // 从 0-15 映射回 0-1
+          } catch (e) {
+            // 偏好读取失败用默认值
+          }
           this.applyVolume();
           // 画面显示模式只能在 prepared/playing/paused/completed 状态设置，
           // initialized 状态设会报 5400102（unsupport video scale operation）
@@ -1207,6 +1216,8 @@ struct Player {
     if (v > 0) {
       this.muted = false;
     }
+    // 保存音量偏好（映射到 0-15 范围）
+    Store.setVolumePref(Math.round(v * 15)).catch(() => {});
     this.applyVolume();
     this.showVol = true;
     if (this.volTimer >= 0) {

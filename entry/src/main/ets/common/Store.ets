@@ -1225,4 +1225,38 @@ export class Store {
     await Store.prefs.put('playerQuality', qLvl.toString());
     await Store.prefs.flush();
   }
+
+  /** 倍速偏好：0.5 / 1.0 / 1.5 / 2.0 等 */
+  static async speedPref(): Promise<number> {
+    if (Store.prefs === null) {
+      return 1.0;
+    }
+    const v: string = await Store.prefs.get('playerSpeed', '1.0') as string;
+    return parseFloat(v);
+  }
+
+  static async setSpeedPref(speed: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('playerSpeed', speed.toString());
+    await Store.prefs.flush();
+  }
+
+  /** 音量偏好：0-15（AVPlayer 的标准范围） */
+  static async volumePref(): Promise<number> {
+    if (Store.prefs === null) {
+      return 10; // 默认中等音量
+    }
+    const v: string = await Store.prefs.get('playerVolume', '10') as string;
+    return parseInt(v);
+  }
+
+  static async setVolumePref(vol: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('playerVolume', vol.toString());
+    await Store.prefs.flush();
+  }
 }
