@@ -397,7 +397,9 @@ struct Home {
 
   async reload(): Promise<void> {
     this.hist = await Store.history();
-    this.feed = await Store.feed();
+    let all = await Store.feed();
+    // 限制最多 40 条以优化渲染性能（超过屏幕可见范围）
+    this.feed = all.length > 40 ? all.slice(0, 40) : all;
     this.hasSites = Store.sites().length > 0;
   }
 
@@ -436,7 +438,9 @@ struct Home {
     try {
       const r: CrawlResult | null = await Crawler.maybeRun();
       if (r !== null) {
-        this.feed = await Store.feed();
+        let all = await Store.feed();
+        // 限制最多 40 条以优化渲染性能
+        this.feed = all.length > 40 ? all.slice(0, 40) : all;
       }
     } catch (err) {
       // 定时任务失败不打扰

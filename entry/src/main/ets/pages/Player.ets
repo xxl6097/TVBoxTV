@@ -121,6 +121,10 @@ struct Player {
   @State subSel: number = -1;
   /** 设备形态：手机竖屏默认等比适应，避免横屏视频被拉伸变形 */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 长按倍速播放中 */
+  @State holdSpeedOn: boolean = false;
+  /** 按下前保存的原倍速，用于长按松开时恢复 */
+  private holdSpeedVal: number = 1;
 
   private player: media.AVPlayer | null = null;
   private initializing: boolean = false;
@@ -2015,6 +2019,25 @@ struct Player {
       .onMouse(this.ptr('spd' + v, () => {
         this.pickSpeed(v);
       }))
+      // 长按倍速播放：按下时改为 2.0x，松开恢复原倍速
+      .gesture(
+        LongPressGesture({ duration: 300 })
+          .onAction(() => {
+            if (!this.holdSpeedOn && this.player !== null) {
+              this.holdSpeedVal = this.speed;
+              this.holdSpeedOn = true;
+              this.pickSpeed(2);
+              Tip.show('长按倍速播放：2.0x');
+            }
+          })
+          .onActionEnd(() => {
+            if (this.holdSpeedOn) {
+              this.holdSpeedOn = false;
+              this.pickSpeed(this.holdSpeedVal);
+              Tip.show('恢复倍速：' + (this.holdSpeedVal + 'x'));
+            }
+          })
+      )
   }
 
   @Builder
@@ -3020,6 +3043,59 @@ struct Player {
         this.popOsd();
       }
     })
+    // 手势交互：左右滑快进快退、上下滑调音量/亮度
+    .gesture(
+      PanGesture({ direction: PanDirection.All, distance: 10 })
+        .onActionStart((e: GestureEvent) => {
+          // 进度条正在被拖动时，禁止其它手势
+          if (this.dragSeeking) {
+            return;
+          }
+        })
+        .onActionUpdate((e: GestureEvent) => {
+          if (this.dragSeeking || this.durMs <= 0) {
+            return;
+          }
+          const absX = Math.abs(e.offsetX);
+          const absY = Math.abs(e.offsetY);
+          
+          // 横向手势：快进快退
+          if (absX > absY && absX > 20) {
+            const deltaMs = (e.offsetX > 0 ? 1 : -1) * SEEK_STEP;
+            let target = this.displayMs() + deltaMs;
+            target = target < 0 ? 0 : (target > this.durMs ? this.durMs : target);
+            this.seekPreview = target;
+            this.seekTip = (deltaMs > 0 ? '+' : '') + (deltaMs / 1000) + 's';
+            this.popOsd();
+            return;
+          }
+          
+          // 纵向手势：音量（仅手机）
+          if (absY > absX && absY > 20 && this.isPhone) {
+            const deltaVol = (e.offsetY > 0 ? -1 : 1) * VOL_STEP;
+            let vol = this.volume + deltaVol;
+            vol = vol < 0 ? 0 : (vol > 1 ? 1 : vol);
+            this.volume = vol;
+            this.showVol = true;
+            this.popOsd();
+            this.volTimer && clearTimeout(this.volTimer);
+            this.volTimer = setTimeout(() => {
+              this.showVol = false;
+            }, 2000) as number;
+          }
+        })
+        .onActionEnd(() => {
+          // 松手时确认 seek（如果在预览中）
+          if (this.seekPreview >= 0 && this.durMs > 0) {
+            this.seekToRatio(this.seekPreview / this.durMs);
+            Tip.show(this.fmt(this.seekPreview));
+            this.seekPreview = -1;
+          }
+        })
+        .onActionCancel(() => {
+          this.seekPreview = -1;
+        })
+    )
     .onKeyEvent((e: KeyEvent) => {
       this.onKey(e);
     })
