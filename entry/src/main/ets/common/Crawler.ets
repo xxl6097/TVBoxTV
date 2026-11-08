@@ -4,6 +4,8 @@ import { Store } from './Store';
 
 /** 定时周期：6 小时 */
 export const CRAWL_INTERVAL: number = 6 * 60 * 60 * 1000;
+/** 一轮全空之后的退避时间：10 分钟后再试，而不是等满 6 小时 */
+const CRAWL_RETRY_MS: number = 10 * 60 * 1000;
 /** 每个站取多少条最新 */
 const PER_SITE: number = 10;
 /** 首页最多保留多少条 */
@@ -201,9 +203,17 @@ export class Crawler {
       res.msg = '这一轮没有抓到数据，可能是网络不通或站源集体失效';
     }
 
-    await Store.saveFeed(feed);
-    await Store.saveDeadKeys(dead);
-    await Store.setLastCrawlAt(res.at);
+    // 本轮一条都没抓到（断网 / 站源集体失效）时，**绝不能**覆盖上一轮的 feed：
+    // 首页会立刻空成「还没有内容」，而 setLastCrawlAt 又写着「刚更新过」，
+    // 于是接下来 6 小时都不会再试 —— 用户看到的是一个空掉且不会自愈的首页。
+    // 正确做法：保留旧数据，只把下次尝试时间提前到 10 分钟后。
+    if (feed.length > 0) {
+      await Store.saveFeed(feed);
+      await Store.saveDeadKeys(dead);
+      await Store.setLastCrawlAt(res.at);
+    } else {
+      await Store.setLastCrawlAt(Date.now() - CRAWL_INTERVAL + CRAWL_RETRY_MS);
+    }
     await Store.saveCrawlSummary(Crawler.summaryOf(res));
     return res;
   }

@@ -52,6 +52,16 @@ struct VodList {
   @State loading: boolean = true;
   @State more: boolean = false;
   @State err: string = '';
+  /**
+   * 翻页（追加）失败的错误，和 err 分开存。
+   *
+   * 以前翻页失败也写进 err，而 err 只在「重新拉第一页」时清空、且 onEnd 见到
+   * err 非空就直接 return —— 结果是：列表已经有一屏内容时，第 2 页失败既看不到
+   * 报错（err 分支要求 items 为空才渲染），也再也不能翻页，必须换分类才好。
+   */
+  @State moreErr: string = '';
+  /** 分类表拉取失败。重试按钮据此决定是「重拉分类」还是「重拉列表」 */
+  @State catFailed: boolean = false;
   @State hoverKey: string = '';
   @State showSites: boolean = false;
   @State showFilter: boolean = false;
@@ -99,6 +109,8 @@ struct VodList {
     this.cms = new Cms(s);
     this.loading = true;
     this.err = '';
+    this.moreErr = '';
+    this.catFailed = false;
     this.items = [];
     this.cats = [];
     this.sel = [];
@@ -122,7 +134,19 @@ struct VodList {
         return;
       }
       this.loading = false;
+      // 标记失败来源：重试要重拉分类，只重拉列表救不回分类栏
+      // （curCat 会是空 id，TypeRow 高度 0 永久消失，用户再也切不了分类）
+      this.catFailed = true;
       this.err = '拉取分类失败：' + (e as Error).message;
+    }
+  }
+
+  /** 重试按钮统一入口：按失败来源分发，别用同一条路径糊过去 */
+  retryLoad(): void {
+    if (this.catFailed) {
+      this.useSite(this.site);
+    } else {
+      this.loadPage(1, true);
     }
   }
 
@@ -164,6 +188,35 @@ struct VodList {
     await this.loadPage(1, true);
   }
 
+  /**
+   * 合并分页结果并按 id 去重。
+   *
+   * 采集站按更新时间倒序，翻页期间有新片插入时第 N 页会和第 N-1 页重叠；
+   * 部分站还会把越界的页码「夹」回最后一页，直接 concat 就是整页重复。
+   * 重复 key 会让 ForEach 报 Duplicate key 并丢节点，用户看到的是「翻到第 2 页少了几部」。
+   */
+  mergeItems(old: Vod[], add: Vod[]): Vod[] {
+    const seen: Set<string> = new Set<string>();
+    const out: Vod[] = [];
+    for (let i = 0; i < old.length; i++) {
+      const v: Vod = old[i];
+      const k: string = v.siteKey + '|' + v.id;
+      if (v.id.length > 0 && !seen.has(k)) {
+        seen.add(k);
+        out.push(v);
+      }
+    }
+    for (let i = 0; i < add.length; i++) {
+      const v: Vod = add[i];
+      const k: string = v.siteKey + '|' + v.id;
+      if (v.id.length > 0 && !seen.has(k)) {
+        seen.add(k);
+        out.push(v);
+      }
+    }
+    return out;
+  }
+
   async loadPage(p: number, fresh: boolean): Promise<void> {
     if (this.cms === null) {
       return;
@@ -172,8 +225,11 @@ struct VodList {
     if (fresh) {
       this.loading = true;
       this.err = '';
+      this.moreErr = '';
+      this.catFailed = false;
     } else {
       this.more = true;
+      this.moreErr = '';
     }
     this.cms.setExtra(this.extra());
     // 父分类（如「电视剧」）在采集站里往往没有直属影片，直接请求会拿到空列表。
@@ -202,7 +258,7 @@ struct VodList {
       }
       this.lastPage = r.pageCount <= 0 ? p : r.pageCount;
       this.page = p;
-      this.items = fresh ? r.items : this.items.concat(r.items);
+      this.items = fresh ? this.mergeItems([], r.items) : this.mergeItems(this.items, r.items);
       if (this.items.length === 0) {
         this.err = '这个分类下没有内容';
       }
@@ -210,7 +266,13 @@ struct VodList {
       if (my !== this.reqId) {
         return;
       }
-      this.err = '加载失败：' + (e as Error).message;
+      // 翻页失败写 moreErr、不动 err：列表已有内容时 err 分支根本不会渲染，
+      // 写在 err 里等于把「还能不能继续翻」的状态也一并弄坏了。
+      if (fresh) {
+        this.err = '加载失败：' + (e as Error).message;
+      } else {
+        this.moreErr = '加载更多失败：' + (e as Error).message;
+      }
     } finally {
       if (my === this.reqId) {
         this.loading = false;
@@ -220,7 +282,7 @@ struct VodList {
   }
 
   onEnd(): void {
-    if (this.loading || this.more || this.err.length > 0 || this.merged) {
+    if (this.loading || this.more || this.err.length > 0 || this.moreErr.length > 0 || this.merged) {
       return;          // 聚合模式没有「下一页」——它是各子分类第 1 页的混排
     }
     if (this.page < this.lastPage) {
@@ -473,7 +535,7 @@ struct VodList {
           .backgroundColor(this.hi('retry') ? T.CARD_HI : '#00000000')
           .onClick(() => {
             Feedback.tap();
-            this.loadPage(1, true);
+            this.retryLoad();
           })
       }
       .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
@@ -516,6 +578,33 @@ struct VodList {
       .onReachEnd(() => {
         this.onEnd();
       })
+      // 翻页失败时在底部给一条可点的重试行。以前这里什么都没有，
+      // onEnd 又被 err 永久挡住 —— 用户只能换分类才能继续看。
+      if (this.moreErr.length > 0) {
+        Row() {
+          Text(this.moreErr)
+            .fontSize(14).fontColor(T.WARN)
+            .layoutWeight(1).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('重试')
+            .fontSize(14).fontColor(T.TXT)
+            .height(34).padding({ left: 18, right: 18 })
+            .border({ width: T.BORDER, color: T.TXT })
+            .borderRadius(T.RADIUS)
+            .focusable(true)
+            .backgroundColor(this.hi('more') ? T.CARD_HI : '#00000000')
+            .onFocus(() => this.hover('more', true))
+            .onBlur(() => this.hover('more', false))
+            .onHover((hv: boolean) => this.hover('more', hv))
+            .onClick(() => {
+              Feedback.tap();
+              this.loadPage(this.page + 1, false);
+            })
+        }
+        .width('100%')
+        .padding({ left: 24, right: 24, bottom: 14 })
+        .justifyContent(FlexAlign.Center)
+      }
     }
   }
 

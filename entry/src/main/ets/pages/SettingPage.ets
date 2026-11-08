@@ -1599,13 +1599,16 @@ struct SettingPage {
             this.enableTop(5);
           },
           onHoverIn: (on: boolean) => this.hoverTo('r_top5', on) })
-        this.SDiv()
-        SRowView({ label: '全部启用', arrow: true, focused: this.hi('r_all'),
-          onTap: () => {
-            this.enableAllSites();
-          },
-          onHoverIn: (on: boolean) => this.hoverTo('r_all', on) })
       }
+      // 「全部启用」必须常驻：它是站源全部失效后唯一的自救入口。
+      // 以前跟着 ranked（测速结果）一起显示，用户得先跑 40 秒测速才能看到，
+      // 换订阅后站源静默全关时就等于没有出路。
+      this.SDiv()
+      SRowView({ label: '全部启用', arrow: true, focused: this.hi('r_all'),
+        onTap: () => {
+          this.enableAllSites();
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_all', on) })
       this.SDiv()
       SRowView({ label: '站源筛选', value: this.showAll ? '全部' : '仅可用', arrow: true, focused: this.hi('r_show'),
         onTap: () => {

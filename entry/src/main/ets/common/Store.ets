@@ -118,6 +118,9 @@ export class Store {
 
     Store.buildSites(cfg);
     Store.buildParses(cfg);
+    // 站源可能整批换过（换订阅），把已启用集合同新列表对齐，
+    // 否则旧 key 过滤新站源会得到空集，站源全部静默失效。
+    await Store.alignEnabled();
 
     if (Store.prefs !== null) {
       await Store.prefs.put('cfgText', text);
@@ -166,6 +169,9 @@ export class Store {
     if (cfg.sites !== undefined && cfg.sites.length > 0) {
       Store.buildSites(cfg);
       Store.buildParses(cfg);
+      // 换订阅后站源 key 整批变化，先把已启用集合同新列表对齐，
+      // 否则旧 key 命中不了新站源，等于订阅完一个站都没有。
+      await Store.alignEnabled();
       r.sites = Store.siteList.length;
       if (Store.prefs !== null) {
         await Store.prefs.put('cfgText', text);
@@ -365,6 +371,35 @@ export class Store {
     }
     await Store.prefs.put('enabled', JSON.stringify(keys));
     await Store.prefs.flush();
+  }
+
+  /**
+   * 站源列表重建后，把「已启用」集合和新列表对齐。
+   *
+   * 为什么必须做：`enabled` 里存的是**旧配置**的站源 key。换了订阅之后 key 全变，
+   * `activeSites()` 拿旧 key 去过滤新站源会命中 0 个 —— 表现为「订阅成功，但首页
+   * 一直显示正在拉取、搜索永远 0 结果」，而恢复入口「全部启用」还藏在测速之后。
+   *
+   * 策略用**保留交集**而不是直接清空：同源订阅日常更新时（站源 key 不变）用户的
+   * 开关选择不会丢；换了一整套配置时交集为空，写成空数组，`activeSites()` 会把
+   * 空数组理解为「默认全部可用」，自动回到可用状态。
+   */
+  private static async alignEnabled(): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const old: string[] = await Store.enabledKeys();
+    if (old.length === 0) {
+      return;      // 本来就是默认全开，不用动
+    }
+    const next: string[] = [];
+    for (let i = 0; i < Store.siteList.length; i++) {
+      const s: Site = Store.siteList[i];
+      if (s.usable && old.indexOf(s.key) >= 0) {
+        next.push(s.key);
+      }
+    }
+    await Store.prefs.put('enabled', JSON.stringify(next));
   }
 
   /**

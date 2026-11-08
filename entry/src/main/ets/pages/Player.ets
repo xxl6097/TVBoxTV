@@ -567,6 +567,7 @@ struct Player {
 
   /** 用户点某一档 */
   private async chooseLevel(cap: number): Promise<void> {
+    const same: boolean = cap === this.qCap;
     this.qCap = cap;
     await Store.setQPref(cap);
     this.showQ = false;
@@ -578,7 +579,14 @@ struct Player {
       return;
     }
     this.syncQLabel();
-    // 单码率源：档位没得换，但缓冲水位/期望高度还能按偏好重设一次
+    // 点的是当前这一档：什么都不用做。以前这里会往下走 rebuild，
+    // 播放器被销毁重建、进度却没人接，用户看到的是「点了一下画质，从头开始播」。
+    if (same) {
+      return;
+    }
+    // 单码率源（绝大多数 m3u8）没有档位可换，但缓冲水位/期望高度还能按新偏好重设一次。
+    // 位置必须显式带过去 —— rebuild 自己不设 pendingSeek。
+    this.pendingSeek = this.isLive ? 0 : this.posMs;
     await this.rebuild('按新画质偏好重载');
   }
 
@@ -590,7 +598,9 @@ struct Player {
     if (i < 0 || i >= this.levels.length) {
       return;
     }
-    const keep: number = this.posMs;
+    // 直播是实时流，posMs 是「已经缓冲到的旧位置」，带过去 seek 反而会卡住/黑屏，
+    // 所以直播一律从直播点重连，不做续播。
+    const keep: number = this.isLive ? 0 : this.posMs;
     this.levelIdx = i;
     this.adaptAt = Date.now();
     this.stallN = 0;
@@ -888,6 +898,7 @@ struct Player {
 
       p.on('error', (err: BusinessError) => {
         this.errMsg = '播放失败（code ' + err.code + '）：' + err.message;
+        hilog.error(0x1000, 'BOXN', 'player error code=%{public}d msg=%{public}s', err.code, err.message);
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
@@ -896,6 +907,11 @@ struct Player {
           this.switchEpisode(1);
           return;
         }
+        // 走到这里说明这一台/这一集彻底播不了。错误态的 AVPlayer 只会一直报错，
+        // 不会再自己恢复，而 UI 焦点还停在根节点上——用户按「确定」就会进
+        // togglePlay 对 error 态调 play()，抛 5400102 且没人捕获。
+        // 直接放掉，让「重试」按钮从干净状态重建。
+        this.releasePlayer();
         this.showOsd = true;
       });
 
@@ -1064,18 +1080,27 @@ struct Player {
       return;
     }
     hilog.info(0x1000, 'BOXN', 'toggle before playing=%{public}s', this.playing ? 'y' : 'n');
-    if (this.playing) {
-      this.player.pause();
-      this.flashPlay('pause');
-      this.showOsd = true;
-      if (this.osdTimer >= 0) {
-        clearTimeout(this.osdTimer);
-        this.osdTimer = -1;
+    // play()/pause() 在状态不允许时抛 BusinessError（5400102 等），
+    // 这里是 UI 事件回调，没人 catch 就是一条未捕获异常 + 界面完全没反应。
+    try {
+      if (this.playing) {
+        this.player.pause();
+        this.flashPlay('pause');
+        this.showOsd = true;
+        if (this.osdTimer >= 0) {
+          clearTimeout(this.osdTimer);
+          this.osdTimer = -1;
+        }
+      } else {
+        this.player.play();
+        this.flashPlay('play');
+        this.popOsd();
       }
-    } else {
-      this.player.play();
-      this.flashPlay('play');
-      this.popOsd();
+    } catch (err) {
+      const e = err as BusinessError;
+      hilog.error(0x1000, 'BOXN', 'toggle fail code=%{public}d msg=%{public}s', e.code, e.message);
+      this.errMsg = '播放器状态异常，已停止。点「重试」重新加载。';
+      this.releasePlayer();
     }
   }
 
@@ -2291,7 +2316,25 @@ struct Player {
         .focusable(false)
         .onLoad(() => {
           this.surfaceId = this.xController.getXComponentSurfaceId();
+          if (this.player !== null) {
+            // 已有播放器却又收到 onLoad：说明 surface 被系统重建过（切后台回来、
+            // 窗口尺寸变化）。旧 AVPlayer 还绑着那个已销毁的 surface，症状是
+            // 「有声音、没画面、点哪都没用」。必须放掉重建。
+            hilog.info(0x1000, 'BOXN', 'surface rebuilt, reopen player');
+            if (!this.isLive && this.posMs > 0) {
+              this.pendingSeek = this.posMs;
+            }
+            this.releasePlayer();
+            this.buffering = true;
+          }
           this.initPlayer();
+        })
+        .onDestroy(() => {
+          // surface 销毁后旧 id 不可用。不在这里清掉的话，下一次 onLoad 拿到的
+          // 新 id 和缓存里的旧值只差在「有没有被清过」，判断会失真；
+          // 而且 initPlayer 有 surfaceId 非空的前置检查，留着旧值等于允许它
+          // 去绑一个已经不存在的 surface。
+          this.surfaceId = '';
         })
 
       if (this.resolving) {
