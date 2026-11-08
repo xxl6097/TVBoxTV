@@ -71,4 +71,13 @@ export class Playlist {
     Playlist.idx = t;
     return Playlist.eps[t];
   }
+
+  /** 获取下一集（不改游标） */
+  static nextEpisode(): Episode | null {
+    const t: number = Playlist.idx + 1;
+    if (t < 0 || t >= Playlist.eps.length) {
+      return null;
+    }
+    return Playlist.eps[t];
+  }
 }

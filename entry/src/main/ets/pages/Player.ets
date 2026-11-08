@@ -514,8 +514,8 @@ struct Player {
     if (!Playlist.hasNext()) {
       return;
     }
-    // 获取下一集的 raw url（不改动游标）
-    const next = Playlist.eps[Playlist.index() + 1];
+    // 获取下一集的 Episode 对象
+    const next = Playlist.nextEpisode();
     if (!next || next.url.length === 0) {
       return;
     }
@@ -1083,14 +1083,13 @@ struct Player {
           this.durMs = this.isLive ? 0 : p.duration;
           this.prepared = true;
           this.buffering = false;
-          // prepared 时恢复音量偏好
-          try {
-            const volPref = await Store.volumePref();
+          // prepared 时恢复音量偏好（异步，不挡起播）
+          Store.volumePref().then((volPref: number) => {
             this.volume = volPref / 15; // 从 0-15 映射回 0-1
-          } catch (e) {
+            this.applyVolume();
+          }).catch(() => {
             // 偏好读取失败用默认值
-          }
-          this.applyVolume();
+          });
           // 画面显示模式只能在 prepared/playing/paused/completed 状态设置，
           // initialized 状态设会报 5400102（unsupport video scale operation）
           try {

@@ -775,28 +775,6 @@ export class Store {
     await Store.prefs.flush();
   }
 
-  /**
-   * 播放倍速。1 = 正常速度。
-   *
-   * 做成全局偏好而不是每集记一次：追剧的人一般整部都看 1.25/1.5 倍，
-   * 每集都要重设一次很烦。数值直接存倍率（0.5/0.75/1.25/1.5/2），
-   * 不用枚举下标 —— 以后加档位不会把老配置错位。
-   */
-  static async speedPref(): Promise<number> {
-    if (Store.prefs === null) {
-      return 1;
-    }
-    const v: number = await Store.prefs.get('speed', 1) as number;
-    return v > 0 ? v : 1;
-  }
-
-  static async setSpeedPref(v: number): Promise<void> {
-    if (Store.prefs === null) {
-      return;
-    }
-    await Store.prefs.put('speed', v);
-    await Store.prefs.flush();
-  }
 
   /** 片头跳过秒数，0 = 不跳过 */
   static async introSkipSec(): Promise<number> {
