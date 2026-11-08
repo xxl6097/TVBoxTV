@@ -164,6 +164,17 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 夜帧影视 的灵犀遥控器在系统里是**指针设备**：方向键是移动光标，确定键是鼠标左键点击，
 `onKeyEvent` 收不到任何按键。所以整个应用的交互都按「光标 + 点击」设计——
 每个可点元素都有 `onHover` 悬停高亮，播放页所有操作都是可点的按钮。
+
+两条硬性约束（都踩过，详见 `docs/安装与排错.md` 第三节）：
+
+- **`ForEach` 的 key 里绝不能放悬停态**。悬停 → key 变 → 项重建 → 新节点又触发悬停，
+  静置时每秒重建 6 次，按下去的那一下永远落在已销毁的节点上，表现为「指着某个台点下去毫无反应」。
+- **热区要盖满整格**。`onClick` 挂在小号 `Text` 上时，卡片的空白区点了没反应；
+  指针遥控对不准文字就是这个效果。
+
+自定义组件 `common/Pointer.ets` 提供指针遥控的点击识别（按下+抬起都在本元素才算一次，
+400ms 时间窗去重，避免 `onClick` 与 `onMouse` 双触发叠出两层页面）。
+
 细节见 `docs/安装与排错.md` 第三节。
 
 ## 四、编译与安装
@@ -176,10 +187,21 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 
 ```bash
 ./scripts/build.sh                      # 编译（DevEco 26 内置 hvigor + API 26 SDK）
+./scripts/build-tv.sh                   # 编译 + 用调试证书补签（电视真机联调用）
+./scripts/build-tv.sh --install 192.168.100.176:5555   # 编译 → 签名 → 装机，一条命令
 ./scripts/install.sh                    # 安装到默认设备并启动
 ./scripts/install.sh 192.168.1.207:33609  # 指定设备（IP:端口）
 ./scripts/hdcx.sh shell "bm get -u"     # 单条命令里完成重连+执行，读设备信息
 ```
+
+> `build-tv.sh` 解决的是命令行构建的两个坑：
+> **① `DEVECO_SDK_HOME` 要指到 `.../DevEco-Studio.app/Contents/sdk`**（含 `default`
+> 子目录的父级）；指到 `sdk/default` 会报 `00303312 SDK component missing`，不设又会报
+> `00303217 Configuration Error`。
+> **② hvigor 的 `signingConfigs` 只吃 DevEco 加密后的口令（长度 ≥ 32）**，明文口令写进去
+> 直接构建失败，所以签名这步由脚本用 `hap-sign-tool.jar` 补做。
+> 调试凭证在 `~/.ohos/debug-key/hongmengyingshi-debug.{p12,cer,p7b}`，描述文件里白名单
+> 了手机与电视两台设备（有效期 2026-11-03 → 2027-11-03）。
 
 > **无线调试会话很短**：`hdc tconn` 建好后隔一次 shell 调用就可能失效，报
 > `Not match target founded, check connect-key`。所有设备操作都走 `scripts/hdcx.sh`，
@@ -381,6 +403,8 @@ TVBoxTV/
 │   │   ├── Http.ets       GET 客户端（手写重定向跟随、中文错误提示）
 │   │   ├── Cms.ets        采集协议实现（JSON/XML/CDATA/线路拆分）
 │   │   ├── Resolve.ets    播放地址解析（parses type=1）
+│   │   ├── Pointer.ets    灵犀指向遥控的指针点击识别（按下+抬起 / 400ms 去重）
+│   │   ├── WdQr.ets       网盘扫码录入面板（电视端扫码，手机填表）
 │   │   └── Store.ets      配置缓存、站点开关、历史、收藏
 │   ├── pages/
 │   │   ├── Index.ets      首页（继续观看 / 收藏 / 站源）
@@ -391,6 +415,7 @@ TVBoxTV/
 │   │   └── Settings.ets   配置导入 + 站源管理
 │   └── entryability/EntryAbility.ets
 ├── scripts/build.sh          一键编译
+├── scripts/build-tv.sh       编译 + 调试证书补签 + 装机（电视真机联调，一条命令）
 ├── scripts/build-release.sh  Release 编译 + 证书类型自检（上架用）
 ├── scripts/preflight.sh      提审前自检（8 组检查，红绿结论）
 ├── scripts/emuctl.sh         模拟器操作（真机不在线时用）

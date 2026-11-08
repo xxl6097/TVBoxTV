@@ -264,6 +264,11 @@ export class QrServer {
       '.card.dim{opacity:.55}' +
       'textarea{width:100%;box-sizing:border-box;min-height:92px;background:#26242B;color:#fff;' +
       'border:1px solid #3A3841;border-radius:10px;padding:10px;font-size:14px;line-height:1.5}' +
+      // 网盘表单要逐个字段输入，和 textarea 那套分开写：一行一个 input + 上方小标签
+      'input{width:100%;box-sizing:border-box;height:46px;background:#26242B;color:#fff;' +
+      'border:1px solid #3A3841;border-radius:10px;padding:0 12px;font-size:15px}' +
+      '.lab{font-size:13px;color:#B3FFFFFF;margin:14px 0 6px}' +
+      '.req{color:#FFEB3B}' +
       'button{width:100%;margin-top:12px;height:46px;border:0;border-radius:23px;' +
       'background:#FFFFFF;color:#141218;font-size:16px;font-weight:600}' +
       '.st{font-size:13px;margin-top:10px;color:#B3FFFFFF;word-break:break-all;line-height:1.5}';
@@ -278,6 +283,11 @@ export class QrServer {
       '.then(function(d){st.textContent=d.msg;st.style.color=d.ok?"#7ee787":"#ff7b72";' +
       'if(d.ok){el.value="";}}).catch(function(e){st.textContent="提交失败："+e;st.style.color="#ff7b72";});}' +
       '</script>';
+
+    // WebDAV 网盘：多字段表单（地址/账号/密码/名称/根路径），提交时整体打成 JSON
+    if (kind === 'wd') {
+      return QrServer.wdPage(css);
+    }
 
     // 直连播放：只给一张「视频地址」卡片，提交后电视直接开播
     if (kind === 'play') {
@@ -334,6 +344,55 @@ export class QrServer {
       '<h1>夜帧影视 · 手机录入</h1>' +
       '<div class="sub">' + head + '</div>' +
       first + second + js + focus + '</body></html>';
+    return html;
+  }
+
+  /**
+   * WebDAV 网盘录入页。
+   *
+   * 和其他三种不同：网盘要一次填 5 个字段（地址 / 名称 / 账号 / 密码 / 根路径），
+   * 单行文本框粘不下，所以做成结构化表单，点提交时在手机侧拼成 JSON 一起 POST。
+   * 电视收到后先探活再落盘，密码错了当场在手机上红字提示，不用回遥控器重敲。
+   */
+  private static wdPage(css: string): string {
+    const html: string =
+      '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<title>夜帧影视 · 添加网盘</title><style>' + css + '</style></head><body>' +
+      '<h1>夜帧影视 · 添加网盘</h1>' +
+      '<div class="sub">填好 WebDAV 服务器信息，提交后电视端立即测试连接并保存。</div>' +
+      '<div class="card">' +
+      '<div class="lab">服务器地址 <span class="req">*</span></div>' +
+      '<input id="wurl" placeholder="https://dav.example.com/dav" autocapitalize="off" ' +
+      'autocorrect="off" spellcheck="false">' +
+      '<div class="lab">名称（可留空，默认取域名）</div>' +
+      '<input id="wname" placeholder="我的网盘">' +
+      '<div class="lab">用户名（匿名可留空）</div>' +
+      '<input id="wuser" autocapitalize="off" autocorrect="off" spellcheck="false">' +
+      '<div class="lab">密码</div>' +
+      '<input id="wpass" type="password">' +
+      '<div class="lab">挂载根路径（可留空 = 根目录）</div>' +
+      '<input id="wroot" placeholder="/影视">' +
+      '<button onclick="wdsub()">提交到电视</button>' +
+      '<div class="st" id="wd-st"></div>' +
+      '</div>' +
+      '<script>' +
+      'function wdsub(){var g=function(i){var e=document.getElementById(i);' +
+      'return e?e.value.trim():""};' +
+      'var st=document.getElementById("wd-st");' +
+      'var o={url:g("wurl"),name:g("wname"),user:g("wuser"),pass:g("wpass"),root:g("wroot")};' +
+      'if(!o.url){st.textContent="先填服务器地址";st.style.color="#ff7b72";return;}' +
+      'st.textContent="正在测试连接并保存…";st.style.color="#B3FFFFFF";' +
+      'fetch("/save",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},' +
+      'body:"t=wd&v="+encodeURIComponent(JSON.stringify(o))})' +
+      '.then(function(r){return r.json();})' +
+      '.then(function(d){st.textContent=d.msg;st.style.color=d.ok?"#7ee787":"#ff7b72";' +
+      'if(d.ok){document.getElementById("wpass").value="";}})' +
+      '.catch(function(e){st.textContent="提交失败："+e;st.style.color="#ff7b72";});}' +
+      '</script>' +
+      '<script>setTimeout(function(){var e=document.getElementById("wurl");' +
+      'if(e){e.focus();}},140);</script>' +
+      '</body></html>';
     return html;
   }
 }

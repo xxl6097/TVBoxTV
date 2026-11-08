@@ -21,6 +21,7 @@ import { LiveProbe, LiveScore } from '../common/LiveProbe';
 import { KEY_IS_PHONE } from '../common/Device';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { isBackCode } from '../common/TvFocus';
+import { Pointer } from '../common/Pointer';
 
 @Entry
 @Component
@@ -250,11 +251,27 @@ struct LivePage {
   }
 
   /**
+   * 频道格子的统一入口。
+   *
+   * onClick（触屏 / 键盘确定）和 onMouse（灵犀指向遥控这类指针遥控）可能
+   * 在同一次点击里都到达，这里用时间窗去重，保证只进一次播放页。
+   */
+  tapChannel(ch: Channel): void {
+    if (!Pointer.once('ch:' + ch.name + ch.url)) {
+      return;
+    }
+    hilog.info(0x1000, 'BOXN', 'grid tap %{public}s', ch.name);
+    Feedback.tap();
+    this.play(ch);
+  }
+
+  /**
    * 进播放页。
    * 把当前目录下的全部频道塞进 Playlist，播放页的「上一台/下一台」就能直接换台，
    * 单台失效时也能自动顺延——不用退回列表再点。
    */
   play(ch: Channel): void {
+    hilog.info(0x1000, 'BOXN', 'play enter %{public}s url2=%{public}d', ch.name, ch.urls.length);
     const list: Channel[] = this.channels();
     const eps: Episode[] = [];
     let idx: number = 0;
@@ -537,9 +554,23 @@ struct LivePage {
     .onBlur(() => this.hover(key, false))
     .onHover((hv: boolean) => this.hover(key, hv))
     .onClick(() => {
-      Feedback.tap();
-      act();
+      this.fire(key, act);
     })
+    // 指针遥控（灵犀指向）点分组：和频道格子一样补一份鼠标事件
+    .onMouse(Pointer.pressRelease('tree:' + key, () => {
+      this.fire(key, act);
+    }))
+  }
+
+  /**
+   * 热区统一触发口：onClick 与 onMouse 可能同一次点击都到达，用时间窗去重。
+   */
+  fire(key: string, act: () => void): void {
+    if (!Pointer.once(key)) {
+      return;
+    }
+    Feedback.tap();
+    act();
   }
 
   /**
@@ -784,10 +815,16 @@ struct LivePage {
             .onFocus(() => this.hover('spd', true))
             .onBlur(() => this.hover('spd', false))
             .onHover((hv: boolean) => this.hover('spd', hv))
-            .onClick(() => {
-              Feedback.tap();
+          .onClick(() => {
+            this.fire('spd', () => {
               this.openSpeed();
-            })
+            });
+          })
+          .onMouse(Pointer.pressRelease('spd', () => {
+            this.fire('spd', () => {
+              this.openSpeed();
+            });
+          }))
           Text(this.checking ? ('检测 ' + this.checkProgress) : '检测')
             .fontSize(15)
             .fontColor(this.checking ? T.SUB : (this.hi('chk') ? T.TXT : T.SUB))
@@ -803,10 +840,16 @@ struct LivePage {
             .onFocus(() => this.hover('chk', true))
             .onBlur(() => this.hover('chk', false))
             .onHover((hv: boolean) => this.hover('chk', hv))
-            .onClick(() => {
-              Feedback.tap();
+          .onClick(() => {
+            this.fire('chk', () => {
               this.checkChannels();
-            })
+            });
+          })
+          .onMouse(Pointer.pressRelease('chk', () => {
+            this.fire('chk', () => {
+              this.checkChannels();
+            });
+          }))
           Text('刷新')
             .fontSize(15)
             .fontColor(T.TXT)
@@ -822,12 +865,19 @@ struct LivePage {
             .onFocus(() => this.hover('re', true))
             .onBlur(() => this.hover('re', false))
             .onHover((hv: boolean) => this.hover('re', hv))
-            .onClick(() => {
-              Feedback.tap();
+          .onClick(() => {
+            this.fire('re', () => {
               // 主动刷新时把上一轮的失效标记清掉，否则新数据里的台会被旧结论误标
               this.deadUrls = [];
               this.reload();
-            })
+            });
+          })
+          .onMouse(Pointer.pressRelease('re', () => {
+            this.fire('re', () => {
+              this.deadUrls = [];
+              this.reload();
+            });
+          }))
         }
         .width('100%')
         .padding({ left: 24, right: 24, top: 24, bottom: 8 })
@@ -951,19 +1001,29 @@ struct LivePage {
                     .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
                     .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
                     .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
-                    .onClick(() => {
-                      Feedback.tap();
-                      this.play(ch);
-                    })
                 }
+                // 点击挂在 GridItem 上而不是里面那个 Text 上：
+                // Grid 的行高是按可用高度均分的，格子（约 110vp）比 Text(58vp) 高不少，
+                // 只把 onClick 挂在 Text 上时，点格子上下那圈空白完全没反应——
+                // 电视上用指针遥控器对不准文字就表现为「点了没反应」。
+                .onClick(() => {
+                  this.tapChannel(ch);
+                })
+                // 灵犀指向遥控发的是鼠标事件：指针悬停就把焦点抢走，onClick 常常被吃掉，
+                // 所以这里再挂一份 onMouse，按「按下+抬起都在本格」算一次点击。
+                .onMouse(Pointer.pressRelease('ch:' + ch.name, () => {
+                  this.tapChannel(ch);
+                }))
               },
-              // key 里必须带上「是否失效 / 是否当前 / 是否悬停」：ForEach 只按 key 判断
-              // 要不要重建这一项，只看名字和地址的话，检测完或切换选中后 key 没变，
-              // 格子里那个 Text 不会重建，灰色删除线、当前高亮都刷不出来。
+              // key 里只放「数据态」（是否失效 / 是否当前台），**绝不能放悬停态**：
+              // ForEach 只按 key 判断要不要重建，把悬停编进 key 会变成
+              // 「指针悬停 → key 变 → 格子重建 → 新节点又触发悬停 → 再重建」的活循环，
+              // 格子每秒被销毁重建好几次，按下去的那一下永远落在已销毁的节点上——
+              // 用灵犀指向遥控就表现为「指着某个台点下去毫无反应」。
+              // 悬停高亮本来就走状态绑定，不需要重建也能刷新。
               (ch: Channel) => 'ch' + ch.name + ch.url +
                 (this.isDead(ch.url) ? 'd' : 'a') +
-                (this.isCur(ch) ? 'c' : '') +
-                (this.hi('ch_' + ch.name + ch.url) ? 'h' : ''))
+                (this.isCur(ch) ? 'c' : ''))
             }
             .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
             .columnsGap(10)

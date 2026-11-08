@@ -18,6 +18,8 @@ import { PlayParam, WebdavSource, WebdavEntry, WebdavVod, WebdavEp, Episode, WdH
 import { Webdav } from '../common/Webdav';
 import { Playlist } from '../common/Playlist';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { WdQrPanel } from '../common/WdQr';
+import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 
 @Entry
 @Component
@@ -43,6 +45,9 @@ struct WebdavPage {
   @State selVod: WebdavVod = new WebdavVod();
 
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  @StorageLink(TIP_MSG) tipMsg: string = '';
+  /** 电视端扫码添加网盘面板 */
+  @State wdQrOpen: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -65,6 +70,12 @@ struct WebdavPage {
     this.wdHist = await Store.wdHistory();
   }
 
+  /** 手机扫码添加成功后：刷新源列表并给一条提示（面板里已经落盘） */
+  async afterQrAdd(src: WebdavSource): Promise<void> {
+    await this.refreshData();
+    Tip.show('已添加网盘「' + src.name + '」');
+  }
+
   // ---------- 焦点 ----------
   hi(key: string): boolean {
     return this.hoverKey === key;
@@ -79,6 +90,10 @@ struct WebdavPage {
   }
 
   onBackPress(): boolean {
+    if (this.wdQrOpen) {
+      this.wdQrOpen = false;
+      return true;
+    }
     if (this.epOpen) {
       this.epOpen = false;
       return true;
@@ -460,6 +475,20 @@ struct WebdavPage {
       if (this.epOpen) {
         this.epPanel()
       }
+      if (this.wdQrOpen) {
+        WdQrPanel({
+          onClose: () => {
+            this.wdQrOpen = false;
+          },
+          onSaved: (src: WebdavSource) => {
+            this.wdQrOpen = false;
+            this.afterQrAdd(src);
+          }
+        })
+      }
+      if (this.tipMsg.length > 0) {
+        TipLayer(this.tipMsg)
+      }
     }
     .width('100%')
     .height('100%')
@@ -502,7 +531,13 @@ struct WebdavPage {
       }
 
       Row() {
-        this.Btn('去设置页添加', 'go_setting', true, () => {
+        // 电视端首选：扫码在手机上填，遥控器只负责点这一下
+        if (!this.isPhone) {
+          this.Btn('扫码添加网盘', 'qr_add', true, () => {
+            this.wdQrOpen = true;
+          })
+        }
+        this.Btn('去设置页添加', 'go_setting', this.isPhone, () => {
           router.pushUrl({ url: 'pages/SettingPage' });
         })
         Blank()
@@ -511,7 +546,8 @@ struct WebdavPage {
       .margin({ top: 16, bottom: 6 })
 
       if (this.sources.length === 0) {
-        Text(this.isPhone ? '还没有挂载任何网盘。点「去设置页添加」，填服务器地址、账号密码即可。' : '还没有挂载任何网盘。点上方「去设置页添加」，填服务器地址、账号密码即可。')
+        Text(this.isPhone ? '还没有挂载任何网盘。点「去设置页添加」，填服务器地址、账号密码即可。'
+          : '还没有挂载任何网盘。点「扫码添加网盘」，用手机扫码填服务器地址和账号密码，电视这台不用敲字。')
           .fontSize(14).fontColor(T.DIM).width('100%').margin({ top: 20 }).lineHeight(22)
       } else {
         ForEach(this.sources, (s: WebdavSource) => {

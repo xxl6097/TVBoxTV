@@ -1,10 +1,16 @@
 {
   "app": {
-    // 换设备后必须重新签发调试描述文件：.p7b 的 device-ids 里白名单的是旧设备 UDID。
-    // 留着旧的 signingConfigs，DevEco 会直接用旧凭证打包（点 Run 装上去就是
-    // 9568423 device is unauthorized），根本不弹「Automatically generate signature」。
-    // 所以这里清空，逼 IDE 重新走一次自动签名；签完 DevEco 会自己把这段填回来。
-    // 旧配置备份在同目录 build-profile.json5.bak-1102-165551
+    // 不要在这里填签名：hvigor 的 signingConfigs 只认 DevEco 加密后的口令密文
+    // （长度 ≥ 32），写明文的 p12 口令会被直接拒绝：
+    //   「The length of the storePassword or keyPassword field is less than 32」
+    // 所以本地命令行出包统一走 scripts/build-tv.sh：
+    //   hvigor 出未签名 hap → hap-sign-tool 用 ~/.ohos/debug-key/ 里的调试证书补签。
+    // 调试描述文件 hongmengyingshi-debug.p7b（包名 com.hong.tv）的
+    // debug-info.device-ids 白名单里包含：
+    //   BE38CEEEE9631D074204DBCF40DADC68146195564CDE799E1B1259617D29A893（手机）
+    //   C449CED6912DB8E5AEB550EAF97A76BEEBEF5CF86D5C87FB250A21F1994F59C2（电视 EDIS-760E）
+    // 有效期 2026-11-03 → 2027-11-03。换新设备要回 AGC 重新签发描述文件，
+    // 否则装上去报 9568425 device is unauthorized。
     "signingConfigs": [],
     "products": [
       {

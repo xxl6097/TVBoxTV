@@ -17,6 +17,7 @@ import { Live } from '../common/Live';
 import { Http } from '../common/Http';
 import { QrCode } from '../common/QrCode';
 import { QrServer } from '../common/QrServer';
+import { WdQrPanel } from '../common/WdQr';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { LivePreset, fromLives } from '../common/LivePresets';
 import { Device, KEY_IS_PHONE } from '../common/Device';
@@ -315,6 +316,8 @@ struct SettingPage {
   @State wdSources: WebdavSource[] = [];
   /** 网盘添加/编辑弹窗 */
   @State wdEditOpen: boolean = false;
+  /** 网盘扫码录入面板（电视端，盖在添加弹窗之上） */
+  @State wdQrOpen: boolean = false;
   @State wdId: string = '';
   @State wdName: string = '';
   @State wdUrl: string = '';
@@ -531,6 +534,16 @@ struct SettingPage {
     await this.reloadWdScanCounts();
     this.wdEditOpen = false;
     this.toast('已保存「' + s.name + '」', '#B7F0BC');
+  }
+
+  /**
+   * 手机扫码提交成功后的收尾。
+   * 面板自己已经落盘过了，这里只负责刷新列表 + 给电视端一条反馈。
+   */
+  async afterWdQrSaved(src: WebdavSource): Promise<void> {
+    this.wdSources = await Store.webdavSources();
+    await this.reloadWdScanCounts();
+    this.toast('手机已添加网盘「' + src.name + '」', '#B7F0BC');
   }
 
   async removeWd(src: WebdavSource): Promise<void> {
@@ -921,6 +934,11 @@ struct SettingPage {
     // 遥控器返回键：扫码面板打开时先关面板，否则退出页面
     if (this.qrOpen) {
       this.closeQr();
+      return true;
+    }
+    // 网盘扫码面板也压在弹窗上面，先收它
+    if (this.wdQrOpen) {
+      this.wdQrOpen = false;
       return true;
     }
     if (this.wdEditOpen) {
@@ -1781,7 +1799,9 @@ struct SettingPage {
           Text('✕').fontSize(19).fontColor(this.hi('wdx') ? T.TXT : T.SUB)
             .width(42).height(42).textAlign(TextAlign.Center).borderRadius(T.RADIUS_SM)
             .backgroundColor(this.hi('wdx') ? S.ROW_HI : '#00000000')
-            .focusable(true).defaultFocus(true)
+            .focusable(true)
+            // 新增时焦点默认落在「手机扫码录入」上，编辑时才落在关闭按钮
+            .defaultFocus(this.wdId.length > 0)
             .onFocus(() => this.hoverTo('wdx', true))
             .onBlur(() => this.hoverTo('wdx', false))
             .onHover((hv: boolean) => this.hoverTo('wdx', hv))
@@ -1791,6 +1811,42 @@ struct SettingPage {
             })
         }
         .width('100%')
+
+        // 电视端的首选入口：遥控器敲 5 个字段（还含大小写敏感的密码）太痛苦，
+        // 直接给二维码让手机填。手机端不显示这块，本机键盘就够快。
+        if (!this.isPhone) {
+          Row() {
+            Text('📱').fontSize(20)
+            Column() {
+              Text('手机扫码录入').fontSize(15).fontColor(T.TXT)
+              Text('电视上敲地址太费劲：扫码在手机上填完，电视这边自动保存')
+                .fontSize(12).fontColor(T.DIM).margin({ top: 3 }).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .margin({ left: 12 })
+            .layoutWeight(1)
+
+            Text('打开 ›').fontSize(13).fontColor(T.SELECTED)
+          }
+          .width('100%')
+          .height(64)
+          .padding({ left: 14, right: 14 })
+          .borderRadius(T.RADIUS)
+          .backgroundColor(this.hi('wdqr') ? T.CARD_HI : T.CARD)
+          .border({ width: T.BORDER, color: this.hi('wdqr') ? T.TXT : '#00000000' })
+          .margin({ top: 14 })
+          .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+          .focusable(true)
+          .defaultFocus(this.wdId.length === 0)
+          .onFocus(() => this.hoverTo('wdqr', true))
+          .onBlur(() => this.hoverTo('wdqr', false))
+          .onHover((hv: boolean) => this.hoverTo('wdqr', hv))
+          .onClick(() => {
+            Feedback.tap();
+            this.wdQrOpen = true;
+          })
+        }
 
         Column() {
           TextInput({ text: this.wdName, placeholder: '名称（可留空，默认取域名）' })
@@ -2045,6 +2101,19 @@ struct SettingPage {
       }
       if (this.wdEditOpen) {
         this.WebdavEditPanel()
+      }
+      // 网盘扫码录入：盖在「添加挂载」弹窗之上，手机提交完自动收起并刷新列表
+      if (this.wdQrOpen) {
+        WdQrPanel({
+          onClose: () => {
+            this.wdQrOpen = false;
+          },
+          onSaved: (src: WebdavSource) => {
+            this.wdQrOpen = false;
+            this.wdEditOpen = false;
+            this.afterWdQrSaved(src);
+          }
+        })
       }
       if (this.tipMsg.length > 0) {
         TipLayer(this.tipMsg)
