@@ -15,6 +15,7 @@ import { Resolver, Resolved } from '../common/Resolve';
 import { QLevel, QSpeed, Quality } from '../common/Quality';
 import { Tip } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { PlayGuard } from '../common/PlayGuard';
 
 /** 单击快进快退步长 */
 const SEEK_STEP: number = 10000;
@@ -106,6 +107,23 @@ struct Player {
 
   private player: media.AVPlayer | null = null;
   private initializing: boolean = false;
+  /**
+   * 页面已销毁。aboutToAppear 是 async 的：解析地址（直播要逐个探源，可能好几秒）
+   * 期间用户按返回，页面先销毁、随后 await 才回来，原来的写法会在这之后照样
+   * 创建一个 AVPlayer —— 页面已经没了，没人再释放它，于是就「退出后还在播」。
+   * 所有异步链路（resolve → initPlayer → createAVPlayer）回来时都要先看这个标志。
+   */
+  private closed: boolean = false;
+  /** onPageHide 时释放过播放器，回到前台需要重建（直播无法续播） */
+  private reopenOnShow: boolean = false;
+  /**
+   * 注册给 PlayGuard 的停止回调（应用切后台 / 被系统回收时兜底）。
+   * 注意这里**不能**置 closed：切后台页面还活着，回来要能重建播放器。
+   */
+  private stopHook: () => void = (): void => {
+    this.reopenOnShow = true;
+    this.releasePlayer();
+  };
   private xController: XComponentController = new XComponentController();
   private surfaceId: string = '';
   private rawUrl: string = '';
@@ -224,16 +242,56 @@ struct Player {
     // 电视遥控器抢不回焦点就再也收不到按键。
     this.leaving = false;
     hilog.info(0x1000, 'BOXN', 'onPageShow');
+    // 上次隐藏时为了彻底静音把播放器放掉了，这里重建：
+    // 直播直接重连当前台，点播把进度接回去（pendingSeek 通道，起播后 seek）
+    this.resumeAfterHide();
     setTimeout(() => {
       this.grabFocus();
     }, 300);
   }
 
+  /**
+   * 从「隐藏」状态恢复播放。
+   * 切后台再回来时 XComponent 的 surface 可能被系统重建，surfaceId 会短暂为空，
+   * 这时 initPlayer 会直接返回；所以这里要等 surface 就绪再建，不能把
+   * reopenOnShow 提前清掉（清了就再也没人触发重建，画面永远黑着）。
+   */
+  private resumeAfterHide(retry: number = 0): void {
+    if (!this.reopenOnShow || this.closed || this.player !== null || this.finalUrl.length === 0) {
+      return;
+    }
+    if (this.surfaceId.length === 0) {
+      // 最多等 10 秒（25 × 400ms），surface 一直不来就放弃，避免定时器空转
+      if (retry < 25) {
+        setTimeout(() => {
+          this.resumeAfterHide(retry + 1);
+        }, 400);
+      }
+      return;
+    }
+    this.reopenOnShow = false;
+    if (!this.isLive && this.posMs > 0) {
+      this.pendingSeek = this.posMs;
+    }
+    this.prepared = false;
+    this.playing = false;
+    this.buffering = true;
+    this.initPlayer();
+  }
+
   onPageHide(): void {
     this.leaving = true;
-    // 页面被遮挡 / 切到后台时立即暂停，避免「返回首页后后台还在出声」的问题
+    hilog.info(0x1000, 'BOXN', 'onPageHide live=%{public}s', this.isLive ? 'y' : 'n');
+    // 直播流不能「续播」，而用户返回列表的诉求就是立刻没声音：
+    // 直接放掉播放器（pause 对部分 HLS 直播只是停止拉流，已解码的音频仍会播完缓冲）。
+    // 回到前台时走 onPageShow 的重建分支重新连当前台。
+    if (this.isLive) {
+      this.reopenOnShow = true;
+      this.releasePlayer();
+      return;
+    }
+    // 点播：暂停即可，回来能原地续播
     this.pausePlayback();
-    hilog.info(0x1000, 'BOXN', 'onPageHide');
   }
 
   private grabFocus(): void {
@@ -250,12 +308,17 @@ struct Player {
   }
 
   async aboutToAppear(): Promise<void> {
+    // 应用切后台/被回收时由 PlayGuard 兜底停播（页面级 onPageHide 在电视上不可靠）
+    PlayGuard.bind(this.stopHook);
     // 手机竖屏默认「等比适应留黑边」：默认的 VIDEO_SCALE_TYPE_FIT 是拉伸铺满，
     // 横屏视频在竖屏手机里会被拉长变形，这里按设备形态切换默认画面比例。
     if (this.isPhone) {
       this.scaleMode = 2;
     }
     await Store.init(getContext(this) as common.UIAbilityContext);
+    if (this.closed) {
+      return;
+    }
     const p = router.getParams() as PlayParam;
     if (p !== null && p !== undefined) {
       this.title = p.title;
@@ -286,18 +349,28 @@ struct Player {
 
     await this.resolveUrl();
     this.resolving = false;
+    // 解析地址期间（直播要逐个探源，可能好几秒）用户已经返回：
+    // 这里必须收手，否则会在这之后造出一个没人释放的播放器继续出声
+    if (this.closed) {
+      return;
+    }
     if (this.surfaceId.length > 0) {
       this.initPlayer();
     }
   }
 
   aboutToDisappear(): void {
+    this.closed = true;
+    PlayGuard.unbind(this.stopHook);
     this.savePos();
     this.releasePlayer();
   }
 
   onBackPress(): boolean {
     this.leaving = true;
+    // 先标记关闭再释放：释放是同步的，但排队中的 initPlayer 回调会看这个标志
+    this.closed = true;
+    PlayGuard.unbind(this.stopHook);
     this.savePos();
     this.releasePlayer();
     router.back();
@@ -786,16 +859,31 @@ struct Player {
       }
       this.player = null;
     }
+    // 播放器没了，把播放状态一起复位：否则 onPageHide 之后 UI 还以为在播，
+    // 回到前台重建时 pausePlayback 也会拿旧状态做判断
+    this.prepared = false;
+    this.playing = false;
   }
 
   async initPlayer(): Promise<void> {
-    if (this.initializing || this.player !== null || this.surfaceId.length === 0 || this.finalUrl.length === 0) {
+    if (this.closed || this.initializing || this.player !== null || this.surfaceId.length === 0 ||
+      this.finalUrl.length === 0) {
       return;
     }
     this.initializing = true;
     try {
       const sid: string = this.surfaceId;
       const p: media.AVPlayer = await media.createAVPlayer();
+      // createAVPlayer 是异步的：等待期间用户可能已经返回，页面销毁后没人再管这个实例。
+      // 这里必须自己收掉，否则它会在后台把流一直播下去（「退出后还在播」的另一个来源）。
+      if (this.closed) {
+        try {
+          p.release();
+        } catch (e) {
+          // ignore
+        }
+        return;
+      }
       this.player = p;
 
       p.on('error', (err: BusinessError) => {
@@ -954,14 +1042,19 @@ struct Player {
 
   // ==================== 播放控制 ====================
 
-  /** 暂停播放（页面被遮挡 / 切后台时用）。pause 会触发 stateChange 同步 playing 状态 */
+  /**
+   * 暂停播放（页面被遮挡 / 切后台时用）。pause 会触发 stateChange 同步 playing 状态。
+   * 这里**不能用 this.playing 做前置判断**：缓冲/换档过程中 playing 可能是 false，
+   * 但解码器仍在出声音，判断一挡就变成「明明退出了还在响」。
+   */
   private pausePlayback(): void {
-    if (this.player !== null && this.prepared && this.playing) {
+    if (this.player !== null && this.prepared) {
       try {
         this.player.pause();
       } catch (e) {
         // ignore
       }
+      this.playing = false;
     }
   }
 
@@ -1189,6 +1282,10 @@ struct Player {
 
   /** 切集 / 换台。delta 为 +1 / -1 */
   async switchEpisode(delta: number): Promise<void> {
+    // 页面已销毁（用户已返回）时不要再换台/换集——那会重新拉起一个播放器
+    if (this.closed) {
+      return;
+    }
     if (Playlist.count() === 0) {
       this.showTip(this.isLive ? '当前分组没有其他频道' : '当前没有可切换的剧集，返回详情页选集');
       return;

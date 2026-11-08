@@ -13,6 +13,7 @@ Android 运行时、不带任何 WebView 套壳，直接跑在鸿蒙原生渲染
 | UI 框架 | ArkUI 声明式开发（`@Entry` / `@Component` / `@Builder`），无 XML 布局、无 Android View |
 | 语言 | ArkTS（TypeScript 强约束子集），全量静态类型，`@State` 驱动刷新 |
 | 播放 | `@ohos.multimedia.media` AVPlayer + `XComponent` 硬解 Surface，走系统解码器（HLS/H.264/H.265/TS） |
+| 切后台停播 | 直播页隐藏即 `release()`（HLS 直播 `pause` 停不干净），并注册 `PlayGuard` 由 `Ability.onBackground` 兜底，避免「退出后还在出声」 |
 | 网络 | `@ohos.net.http`，多站源并发分批调度，单站失败隔离 |
 | 存储 | `@ohos.data.preferences` 持久化配置、收藏、历史、直播源 |
 | 窗口 | `setWindowLayoutFullScreen(true)` + 隐藏系统栏 + `setWindowKeepScreenOn(true)`，全屏沉浸 |
@@ -404,6 +405,7 @@ TVBoxTV/
 │   │   ├── Cms.ets        采集协议实现（JSON/XML/CDATA/线路拆分）
 │   │   ├── Resolve.ets    播放地址解析（parses type=1）
 │   │   ├── Pointer.ets    灵犀指向遥控的指针点击识别（按下+抬起 / 400ms 去重）
+│   │   ├── PlayGuard.ets  切后台停播兜底（Ability.onBackground 统一停掉播放器）
 │   │   ├── WdQr.ets       网盘扫码录入面板（电视端扫码，手机填表）
 │   │   └── Store.ets      配置缓存、站点开关、历史、收藏
 │   ├── pages/
@@ -439,6 +441,7 @@ TVBoxTV/
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
+| 退出直播后还在出声 | 直播 `pause` 停不干净；解析/建播放器期间返回会遗留 AVPlayer | 已修：直播 hide 即 `release()` + `PlayGuard` 切后台兜底，详见 `docs/安装与排错.md` 三节 |
 | `code:9568320 no signature file` | 没签名 | DevEco 点一次 ▶ Run 生成描述文件 |
 | 分类加载失败 | 站源换了域名/被墙 | 换站源，或在设置里关掉它 |
 | 所有站源都没内容 | 配置过期 | 重新导入配置地址 |

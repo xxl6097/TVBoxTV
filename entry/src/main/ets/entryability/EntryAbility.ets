@@ -6,6 +6,7 @@ import { BusinessError } from '@ohos.base';
 import { Store } from '../common/Store';
 import { Device } from '../common/Device';
 import { Feedback } from '../common/Feedback';
+import { PlayGuard } from '../common/PlayGuard';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -58,6 +59,15 @@ export default class EntryAbility extends UIAbility {
     });
   }
 
+  /**
+   * 应用退到后台 / 回桌面。电视上「退出后还在出声」的兜底就在这里：
+   * 页面级的 onPageHide 在部分 TV 系统上触发不可靠，而 Ability 切后台一定会走这里。
+   */
+  onBackground(): void {
+    PlayGuard.stopAll();
+  }
+
   onDestroy(): void {
+    PlayGuard.stopAll();
   }
 }
