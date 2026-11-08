@@ -16,6 +16,7 @@ import { QLevel, QSpeed, Quality } from '../common/Quality';
 import { Tip } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
 import { PlayGuard } from '../common/PlayGuard';
+import { Pointer } from '../common/Pointer';
 
 /** 单击快进快退步长 */
 const SEEK_STEP: number = 10000;
@@ -44,6 +45,16 @@ const FREEZE_MS: number = 5000;
 const ADAPT_GAP: number = 15000;
 /** 网速实测的采样上限：够算出来就行，别真去下整集 */
 const SPEED_BYTES: number = 384 * 1024;
+/** 可选倍速档位。系统枚举只认固定几档，这里只列常用的 */
+const SPEEDS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+/** 一条可选字幕轨（从 AVPlayer 的轨道表里挑出来的） */
+class SubTrack {
+  /** selectTrack 要的轨道号 */
+  index: number = 0;
+  /** 展示名：优先轨道名，其次语言码 */
+  label: string = '';
+}
 
 /**
  * 把「网页地址」换成「能直接播的流地址」。
@@ -102,6 +113,12 @@ struct Player {
   @State netTxt: string = '';
   /** 画面显示模式：0 拉伸铺满 / 1 等比裁剪铺满 / 2 等比适应留黑边 */
   @State scaleMode: number = 0;
+  /** 播放倍速，1 = 正常。全局偏好，起播自动生效 */
+  @State speed: number = 1;
+  /** 这个源提供的字幕轨；空数组表示没有字幕 */
+  @State subs: SubTrack[] = [];
+  /** 当前选中的字幕下标（subs 的下标），-1 = 关闭 */
+  @State subSel: number = -1;
   /** 设备形态：手机竖屏默认等比适应，避免横屏视频被拉伸变形 */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
 
@@ -169,6 +186,8 @@ struct Player {
   private flashTimer: number = -1;
   /** 进度条实际宽度（vp），用于把点击位置换算成播放进度 */
   private barW: number = 0;
+  /** 已选中的字幕轨道号（AVPlayer 里的轨道号，不是 subs 下标）；-1 表示没选 */
+  private subTrackIdx: number = -1;
 
   private siteKey: string = '';
   private vodId: string = '';
@@ -339,12 +358,21 @@ struct Player {
       this.wdVod = p.wdVod.length > 0 ? p.wdVod : '';
       this.wdDir = p.wdDir.length > 0 ? p.wdDir : '';
       this.wdSeries = p.wdSeries;
+      // 直连（手动填地址）是一个孤立地址，没有剧集概念。
+      // 走到这里的调用方未必清过播放列表，这里自愈一次：
+      // 否则列表里残留上一部剧，「下一集」和播完自动连播都会串到别的片上。
+      // WebDAV 除外——它虽然也走 direct 解析路径，但会正常 set() 整季剧集。
+      if (this.directMode && p.siteKey !== 'webdav') {
+        Playlist.clear();
+      }
     }
     // 画质偏好是全局的：上次选了 720P，这次进来自动还是 720P
     this.qCap = await Store.qPref();
     // 片头片尾跳过也是全局偏好
     this.introSkipSec = await Store.introSkipSec();
     this.outroSkipSec = await Store.outroSkipSec();
+    // 倍速同理：整部剧一般都用同一个速度看
+    this.speed = await Store.speedPref();
     this.syncEpLabel();
 
     await this.resolveUrl();
@@ -461,6 +489,13 @@ struct Player {
    * 关键取舍：切档时**不换地址**，仍然把 master 交给播放器，只用
    * PlaybackStrategy.preferredHeight 表达「我要多高的」。这样系统自己的
    * ABR 还在工作，网络瞬断时它能在档位间平滑挪，比我们自己替换流地址稳得多。
+   *
+   * 性能约束：这个方法在起播的关键路径上（resolveUrl → 这里 → initPlayer），
+   * 它多花一秒，用户就多盯一秒黑屏。所以：
+   *   - 只抓首包（master playlist 通常 < 2KB，4KB 足够解析完几档）
+   *   - 预算 1500ms，源站慢就直接当「单码率」放行，不能让画质探测决定能否起播
+   * 原来这里是 peek 4000（还会按跳数翻倍）+ 可能再来一次 6 秒的全量请求，
+   * 源站慢时起播前要干等 12 秒以上，屏幕上只有 loading。
    */
   private async setupQuality(): Promise<void> {
     this.masterUrl = this.finalUrl;
@@ -470,7 +505,7 @@ struct Player {
     }
     let head: string = '';
     try {
-      head = await Http.peek(this.finalUrl, 4000);
+      head = await Http.peek(this.finalUrl, 1500);
     } catch (e) {
       this.syncQLabel();
       return;
@@ -480,13 +515,14 @@ struct Player {
       this.syncQLabel();
       return;
     }
-    let full: string = head;
-    try {
-      full = await Http.text(this.finalUrl, undefined, 6000);
-    } catch (e) {
-      // 首包里已经有完整的几档，够用
+    // 首包可能截在某一行的中间，把最后半行去掉，避免解析出残缺的档位行
+    if (head.length >= 4096) {
+      const nl: number = head.lastIndexOf('\n');
+      if (nl > 0) {
+        head = head.substring(0, nl + 1);
+      }
     }
-    const list: QLevel[] = Quality.parseMaster(full, this.finalUrl);
+    const list: QLevel[] = Quality.parseMaster(head, this.finalUrl);
     if (list.length === 0) {
       this.syncQLabel();
       return;
@@ -941,6 +977,10 @@ struct Player {
             // 个别机型不支持，忽略
           }
           p.play();
+          // 倍速要在起播后设：prepared 之前调 setSpeed 会被忽略
+          this.applySpeed(p);
+          // 字幕轨只在 prepared 之后才读得到，异步取，不挡起播
+          this.loadSubs(p);
           // 部分机型 / 部分流不会补发 playing 状态，这里先乐观置上，
           // 否则控制条会一直以为在暂停（暂停态不自动收起，挡住半屏画面）
           this.playing = true;
@@ -1312,7 +1352,8 @@ struct Player {
       return;
     }
     if (Playlist.count() === 0) {
-      this.showTip(this.isLive ? '当前分组没有其他频道' : '当前没有可切换的剧集，返回详情页选集');
+      this.showTip(this.isLive ? '当前分组没有其他频道'
+        : (this.directMode ? '直连播放没有上一集/下一集' : '当前没有可切换的剧集，返回详情页选集'));
       return;
     }
     const ep: Episode | null = Playlist.step(delta);
@@ -1398,6 +1439,33 @@ struct Player {
 
   hi(key: string): boolean {
     return this.hoverKey === key;
+  }
+
+  /**
+   * 这个页面上所有「点一下」的统一入口。
+   *
+   * 灵犀指向遥控器在智慧屏上发的是鼠标事件（onMouse），而焦点系统会在指针
+   * 悬停时把焦点抢走，导致 onClick 不一定触发；触屏/传统遥控走的又是 onClick。
+   * 两边都可能到，所以每个热区同时挂 onClick + onMouse，并用 key 做时间窗去重，
+   * 保证同一个动作只执行一次。
+   *
+   * 播放页原来 15 个 onMouse 里一个都没有（只有直播页做过适配），
+   * 也就是说这台电视上「播放/暂停、±10 秒、上一集/下一集、音量、播放设置、
+   * 画质档位、跳过片头」全都点不动 —— 只能靠遥控器方向键去 Focus 链上摸。
+   */
+  private tap(key: string, act: () => void): void {
+    if (!Pointer.once(key)) {
+      return;
+    }
+    Feedback.tap();
+    act();
+  }
+
+  /** onMouse 版的同一个热区，内部仍然走 tap() 去重 */
+  private ptr(key: string, act: () => void): (e: MouseEvent) => void {
+    return Pointer.pressRelease(key, (): void => {
+      this.tap(key, act);
+    });
   }
 
   // ==================== 按键 ====================
@@ -1632,10 +1700,8 @@ struct Player {
       .textAlign(TextAlign.Center)
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('ctl' + act, hv))
-      .onClick(() => {
-        Feedback.tap();
-        this.doCtrl(act);
-      })
+      .onClick(() => this.tap('ctl' + act, () => this.doCtrl(act)))
+      .onMouse(this.ptr('ctl' + act, () => this.doCtrl(act)))
   }
 
   /** 控制条文案。放在方法里读状态，@Builder 才能跟到变化（传值不会更新） */
@@ -1719,10 +1785,12 @@ struct Player {
       .margin({ right: 10, bottom: 8 })
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('qc' + cap, hv))
-      .onClick(() => {
-        Feedback.tap();
+      .onClick(() => this.tap('qc' + cap, () => {
         this.chooseLevel(cap);
-      })
+      }))
+      .onMouse(this.ptr('qc' + cap, () => {
+        this.chooseLevel(cap);
+      }))
   }
 
   /** 具体某一档（点它 = 锁定这个清晰度） */
@@ -1738,10 +1806,8 @@ struct Player {
       .margin({ right: 10, bottom: 8 })
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('ql' + i, hv))
-      .onClick(() => {
-        Feedback.tap();
-        this.pickLevel(i);
-      })
+      .onClick(() => this.tap('ql' + i, () => this.pickLevel(i)))
+      .onMouse(this.ptr('ql' + i, () => this.pickLevel(i)))
   }
 
   lvOn(i: number): boolean {
@@ -1795,10 +1861,8 @@ struct Player {
       .border({ width: T.BORDER, color: this.scaleMode === mode ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-      .onClick(() => {
-        Feedback.tap();
-        this.setScale(mode);
-      })
+      .onClick(() => this.tap('sc' + mode, () => this.setScale(mode)))
+      .onMouse(this.ptr('sc' + mode, () => this.setScale(mode)))
   }
 
   /** 跳过片头/片尾的档位 chip。kind = 'intro' | 'outro'，sec 单位秒，0 表示关 */
@@ -1814,10 +1878,163 @@ struct Player {
       .margin({ right: 10, bottom: 8 })
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('sk_' + kind + '_' + sec, hv))
-      .onClick(() => {
-        Feedback.tap();
+      .onClick(() => this.tap('skc_' + kind + '_' + sec, () => {
         this.pickSkip(kind, sec);
-      })
+      }))
+      .onMouse(this.ptr('skc_' + kind + '_' + sec, () => {
+        this.pickSkip(kind, sec);
+      }))
+  }
+
+  // ==================== 倍速 / 字幕 ====================
+
+  /** 倍率 → 系统枚举。系统只认固定几档，别的值一律按 1.0 处理 */
+  private static speedOf(v: number): media.PlaybackSpeed {
+    if (v === 0.5) {
+      return media.PlaybackSpeed.SPEED_FORWARD_0_50_X;
+    }
+    if (v === 0.75) {
+      return media.PlaybackSpeed.SPEED_FORWARD_0_75_X;
+    }
+    if (v === 1.25) {
+      return media.PlaybackSpeed.SPEED_FORWARD_1_25_X;
+    }
+    if (v === 1.5) {
+      return media.PlaybackSpeed.SPEED_FORWARD_1_50_X;
+    }
+    if (v === 2) {
+      return media.PlaybackSpeed.SPEED_FORWARD_2_00_X;
+    }
+    return media.PlaybackSpeed.SPEED_FORWARD_1_00_X;
+  }
+
+  /**
+   * 设一次倍速。prepared 之后才能设，idle/initialized 调会被忽略；
+   * 个别流（直播切片、DRM）不支持变速，抛错就静默跳过——
+   * 否则一个「能不能变速」的问题会把整条起播链路打断。
+   */
+  private applySpeed(p: media.AVPlayer): void {
+    // 注意不能「speed === 1 就 return」：从 1.5x 调回 1.0x 时正是要靠这句
+    // setSpeed(1.0) 把速度改回来，return 掉的话声音还是快的。
+    try {
+      p.setSpeed(Player.speedOf(this.speed));
+    } catch (e) {
+      // 不支持变速的源，保持原速
+    }
+  }
+
+  private async pickSpeed(v: number): Promise<void> {
+    this.speed = v;
+    await Store.setSpeedPref(v);
+    if (this.player !== null && this.prepared) {
+      this.applySpeed(this.player);
+    }
+    this.showTip(v === 1 ? '已恢复 1.0 倍速' : ('已切到 ' + v + ' 倍速'));
+  }
+
+  /**
+   * 读一遍轨道表，把字幕轨挑出来。
+   *
+   * 以前干脆没做字幕：HLS 里带 WEBVTT/TTML 字幕轨的片子，用户只能在
+   * 「有字幕的播放器」里看。这里走系统能力——AVPlayer 的轨道表里字幕轨
+   * 的 track_type 是 MEDIA_TYPE_SUBTITLE，选中即显示，不需要自己渲染。
+   * 没有字幕轨时保持空数组，面板显示「这个源没有字幕轨」，
+   * 而不是留一个点了没反应的开关。
+   */
+  private async loadSubs(p: media.AVPlayer): Promise<void> {
+    try {
+      const list = await p.getTrackDescription();
+      const out: SubTrack[] = [];
+      for (let i = 0; i < list.length; i++) {
+        const d = list[i];
+        const tt: number = d['track_type'] as number;
+        if (tt !== media.MediaType.MEDIA_TYPE_SUBTITLE) {
+          continue;
+        }
+        const st = new SubTrack();
+        st.index = d['track_index'] as number;
+        const nm: string = d['track_name'] !== undefined && d['track_name'] !== null
+          ? String(d['track_name']) : '';
+        const lang: string = d['language'] !== undefined && d['language'] !== null
+          ? String(d['language']) : '';
+        st.label = nm.length > 0 ? nm : (lang.length > 0 ? lang : ('字幕 ' + (out.length + 1)));
+        out.push(st);
+      }
+      this.subs = out;
+      this.subSel = -1;
+      this.subTrackIdx = -1;
+    } catch (e) {
+      this.subs = [];
+    }
+  }
+
+  private async pickSub(i: number): Promise<void> {
+    if (this.player === null || !this.prepared) {
+      this.showTip('还没起播，等画面出来再切字幕');
+      return;
+    }
+    const p = this.player;
+    try {
+      if (i < 0) {
+        if (this.subTrackIdx >= 0) {
+          await p.deselectTrack(this.subTrackIdx);
+        }
+        this.subTrackIdx = -1;
+        this.subSel = -1;
+        this.showTip('已关闭字幕');
+        return;
+      }
+      if (i >= this.subs.length) {
+        return;
+      }
+      const t: SubTrack = this.subs[i];
+      await p.selectTrack(t.index);
+      this.subTrackIdx = t.index;
+      this.subSel = i;
+      this.showTip('字幕：' + t.label);
+    } catch (e) {
+      this.showTip('这个源不支持切换字幕');
+    }
+  }
+
+  @Builder
+  SpeedChip(v: number) {
+    Text(v === 1 ? '1.0x' : (v + 'x'))
+      .fontSize(15)
+      .fontColor(this.speed === v ? T.SELECTED : T.TXT)
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      .backgroundColor(this.speed === v ? T.CARD_HI : T.WHITE_15)
+      .borderRadius(T.RADIUS_PILL)
+      .border({ width: T.BORDER, color: this.speed === v ? T.SELECTED : '#00000000' })
+      .margin({ right: 10, bottom: 8 })
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .onHover((hv: boolean) => this.hoverTo('spd' + v, hv))
+      .onClick(() => this.tap('spd' + v, () => {
+        this.pickSpeed(v);
+      }))
+      .onMouse(this.ptr('spd' + v, () => {
+        this.pickSpeed(v);
+      }))
+  }
+
+  @Builder
+  SubChip(i: number, label: string) {
+    Text(label)
+      .fontSize(15)
+      .fontColor(this.subSel === i ? T.SELECTED : T.TXT)
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      .backgroundColor(this.subSel === i ? T.CARD_HI : T.WHITE_15)
+      .borderRadius(T.RADIUS_PILL)
+      .border({ width: T.BORDER, color: this.subSel === i ? T.SELECTED : '#00000000' })
+      .margin({ right: 10, bottom: 8 })
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .onHover((hv: boolean) => this.hoverTo('sub' + i, hv))
+      .onClick(() => this.tap('sub' + i, () => {
+        this.pickSub(i);
+      }))
+      .onMouse(this.ptr('sub' + i, () => {
+        this.pickSub(i);
+      }))
   }
 
   private skipOn(kind: string, sec: number): boolean {
@@ -2026,10 +2243,12 @@ struct Player {
       .margin({ right: 10, bottom: 8 })
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('sk_' + kind + '_' + mode, hv))
-      .onClick(() => {
-        Feedback.tap();
+      .onClick(() => this.tap('ska_' + kind + '_' + mode, () => {
         this.onSkipAction(kind, mode);
-      })
+      }))
+      .onMouse(this.ptr('ska_' + kind + '_' + mode, () => {
+        this.onSkipAction(kind, mode);
+      }))
   }
 
   /** 步进按钮 */
@@ -2045,10 +2264,8 @@ struct Player {
       .margin({ right: 8 })
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('skstep_' + delta, hv))
-      .onClick(() => {
-        Feedback.tap();
-        this.adjSkipEdit(delta);
-      })
+      .onClick(() => this.tap('skstep_' + delta, () => this.adjSkipEdit(delta)))
+      .onMouse(this.ptr('skstep_' + delta, () => this.adjSkipEdit(delta)))
   }
 
   /** 自定义位置编辑条：分、秒两个维度各自加减，实时显示当前位置 */
@@ -2089,10 +2306,12 @@ struct Player {
           .borderRadius(T.RADIUS_PILL)
           .backgroundColor(this.hi('skcancel') ? T.CARD_HI : '#00000000')
           .onHover((hv: boolean) => this.hoverTo('skcancel', hv))
-          .onClick(() => {
-            Feedback.tap();
+          .onClick(() => this.tap('skcancel', () => {
             this.skipEditKind = '';
-          })
+          }))
+          .onMouse(this.ptr('skcancel', () => {
+            this.skipEditKind = '';
+          }))
         Text('确定')
           .fontSize(14)
           .fontColor(this.hi('skok') ? T.SELECTED : T.TXT)
@@ -2102,10 +2321,8 @@ struct Player {
           .border({ width: T.BORDER, color: this.hi('skok') ? T.SELECTED : '#00000000' })
           .margin({ left: 8 })
           .onHover((hv: boolean) => this.hoverTo('skok', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.applySkipEdit();
-          })
+          .onClick(() => this.tap('skok', () => this.applySkipEdit()))
+          .onMouse(this.ptr('skok', () => this.applySkipEdit()))
       }
       .width('100%')
       .margin({ top: 8 })
@@ -2151,10 +2368,8 @@ struct Player {
         .shadow({ radius: 18, color: '#80000000' })
         .animation({ duration: T.ANIM, curve: Curve.EaseOut })
         .onHover((hv: boolean) => this.hoverTo('skipfloat', hv))
-        .onClick(() => {
-          Feedback.tap();
-          this.doSkip(this.skipShow);
-        })
+        .onClick(() => this.tap('skipfloat', () => this.doSkip(this.skipShow)))
+        .onMouse(this.ptr('skipfloat', () => this.doSkip(this.skipShow)))
         .margin({ right: 48, bottom: 96 })
       }
       .width('100%')
@@ -2173,10 +2388,12 @@ struct Player {
         .width('100%')
         .height('100%')
         .backgroundColor(T.BLACK_50)
-        .onClick(() => {
-          Feedback.tap();
+        .onClick(() => this.tap('qmask', () => {
           this.showQ = false;
-        })
+        }))
+        .onMouse(this.ptr('qmask', () => {
+          this.showQ = false;
+        }))
 
       Column() {
         Row() {
@@ -2193,14 +2410,20 @@ struct Player {
             .border({ width: T.BORDER, color: this.hi('qclose') ? T.TXT : '#00000000' })
             .animation({ duration: T.ANIM, curve: Curve.EaseOut })
             .onHover((hv: boolean) => this.hoverTo('qclose', hv))
-            .onClick(() => {
-              Feedback.tap();
+            .onClick(() => this.tap('qclose', () => {
               this.showQ = false;
-            })
+            }))
+            .onMouse(this.ptr('qclose', () => {
+              this.showQ = false;
+            }))
         }
         .width('100%')
         .margin({ bottom: 14 })
 
+        // 面板内容要能滚：档位 + 画面比例 + 倍速 + 字幕 + 跳片头片尾叠起来
+        // 会超出手机竖屏高度，不滚的话最下面的「跳过片尾」直接被裁掉
+        Scroll() {
+          Column() {
         if (this.levels.length > 1) {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             this.QChip(0, '自动（按网速）')
@@ -2237,6 +2460,48 @@ struct Player {
         }
         .width('100%')
         .margin({ top: 6 })
+
+        // 倍速：追剧常用 1.25/1.5，一次设定整部都生效（全局偏好）
+        Row() {
+          Text('倍速')
+            .fontSize(14).fontColor(T.DIM)
+          Text(this.speed === 1 ? '正常' : (this.speed + ' 倍'))
+            .fontSize(13).fontColor(this.speed === 1 ? T.DIM : T.SELECTED)
+            .margin({ left: 10 })
+        }
+        .width('100%')
+        .margin({ top: 16 })
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+          ForEach(SPEEDS, (s: number) => {
+            this.SpeedChip(s)
+          }, (s: number) => 'spd_' + s)
+        }
+        .width('100%')
+        .margin({ top: 6 })
+
+        // 字幕：只有源里确实带字幕轨时才列出可选项
+        Row() {
+          Text('字幕')
+            .fontSize(14).fontColor(T.DIM)
+          Text(this.subs.length === 0
+            ? '这个源没有字幕轨'
+            : (this.subSel < 0 ? '已关闭' : this.subs[this.subSel].label))
+            .fontSize(13)
+            .fontColor(this.subs.length > 0 && this.subSel >= 0 ? T.SELECTED : T.DIM)
+            .margin({ left: 10 })
+        }
+        .width('100%')
+        .margin({ top: 16 })
+        if (this.subs.length > 0) {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+            this.SubChip(-1, '关闭')
+            ForEach(this.subs, (t: SubTrack, i: number) => {
+              this.SubChip(i, t.label)
+            }, (t: SubTrack, i: number) => 'sub_' + i + '_' + t.index)
+          }
+          .width('100%')
+          .margin({ top: 6 })
+        }
 
         // 跳过片头片尾：起播自动跳片头，播到片尾自动切下一集（或结束）
         Row() {
@@ -2292,6 +2557,12 @@ struct Player {
         if (this.skipEditKind === 'outro') {
           this.SkipEditBar('outro')
         }
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+        .scrollBar(BarState.Off)
+        .constraintSize({ maxHeight: Device.isPhone() ? 470 : 580 })
       }
       .width(Device.panelW(700))
       .padding(24)
@@ -2386,7 +2657,8 @@ struct Player {
               .borderRadius(26).textAlign(TextAlign.Center)
               .animation({ duration: 120, curve: Curve.EaseOut })
               .onHover((hv: boolean) => this.hoverTo('rt', hv))
-              .onClick(() => { Feedback.tap(); this.retry(); })
+              .onClick(() => this.tap('rt', () => this.retry()))
+              .onMouse(this.ptr('rt', () => this.retry()))
             Text(this.isLive ? '返回频道列表' : '返回选集')
               .fontSize(19).fontColor('#FFFFFF')
               .height(52).padding({ left: 38, right: 38 })
@@ -2395,7 +2667,8 @@ struct Player {
               .margin({ left: 18 })
               .animation({ duration: 120, curve: Curve.EaseOut })
               .onHover((hv: boolean) => this.hoverTo('bk', hv))
-              .onClick(() => { Feedback.tap(); this.onBackPress(); })
+              .onClick(() => this.tap('bk', () => this.onBackPress()))
+              .onMouse(this.ptr('bk', () => this.onBackPress()))
           }
           .margin({ top: 28 })
         }
@@ -2550,11 +2823,21 @@ struct Player {
                 this.barW = typeof w === 'number' ? w : parseFloat(w.toString());
               })
               .onMouse((e: MouseEvent) => {
+                if (this.durMs <= 0 || this.barW <= 0) {
+                  return;
+                }
+                let r: number = e.x / this.barW;
+                r = r < 0 ? 0 : (r > 1 ? 1 : r);
                 // 指针滑过进度条时把右侧总时长换成对应时间点，先看准了再点
-                if (e.action === MouseAction.Move && this.durMs > 0 && this.barW > 0) {
-                  let r: number = e.x / this.barW;
-                  r = r < 0 ? 0 : (r > 1 ? 1 : r);
+                if (e.action === MouseAction.Move) {
                   this.hoverMs = r * this.durMs;
+                  return;
+                }
+                // 灵犀遥控器在指针模式下点进度条不一定派发 onClick
+                // （焦点先被悬停抢走），这里补一条 Release → seek
+                if (e.action === MouseAction.Release) {
+                  this.hoverMs = -1;
+                  this.seekToRatio(r);
                 }
               })
               .onHover((hv: boolean) => {
@@ -2730,9 +3013,10 @@ struct Player {
       this.onCenter();
     })
     .onMouse((e: MouseEvent) => {
-      // 灵犀遥控器指针一动就把控制条唤出来，否则用户不知道该点哪
-      if (e.action === MouseAction.Move && !this.showOsd) {
-        hilog.info(0x1000, 'BOXN', 'pointer move wake');
+      // 灵犀遥控器指针一动就把控制条唤出来，否则用户不知道该点哪。
+      // Press 也要唤：只点不移动时不产生 Move。
+      if ((e.action === MouseAction.Move || e.action === MouseAction.Press) && !this.showOsd) {
+        hilog.info(0x1000, 'BOXN', 'pointer wake');
         this.popOsd();
       }
     })

@@ -11,6 +11,8 @@ import common from '@ohos.app.ability.common';
 import { Store, HistItem } from '../common/Store';
 import { DetailParam, T } from '../common/Model';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
+import { Poster } from '../common/Poster';
+import { Pointer } from '../common/Pointer';
 
 @Entry
 @Component
@@ -131,10 +133,14 @@ struct HistoryPage {
           .onFocus(() => this.hover('back', true))
           .onBlur(() => this.hover('back', false))
           .onHover((hv: boolean) => this.hover('back', hv))
-          .onClick(() => {
-            Feedback.tap();
-            router.back();
-          })
+          .onClick(() => Pointer.fire('hp_back', () => {
+              Feedback.tap();
+              router.back();
+          }))
+          .onMouse(Pointer.on('hp_back', () => {
+              Feedback.tap();
+              router.back();
+          }))
         Text('历史')
           .fontSize(24)
           .fontColor(T.TXT)
@@ -156,10 +162,14 @@ struct HistoryPage {
             .onFocus(() => this.hover('clr', true))
             .onBlur(() => this.hover('clr', false))
             .onHover((hv: boolean) => this.hover('clr', hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.clearAll();
-            })
+            .onClick(() => Pointer.fire('hp_clr', () => {
+                Feedback.tap();
+                this.clearAll();
+            }))
+            .onMouse(Pointer.on('hp_clr', () => {
+                Feedback.tap();
+                this.clearAll();
+            }))
         }
       }
       .width('100%')
@@ -176,12 +186,7 @@ struct HistoryPage {
           ForEach(this.hist, (h: HistItem) => {
             ListItem() {
               Row() {
-                Image(h.pic.length > 0 ? h.pic : $r('app.media.app_icon'))
-                  .width(84)
-                  .height(48)
-                  .objectFit(ImageFit.Cover)
-                  .borderRadius(T.RADIUS)
-                  .backgroundColor(T.CARD)
+                Poster({ url: h.pic, w: 84, h: 48 })
                 Column() {
                   Text(h.name)
                     .fontSize(16)
@@ -215,10 +220,14 @@ struct HistoryPage {
                   .onFocus(() => this.hover('del_' + h.siteKey + h.vodId, true))
                   .onBlur(() => this.hover('del_' + h.siteKey + h.vodId, false))
                   .onHover((hv: boolean) => this.hover('del_' + h.siteKey + h.vodId, hv))
-                  .onClick(() => {
-                    Feedback.tap();
-                    this.removeOne(h);
-                  })
+                  .onClick(() => Pointer.fire('hp_del' + h.siteKey + h.vodId, () => {
+                      Feedback.tap();
+                      this.removeOne(h);
+                  }))
+                  .onMouse(Pointer.on('hp_del' + h.siteKey + h.vodId, () => {
+                      Feedback.tap();
+                      this.removeOne(h);
+                  }))
               }
               .width('100%')
               .padding(16)
@@ -233,14 +242,22 @@ struct HistoryPage {
               .onFocus(() => this.hover('h_' + h.siteKey + h.vodId, true))
               .onBlur(() => this.hover('h_' + h.siteKey + h.vodId, false))
               .onHover((hv: boolean) => this.hover('h_' + h.siteKey + h.vodId, hv))
-              .onClick(() => {
-                Feedback.tap();
-                const p = new DetailParam();
-                p.siteKey = h.siteKey;
-                p.siteName = h.siteName;
-                p.vodId = h.vodId;
-                router.pushUrl({ url: 'pages/Detail', params: p });
-              })
+              .onClick(() => Pointer.fire('hp_open' + h.siteKey + h.vodId, () => {
+                  Feedback.tap();
+                  const p = new DetailParam();
+                  p.siteKey = h.siteKey;
+                  p.siteName = h.siteName;
+                  p.vodId = h.vodId;
+                  router.pushUrl({ url: 'pages/Detail', params: p });
+              }))
+              .onMouse(Pointer.on('hp_open' + h.siteKey + h.vodId, () => {
+                  Feedback.tap();
+                  const p = new DetailParam();
+                  p.siteKey = h.siteKey;
+                  p.siteName = h.siteName;
+                  p.vodId = h.vodId;
+                  router.pushUrl({ url: 'pages/Detail', params: p });
+              }))
             }
           }, (h: HistItem) => 'hist' + h.siteKey + h.vodId + h.time)
         }

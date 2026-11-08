@@ -11,6 +11,8 @@ import { DetailParam, T } from '../common/Model';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { KEY_IS_PHONE } from '../common/Device';
 import { PhoneTabBar } from '../common/PhoneTabBar';
+import { Pointer } from '../common/Pointer';
+import { Poster } from '../common/Poster';
 
 @Entry
 @Component
@@ -21,6 +23,8 @@ struct CollectPage {
   @StorageLink(TIP_MSG) tipMsg: string = '';
   @State hoverKey: string = '';
   @State ready: boolean = false;
+  /** 待二次确认的收藏项键（siteKey+vodId） */
+  @State confirmDel: string = '';
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -43,11 +47,31 @@ struct CollectPage {
     this.favs = await Store.favorites();
   }
 
+  /**
+   * 取消收藏。
+   *
+   * 两个修正：
+   *  1. 用 removeFavorite 而不是 toggleFavorite —— 后者是翻转，
+   *     列表过期时会把这条加回去，提示却还是「已取消收藏」
+   *  2. 二次确认。和历史页删除保持一致：电视上指针/遥控误触一下
+   *     收藏就没了，而同一批数据在首页单条删除是要确认的，两套标准很怪
+   */
   async del(f: FavItem): Promise<void> {
-    // 删除后列表会变短，用户需要知道「确实是删了」而不是点歪了
-    await Store.toggleFavorite(f);
+    const key: string = f.siteKey + f.vodId;
+    if (this.confirmDel !== key) {
+      this.confirmDel = key;
+      Tip.show('再点一次确认取消收藏「' + f.name + '」，6 秒内有效');
+      setTimeout(() => {
+        if (this.confirmDel === key) {
+          this.confirmDel = '';
+        }
+      }, 6000);
+      return;
+    }
+    this.confirmDel = '';
+    const ok: boolean = await Store.removeFavorite(f);
     await this.reload();
-    Tip.show('已取消收藏：' + f.name);
+    Tip.show(ok ? ('已取消收藏：' + f.name) : ('「' + f.name + '」已不在收藏里'));
   }
 
   hi(key: string): boolean {
@@ -76,10 +100,14 @@ struct CollectPage {
           .onFocus(() => this.hover('back', true))
           .onBlur(() => this.hover('back', false))
           .onHover((hv: boolean) => this.hover('back', hv))
-          .onClick(() => {
-            Feedback.tap();
-            router.back();
-          })
+          .onClick(() => Pointer.fire('cp_back', () => {
+              Feedback.tap();
+              router.back();
+          }))
+          .onMouse(Pointer.on('cp_back', () => {
+              Feedback.tap();
+              router.back();
+          }))
         Text('收藏')
           .fontSize(24)
           .fontColor(T.TXT)
@@ -103,15 +131,14 @@ struct CollectPage {
             GridItem() {
               Column() {
                 Stack({ alignContent: Alignment.TopEnd }) {
-                  Image(f.pic.length > 0 ? f.pic : $r('app.media.app_icon'))
+                  Poster({ url: f.pic, bot: 0 })
                     .width('100%')
                     .height('100%')
-                    .objectFit(ImageFit.Cover)
-                    .backgroundColor(T.CARD)
-                    .borderRadius({ topLeft: T.RADIUS, topRight: T.RADIUS })
-                  Text('×')
+                  // 首次点是「×」，第二次点变成红色「删」——按钮自解释，
+                  // 用户不用回想刚才那条提示
+                  Text(this.confirmDel === (f.siteKey + f.vodId) ? '删' : '×')
                     .fontSize(16)
-                    .fontColor(T.TXT)
+                    .fontColor(this.confirmDel === (f.siteKey + f.vodId) ? T.ERR : T.TXT)
                     .backgroundColor(this.hi('x_' + f.siteKey + f.vodId) ? T.BLACK_80 : T.CARD_HI)
                     .width(26)
                     .height(26)
@@ -122,10 +149,14 @@ struct CollectPage {
                     .onFocus(() => this.hover('x_' + f.siteKey + f.vodId, true))
                     .onBlur(() => this.hover('x_' + f.siteKey + f.vodId, false))
                     .onHover((hv: boolean) => this.hover('x_' + f.siteKey + f.vodId, hv))
-                    .onClick(() => {
-                      Feedback.tap();
-                      this.del(f);
-                    })
+                    .onClick(() => Pointer.fire('cp_del' + f.siteKey + f.vodId, () => {
+                        Feedback.tap();
+                        this.del(f);
+                    }))
+                    .onMouse(Pointer.on('cp_del' + f.siteKey + f.vodId, () => {
+                        Feedback.tap();
+                        this.del(f);
+                    }))
                 }
                 .width('100%')
                 .aspectRatio(16 / 9)
@@ -149,14 +180,22 @@ struct CollectPage {
               .onFocus(() => this.hover('f_' + f.siteKey + f.vodId, true))
               .onBlur(() => this.hover('f_' + f.siteKey + f.vodId, false))
               .onHover((hv: boolean) => this.hover('f_' + f.siteKey + f.vodId, hv))
-              .onClick(() => {
-                Feedback.tap();
-                const p = new DetailParam();
-                p.siteKey = f.siteKey;
-                p.siteName = f.siteName;
-                p.vodId = f.vodId;
-                router.pushUrl({ url: 'pages/Detail', params: p });
-              })
+              .onClick(() => Pointer.fire('cp_open' + f.siteKey + f.vodId, () => {
+                  Feedback.tap();
+                  const p = new DetailParam();
+                  p.siteKey = f.siteKey;
+                  p.siteName = f.siteName;
+                  p.vodId = f.vodId;
+                  router.pushUrl({ url: 'pages/Detail', params: p });
+              }))
+              .onMouse(Pointer.on('cp_open' + f.siteKey + f.vodId, () => {
+                  Feedback.tap();
+                  const p = new DetailParam();
+                  p.siteKey = f.siteKey;
+                  p.siteName = f.siteName;
+                  p.vodId = f.vodId;
+                  router.pushUrl({ url: 'pages/Detail', params: p });
+              }))
             }
           }, (f: FavItem) => 'fav' + f.siteKey + f.vodId)
         }

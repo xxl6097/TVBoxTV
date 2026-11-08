@@ -12,15 +12,32 @@ class Resp {
 export class Http {
   static async text(url: string, extra?: Record<string, string>, timeout?: number): Promise<string> {
     const ms: number = timeout === undefined ? 12000 : timeout;
+    // 总预算：timeout 是「这次请求最多花多久」，不是「每一跳各自能花多久」。
+    // 原来 3 跳 × ms，用户明显感觉比设定值慢 3 倍。
+    const deadline: number = Date.now() + ms;
     let cur: string = url;
     let last: Resp = new Resp();
+    let tried: number = 0;
+    let moreRedirect: boolean = false;
     for (let hop = 0; hop < 3; hop++) {
-      last = await Http.once(cur, extra, ms);
+      const left: number = Http.leftOf(deadline, ms);
+      if (left <= 0) {
+        break;
+      }
+      last = await Http.once(cur, extra, left);
+      tried++;
+      moreRedirect = false;
       if (last.code >= 300 && last.code < 400 && last.location.length > 0) {
         cur = Http.abs(cur, last.location);
+        moreRedirect = true;
         continue;
       }
       break;
+    }
+    // 一次都没发出去，或重定向还没跟完预算就用完了 —— 都算超时，
+    // 不能把 3xx 的空 body 当正文返回（上层会当成「接口返回空数据」）
+    if (tried === 0 || moreRedirect) {
+      throw new Error('网络超时，请检查网络后重试');
     }
     if (last.code === 0) {
       return last.body;
@@ -51,8 +68,16 @@ export class Http {
     // 直播源大量用 302 反盗链跳转（源站地址 → 真实 CDN 地址）。
     // 不跟随重定向时，这类流拿到的是 302 空响应，被 probe 误判成失效，
     // 进而自动跳台——用户点 A 台却播 B 台。这里手动跟随（最多 3 跳）。
+    //
+    // ms 是「整次探测」的预算，不是每跳各算一份。原来是每跳各 ms，
+    // 40 个频道探活最坏变成 3 倍时长，连取消都做不到。
+    const deadline: number = Date.now() + ms;
     for (let hop = 0; hop < 3; hop++) {
-      const r: string = await Http.peekOnce(cur, ms);
+      const left: number = Http.leftOf(deadline, ms);
+      if (left <= 0) {
+        return '';
+      }
+      const r: string = await Http.peekOnce(cur, left);
       if (r.startsWith('#REDIRECT:')) {
         cur = Http.abs(cur, r.substring(9));
         continue;
@@ -194,6 +219,22 @@ export class Http {
       req.destroy();
     }
     return r;
+  }
+
+  /**
+   * 算出这一跳还能用多少毫秒。0 表示预算已耗尽，调用方应收手。
+   * 剩得太少时给一个最小可用值——刚发出去就必然超时的请求毫无意义；
+   * 但不会无限续期：下一跳重新算又会归零，所以最多多花一跳的余量。
+   */
+  private static leftOf(deadline: number, totalMs: number): number {
+    const left: number = deadline - Date.now();
+    if (left <= 0) {
+      return 0;
+    }
+    if (left >= 600) {
+      return left;
+    }
+    return totalMs < 600 ? totalMs : 600;
   }
 
   private static abs(base: string, loc: string): string {

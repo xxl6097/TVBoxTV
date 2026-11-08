@@ -8,6 +8,8 @@ import { Cms } from '../common/Cms';
 import { Playlist } from '../common/Playlist';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { KEY_IS_PHONE } from '../common/Device';
+import { Poster } from '../common/Poster';
+import { Pointer } from '../common/Pointer';
 
 /** 剧集网格：整宽 8 列，单项高 46、间距 10。epsHeight() 靠这三个数算总高 */
 const EPS_COLS: number = 8;
@@ -247,7 +249,8 @@ struct Detail {
             .onFocus(() => this.hoverTo('back', true))
             .onBlur(() => this.hoverTo('back', false))
             .onHover((hv: boolean) => this.hoverTo('back', hv))
-            .onClick(() => { Feedback.tap(); router.back(); })
+            .onClick(() => Pointer.fire('d_back', () => { Feedback.tap(); router.back(); }))
+            .onMouse(Pointer.on('d_back', () => { Feedback.tap(); router.back(); }))
           Text(this.vod.name.length > 0 ? this.vod.name : '详情')
             .fontSize(24).fontColor(T.TXT)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
@@ -264,7 +267,8 @@ struct Detail {
             .onFocus(() => this.hoverTo('fav', true))
             .onBlur(() => this.hoverTo('fav', false))
             .onHover((hv: boolean) => this.hoverTo('fav', hv))
-            .onClick(() => { Feedback.tap(); this.toggleFav(); })
+            .onClick(() => Pointer.fire('d_fav', () => { Feedback.tap(); this.toggleFav(); }))
+            .onMouse(Pointer.on('d_fav', () => { Feedback.tap(); this.toggleFav(); }))
         }
         .width('100%')
         .padding({ left: 24, right: 24, top: 24, bottom: 12 })
@@ -293,9 +297,7 @@ struct Detail {
               Row() {
                 // 左：海报。屏幕只有 366vp 高，海报不能按 240×340 摆，否则一屏装不下
                 Column() {
-                  Image(this.vod.pic.length > 0 ? this.vod.pic : undefined)
-                    .width(this.isPhone ? 120 : 200).height(this.isPhone ? 169 : 282).objectFit(ImageFit.Cover)
-                    .borderRadius(12).backgroundColor(T.CARD)
+                  Poster({ url: this.vod.pic, w: this.isPhone ? 120 : 200, h: this.isPhone ? 169 : 282, radius: 12 })
                   Text(this.vod.siteName).fontSize(13).fontColor(T.DIM).margin({ top: 10 })
                 }
                 .width(this.isPhone ? 140 : 232)
@@ -320,11 +322,16 @@ struct Detail {
                       .onFocus(() => this.hoverTo('intro', true))
                       .onBlur(() => this.hoverTo('intro', false))
                       .onHover((hv: boolean) => this.hoverTo('intro', hv))
-                      .onClick(() => {
-                        Feedback.tap();
-                        this.fullIntro = !this.fullIntro;
-                        Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
-                      })
+                      .onClick(() => Pointer.fire('d_intro', () => {
+                          Feedback.tap();
+                          this.fullIntro = !this.fullIntro;
+                          Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
+                      }))
+                      .onMouse(Pointer.on('d_intro', () => {
+                          Feedback.tap();
+                          this.fullIntro = !this.fullIntro;
+                          Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
+                      }))
                   }
 
                   if (this.err.length > 0) {
@@ -353,11 +360,16 @@ struct Detail {
                               .focusable(true)
                               .onFocus(() => this.hoverTo('ln' + i, true))
                               .onBlur(() => this.hoverTo('ln' + i, false))
-                              .onClick(() => {
-                                Feedback.tap();
-                                this.lineIdx = i;
-                                Tip.show('已切到线路：' + l.name);
-                              })
+                              .onClick(() => Pointer.fire('d_line' + i, () => {
+                                  Feedback.tap();
+                                  this.lineIdx = i;
+                                  Tip.show('已切到线路：' + l.name);
+                              }))
+                              .onMouse(Pointer.on('d_line' + i, () => {
+                                  Feedback.tap();
+                                  this.lineIdx = i;
+                                  Tip.show('已切到线路：' + l.name);
+                              }))
                           }
                         }, (l: Line, i: number) => 'l' + i + l.name)
                       }
@@ -400,7 +412,8 @@ struct Detail {
                     .onFocus(() => this.hoverTo('ord', true))
                     .onBlur(() => this.hoverTo('ord', false))
                     .onHover((hv: boolean) => this.hoverTo('ord', hv))
-                    .onClick(() => { Feedback.tap(); this.epDesc = !this.epDesc; })
+                    .onClick(() => Pointer.fire('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; }))
+                    .onMouse(Pointer.on('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; }))
                 }
                 .width('100%').margin({ top: 20, bottom: 10 })
 
@@ -426,7 +439,8 @@ struct Detail {
                         .focusable(true)
                         .onFocus(() => this.hoverTo('e' + this.realIdx(ep), true))
                         .onBlur(() => this.hoverTo('e' + this.realIdx(ep), false))
-                        .onClick(() => { Feedback.tap(); this.play(ep, this.realIdx(ep)); })
+                        .onClick(() => Pointer.fire('d_ep' + this.realIdx(ep), () => { Feedback.tap(); this.play(ep, this.realIdx(ep)); }))
+                        .onMouse(Pointer.on('d_ep' + this.realIdx(ep), () => { Feedback.tap(); this.play(ep, this.realIdx(ep)); }))
                     }
                   }, (ep: Episode) => 'e' + ep.url + (this.epDesc ? 'd' : 'a'))
                 }

@@ -161,12 +161,17 @@ export class Store {
     } catch (err) {
       throw new Error('订阅不是合法 JSON');
     }
+    // 内容是字面量 null / 空对象时，下面任何一次 .length / .trim() 都会抛
+    // "Cannot read properties of null"，用户看到的就是这行半英文报错
+    if (cfg === null || cfg === undefined) {
+      throw new Error('订阅内容为空（不是合法的 TVBox 配置）');
+    }
 
     const r: SubResult = new SubResult();
-    r.name = cfg.name !== undefined ? cfg.name : '';
+    r.name = cfg.name !== undefined && cfg.name !== null ? cfg.name : '';
 
     // 点播站源
-    if (cfg.sites !== undefined && cfg.sites.length > 0) {
+    if (cfg.sites !== undefined && cfg.sites !== null && cfg.sites.length > 0) {
       Store.buildSites(cfg);
       Store.buildParses(cfg);
       // 换订阅后站源 key 整批变化，先把已启用集合同新列表对齐，
@@ -189,13 +194,17 @@ export class Store {
     }
 
     // 直播源
-    if (cfg.lives !== undefined && cfg.lives.length > 0) {
+    if (cfg.lives !== undefined && cfg.lives !== null && cfg.lives.length > 0) {
       const lives: RawLive[] = [];
       for (let i = 0; i < cfg.lives.length; i++) {
         const l: RawLive = cfg.lives[i];
-        const u: string = l.url !== undefined ? l.url.trim() : '';
+        if (l === null || l === undefined) {
+          continue;
+        }
+        const u: string = l.url !== undefined && l.url !== null ? l.url.trim() : '';
         if (u.startsWith('http://') || u.startsWith('https://')) {
-          const n: RawLive = { name: l.name !== undefined ? l.name : ('直播源' + (i + 1)), url: u };
+          const nm: string = l.name !== undefined && l.name !== null ? l.name : ('直播源' + (i + 1));
+          const n: RawLive = { name: nm, url: u };
           lives.push(n);
         }
       }
@@ -243,7 +252,10 @@ export class Store {
     }
     try {
       const cfg: RawConfig = JSON.parse(Cms.cleanJson(text)) as RawConfig;
-      if (cfg.sites === undefined || cfg.sites.length === 0) {
+      if (cfg === null || cfg === undefined) {
+        return false;
+      }
+      if (cfg.sites === undefined || cfg.sites === null || cfg.sites.length === 0) {
         return false;
       }
       Store.buildSites(cfg);
@@ -254,18 +266,47 @@ export class Store {
     }
   }
 
+  /**
+   * 从外部订阅 JSON 里取字符串字段。
+   *
+   * 这是外部数据，字段可能是 null / 数字 / 对象。原来的写法
+   * `r.key !== undefined && r.key.length > 0` 遇到 null 时前半句成立、
+   * 后半句直接抛 "Cannot read properties of null (reading 'length')"，
+   * 用户在设置页看到的就是这行半英文报错。
+   */
+  private static strOf(v: string | null | undefined, fallback: string): string {
+    if (v === undefined || v === null) {
+      return fallback;
+    }
+    const s: string = v;
+    return s.length > 0 ? s : fallback;
+  }
+
+  /** 取数字字段；null / 非数字一律给兜底值 */
+  private static numOf(v: number | null | undefined, fallback: number): number {
+    if (v === undefined || v === null) {
+      return fallback;
+    }
+    const n: number = v;
+    return isNaN(n) ? fallback : n;
+  }
+
   private static buildSites(cfg: RawConfig): void {
     const out: Site[] = [];
     const raw: RawSite[] = cfg.sites as RawSite[];
     for (let i = 0; i < raw.length; i++) {
       const r = raw[i];
+      // 配置里偶尔会出现 null 占位的空项，整个跳过
+      if (r === undefined || r === null) {
+        continue;
+      }
       const s = new Site();
-      s.key = r.key !== undefined && r.key.length > 0 ? r.key : ('site_' + i);
-      s.name = r.name !== undefined && r.name.length > 0 ? r.name : ('站源 ' + (i + 1));
-      s.type = r.type === undefined ? 1 : r.type;
-      s.api = r.api === undefined ? '' : r.api;
-      s.searchable = (r.searchable === undefined ? 1 : r.searchable) === 1;
-      s.quickSearch = (r.quickSearch === undefined ? 0 : r.quickSearch) === 1;
+      s.key = Store.strOf(r.key, 'site_' + i);
+      s.name = Store.strOf(r.name, '站源 ' + (i + 1));
+      s.type = Store.numOf(r.type, 1);
+      s.api = Store.strOf(r.api, '');
+      s.searchable = Store.numOf(r.searchable, 1) === 1;
+      s.quickSearch = Store.numOf(r.quickSearch, 0) === 1;
       // 订阅源的 ext 可能是 JSON 对象（如 hongtv.json v5 的 note/library/verified），
       // 而 TVBox 标准里 ext 是字符串。这里规范成字符串，否则 filtersOf 里的
       // ext.trim() 会因 ext 实际是 object 而抛 "undefined is not callable"。
@@ -300,20 +341,23 @@ export class Store {
 
   private static buildParses(cfg: RawConfig): void {
     const out: ParseRule[] = [];
-    if (cfg.parses !== undefined) {
-      const ps: RawParse[] = cfg.parses;
-      for (let i = 0; i < ps.length; i++) {
-        const p = ps[i];
-        const url: string = p.url === undefined ? '' : p.url;
-        // type 2 是「并发/轮询」占位符，真正的解析器是那些 type 1 的
-        if (p.type === 1 && url.startsWith('http')) {
-          const r = new ParseRule();
-          r.name = p.name === undefined ? ('解析' + i) : p.name;
-          r.url = url;
-          out.push(r);
+      if (cfg.parses !== undefined && cfg.parses !== null) {
+        const ps: RawParse[] = cfg.parses;
+        for (let i = 0; i < ps.length; i++) {
+          const p = ps[i];
+          if (p === undefined || p === null) {
+            continue;
+          }
+          const url: string = Store.strOf(p.url, '');
+          // type 2 是「并发/轮询」占位符，真正的解析器是那些 type 1 的
+          if (Store.numOf(p.type, 0) === 1 && url.startsWith('http')) {
+            const r = new ParseRule();
+            r.name = Store.strOf(p.name, '解析' + i);
+            r.url = url;
+            out.push(r);
+          }
         }
       }
-    }
     Store.parseList = out;
   }
 
@@ -449,7 +493,16 @@ export class Store {
       return [];
     }
     try {
-      return JSON.parse(s) as HistItem[];
+      const arr: HistItem[] = JSON.parse(s) as HistItem[];
+      // 按「最后观看时间」倒序。
+      // updateHistoryPos 只改 time、不动数组位置，于是重看老片时会出现
+      // 「刚刚」排在「12 小时前」下面，列表看起来是乱的。
+      arr.sort((a: HistItem, b: HistItem): number => {
+        const ta: number = a.time === undefined || a.time === null ? 0 : a.time;
+        const tb: number = b.time === undefined || b.time === null ? 0 : b.time;
+        return tb - ta;
+      });
+      return arr;
     } catch (err) {
       return [];
     }
@@ -579,6 +632,36 @@ export class Store {
     return !removed;
   }
 
+  /**
+   * 只删不加。
+   *
+   * 收藏页的「删除」不能复用 toggleFavorite：那边是翻转语义，
+   * 一旦列表已经过期（比如在别的设备/别的页面刚取消过），
+   * 翻转会把这条**加回去**，界面却提示「已取消收藏」。
+   * 返回是否真的删掉了，调用方据此给正确提示。
+   */
+  static async removeFavorite(f: FavItem): Promise<boolean> {
+    if (Store.prefs === null) {
+      return false;
+    }
+    const list: FavItem[] = await Store.favorites();
+    const out: FavItem[] = [];
+    let hit: boolean = false;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].siteKey === f.siteKey && list[i].vodId === f.vodId) {
+        hit = true;
+      } else {
+        out.push(list[i]);
+      }
+    }
+    if (!hit) {
+      return false;
+    }
+    await Store.prefs.put('fav', JSON.stringify(out));
+    await Store.prefs.flush();
+    return true;
+  }
+
   // ---------- 搜索历史 ----------
 
   /** 最多留几条。电视上用指针输入关键词很费劲，历史点一下就能重搜 */
@@ -689,6 +772,29 @@ export class Store {
       return;
     }
     await Store.prefs.put('qPref', v);
+    await Store.prefs.flush();
+  }
+
+  /**
+   * 播放倍速。1 = 正常速度。
+   *
+   * 做成全局偏好而不是每集记一次：追剧的人一般整部都看 1.25/1.5 倍，
+   * 每集都要重设一次很烦。数值直接存倍率（0.5/0.75/1.25/1.5/2），
+   * 不用枚举下标 —— 以后加档位不会把老配置错位。
+   */
+  static async speedPref(): Promise<number> {
+    if (Store.prefs === null) {
+      return 1;
+    }
+    const v: number = await Store.prefs.get('speed', 1) as number;
+    return v > 0 ? v : 1;
+  }
+
+  static async setSpeedPref(v: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('speed', v);
     await Store.prefs.flush();
   }
 

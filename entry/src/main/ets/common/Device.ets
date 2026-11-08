@@ -40,8 +40,13 @@ export class Device {
     if (dt !== 'phone' && dt !== 'tv') {
       try {
         const d = display.getDefaultDisplaySync();
-        const short: number = Math.min(d.width, d.height);
-        if (short > 0 && short < 600) {
+        // 注意：display 的 width/height 单位是 **px**，不是 vp。
+        // 原来直接拿 px 和 600 比，手机短边 1080px、平板 1600px 全都 > 600，
+        // 兜底分支永远判不出手机 —— default/tablet/折叠屏 会落到电视布局
+        // （6 列网格 + 遥控焦点），在这些机器上完全没法用。
+        // 一律先换成 vp 再比：手机 360~440vp，平板 600+vp。
+        const shortVp: number = Math.min(px2vp(d.width), px2vp(d.height));
+        if (shortVp > 0 && shortVp < 600) {
           isPhone = true;
           isTv = false;
         }
@@ -75,7 +80,9 @@ export class Device {
   /** 手机竖屏时留出状态栏/安全区后的可用宽度（vp）下限，供需要精确计算的场景用 */
   static phoneW(): number {
     try {
-      return Math.min(display.getDefaultDisplaySync().width, display.getDefaultDisplaySync().height);
+      const d = display.getDefaultDisplaySync();
+      // 同样要换单位：返回值是 px，而调用方按 vp 用来算布局
+      return Math.min(px2vp(d.width), px2vp(d.height));
     } catch (e) {
       return 440;
     }

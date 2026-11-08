@@ -22,6 +22,8 @@ import { Crawler, CrawlResult } from '../common/Crawler';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { KEY_IS_PHONE } from '../common/Device';
 import { PhoneTabBar } from '../common/PhoneTabBar';
+import { Pointer } from '../common/Pointer';
+import { Poster } from '../common/Poster';
 import { isBackCode } from '../common/TvFocus';
 
 /** 功能块列模板：必须是 1fr × N，用固定宽度会让最后一格溢出屏幕 */
@@ -108,11 +110,7 @@ struct ContinueCard {
   build() {
     Column() {
       Stack() {
-        Image(this.pic.length > 0 ? this.pic : $r('app.media.app_icon'))
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Cover)
-          .borderRadius(R.RADIUS)
+        Poster({ url: this.pic })
 
         // 观看进度：tvOS 在缩略图底部压一条细线，一眼看出看到哪了。
         // 时长未知（老记录）就不画，避免出现一条永远不动的空槽。
@@ -146,10 +144,14 @@ struct ContinueCard {
           .onHover((hv: boolean) => {
             this.delHover = hv;
           })
-          .onClick(() => {
-            Feedback.tap();
-            this.onDelete();
-          })
+          .onClick(() => Pointer.fire('cdel_' + this.name, () => {
+              Feedback.tap();
+              this.onDelete();
+          }))
+          .onMouse(Pointer.on('cdel_' + this.name, () => {
+              Feedback.tap();
+              this.onDelete();
+          }))
       }
       .width(R.W)
       .height(R.H)
@@ -189,10 +191,14 @@ struct ContinueCard {
     .onHover((hv: boolean) => {
       this.onHoverIn(hv);
     })
-    .onClick(() => {
-      Feedback.tap();
-      this.onTap();
-    })
+    .onClick(() => Pointer.fire('cplay_' + this.name, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
+    .onMouse(Pointer.on('cplay_' + this.name, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
   }
 }
 
@@ -212,11 +218,7 @@ struct FeedCard {
   build() {
     Column() {
       Stack({ alignContent: Alignment.TopEnd }) {
-        Image(this.pic.length > 0 ? this.pic : $r('app.media.app_icon'))
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Cover)
-          .borderRadius(R.RADIUS)
+        Poster({ url: this.pic })
 
         // 更新状态改成右上角小药丸：原来是一条横贯整图的深绿条，
         // 压在画面上既挡内容又像「字幕条」，tvOS 一律用角标。
@@ -268,10 +270,14 @@ struct FeedCard {
     .onHover((hv: boolean) => {
       this.onHoverIn(hv);
     })
-    .onClick(() => {
-      Feedback.tap();
-      this.onTap();
-    })
+    .onClick(() => Pointer.fire('fcard_' + this.name, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
+    .onMouse(Pointer.on('fcard_' + this.name, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
   }
 }
 
@@ -476,7 +482,8 @@ struct Home {
       .onFocus(() => this.hover(key, true))
       .onBlur(() => this.hover(key, false))
       .onHover((hv: boolean) => this.hover(key, hv))
-      .onClick(() => { Feedback.tap(); act(); })
+      .onClick(() => Pointer.fire('rail_' + key, () => { Feedback.tap(); act(); }))
+      .onMouse(Pointer.on('rail_' + key, () => { Feedback.tap(); act(); }))
     }
     .width('100%')
     .padding({ top: 12, bottom: 6 })
@@ -514,10 +521,14 @@ struct Home {
       .onFocus(() => this.hover('clear_h', true))
       .onBlur(() => this.hover('clear_h', false))
       .onHover((hv: boolean) => this.hover('clear_h', hv))
-      .onClick(() => {
-        Feedback.tap();
-        this.clearHist();
-      })
+      .onClick(() => Pointer.fire('hclr', () => {
+          Feedback.tap();
+          this.clearHist();
+      }))
+      .onMouse(Pointer.on('hclr', () => {
+          Feedback.tap();
+          this.clearHist();
+      }))
       Row() {
         Text('全部')
           .fontSize(13)
@@ -536,10 +547,14 @@ struct Home {
       .onFocus(() => this.hover('all_h', true))
       .onBlur(() => this.hover('all_h', false))
       .onHover((hv: boolean) => this.hover('all_h', hv))
-      .onClick(() => {
-        Feedback.tap();
-        this.open('pages/HistoryPage');
-      })
+      .onClick(() => Pointer.fire('hall', () => {
+          Feedback.tap();
+          this.open('pages/HistoryPage');
+      }))
+      .onMouse(Pointer.on('hall', () => {
+          Feedback.tap();
+          this.open('pages/HistoryPage');
+      }))
       .margin({ left: 6 })
     }
     .width('100%')
@@ -736,10 +751,14 @@ struct Home {
                 .onFocus(() => this.hover('f_' + f.label, true))
                 .onBlur(() => this.hover('f_' + f.label, false))
                 .onHover((hv: boolean) => this.hover('f_' + f.label, hv))
-                .onClick(() => {
-                  Feedback.tap();
-                  this.open(f.page);
-                })
+                .onClick(() => Pointer.fire('nav_' + f.page, () => {
+                    Feedback.tap();
+                    this.open(f.page);
+                }))
+                .onMouse(Pointer.on('nav_' + f.page, () => {
+                    Feedback.tap();
+                    this.open(f.page);
+                }))
               }
             }, (f: Func) => 'func' + f.label)
           }
@@ -862,10 +881,14 @@ struct Home {
                   .onBlur(() => this.hover('gosub', false))
                   .onHover((hv: boolean) => this.hover('gosub', hv))
                   .backgroundColor(this.hi('gosub') ? T.CARD_HI : '#00000000')
-                  .onClick(() => {
-                    Feedback.tap();
-                    router.pushUrl({ url: 'pages/SettingPage' });
-                  })
+                  .onClick(() => Pointer.fire('nav_set', () => {
+                      Feedback.tap();
+                      router.pushUrl({ url: 'pages/SettingPage' });
+                  }))
+                  .onMouse(Pointer.on('nav_set', () => {
+                      Feedback.tap();
+                      router.pushUrl({ url: 'pages/SettingPage' });
+                  }))
               }
               .width('100%')
               .margin({ top: 40 })
@@ -914,10 +937,14 @@ struct Home {
           .padding({ left: 13, right: 13, top: 7, bottom: 7 })
           .borderRadius(T.RADIUS_PILL)
           .backgroundColor(T.CARD)
-          .onClick(() => {
-            Feedback.tap();
-            this.open('pages/Direct');
-          })
+          .onClick(() => Pointer.fire('nav_direct', () => {
+              Feedback.tap();
+              this.open('pages/Direct');
+          }))
+          .onMouse(Pointer.on('nav_direct', () => {
+              Feedback.tap();
+              this.open('pages/Direct');
+          }))
         Text('网盘')
           .fontSize(14)
           .fontColor(T.SUB)
@@ -925,10 +952,14 @@ struct Home {
           .borderRadius(T.RADIUS_PILL)
           .backgroundColor(T.CARD)
           .margin({ left: 8 })
-          .onClick(() => {
-            Feedback.tap();
-            this.open('pages/WebdavPage');
-          })
+          .onClick(() => Pointer.fire('nav_wd', () => {
+              Feedback.tap();
+              this.open('pages/WebdavPage');
+          }))
+          .onMouse(Pointer.on('nav_wd', () => {
+              Feedback.tap();
+              this.open('pages/WebdavPage');
+          }))
         Text('历史')
           .fontSize(14)
           .fontColor(T.SUB)
@@ -936,10 +967,14 @@ struct Home {
           .borderRadius(T.RADIUS_PILL)
           .backgroundColor(T.CARD)
           .margin({ left: 8 })
-          .onClick(() => {
-            Feedback.tap();
-            this.open('pages/HistoryPage');
-          })
+          .onClick(() => Pointer.fire('nav_hist', () => {
+              Feedback.tap();
+              this.open('pages/HistoryPage');
+          }))
+          .onMouse(Pointer.on('nav_hist', () => {
+              Feedback.tap();
+              this.open('pages/HistoryPage');
+          }))
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12, bottom: 6 })
@@ -990,10 +1025,14 @@ struct Home {
                 GridItem() {
                   this.PhoneFeedCard(v)
                 }
-                .onClick(() => {
-                  Feedback.tap();
-                  this.openDetail(v.siteKey, v.siteName, v.id);
-                })
+                .onClick(() => Pointer.fire('pfeed_' + v.siteKey + v.id, () => {
+                    Feedback.tap();
+                    this.openDetail(v.siteKey, v.siteName, v.id);
+                }))
+                .onMouse(Pointer.on('pfeed_' + v.siteKey + v.id, () => {
+                    Feedback.tap();
+                    this.openDetail(v.siteKey, v.siteName, v.id);
+                }))
               }, (v: Vod) => 'pfeed' + v.siteKey + v.id)
             }
             .columnsTemplate(this.phoneFeedCols())
@@ -1038,10 +1077,14 @@ struct Home {
                   .margin({ top: 16 })
                   .border({ width: T.BORDER, color: T.TXT })
                   .backgroundColor(T.CARD)
-                  .onClick(() => {
-                    Feedback.tap();
-                    router.pushUrl({ url: 'pages/SettingPage' });
-                  })
+                  .onClick(() => Pointer.fire('nav_set2', () => {
+                      Feedback.tap();
+                      router.pushUrl({ url: 'pages/SettingPage' });
+                  }))
+                  .onMouse(Pointer.on('nav_set2', () => {
+                      Feedback.tap();
+                      router.pushUrl({ url: 'pages/SettingPage' });
+                  }))
               }
               .width('100%')
               .margin({ top: 30 })
@@ -1083,10 +1126,14 @@ struct Home {
     .layoutWeight(1)
     .height('100%')
     .justifyContent(FlexAlign.Center)
-    .onClick(() => {
-      Feedback.tap();
-      this.open(page);
-    })
+    .onClick(() => Pointer.fire('tab_' + label, () => {
+        Feedback.tap();
+        this.open(page);
+    }))
+    .onMouse(Pointer.on('tab_' + label, () => {
+        Feedback.tap();
+        this.open(page);
+    }))
   }
 
   /** 手机「最近更新」海报卡：16:9 图 + 角标 + 标题 + 类型/年份，触摸点击无焦点放大 */
@@ -1094,11 +1141,7 @@ struct Home {
   PhoneFeedCard(v: Vod) {
     Column() {
       Stack({ alignContent: Alignment.TopEnd }) {
-        Image(v.pic.length > 0 ? v.pic : $r('app.media.app_icon'))
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Cover)
-          .borderRadius(R.RADIUS)
+        Poster({ url: v.pic })
         if (v.remark.length > 0) {
           Text(v.remark)
             .fontSize(10)
@@ -1245,10 +1288,14 @@ struct Home {
             .onFocus(() => this.hover('no', true))
             .onBlur(() => this.hover('no', false))
             .onHover((hv: boolean) => this.hover('no', hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.disagree();
-            })
+            .onClick(() => Pointer.fire('cs_no', () => {
+                Feedback.tap();
+                this.disagree();
+            }))
+            .onMouse(Pointer.on('cs_no', () => {
+                Feedback.tap();
+                this.disagree();
+            }))
 
           Text('同意并继续')
             .fontSize(16).height(48)
@@ -1266,10 +1313,14 @@ struct Home {
             .onFocus(() => this.hover('yes', true))
             .onBlur(() => this.hover('yes', false))
             .onHover((hv: boolean) => this.hover('yes', hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.agree();
-            })
+            .onClick(() => Pointer.fire('cs_yes', () => {
+                Feedback.tap();
+                this.agree();
+            }))
+            .onMouse(Pointer.on('cs_yes', () => {
+                Feedback.tap();
+                this.agree();
+            }))
         }
         .width('100%')
         .margin({ top: 16 })
@@ -1349,10 +1400,14 @@ struct Home {
           .onFocus(() => this.hover('yes', true))
           .onBlur(() => this.hover('yes', false))
           .onHover((hv: boolean) => this.hover('yes', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.closeGuide();
-          })
+          .onClick(() => Pointer.fire('guide_x', () => {
+              Feedback.tap();
+              this.closeGuide();
+          }))
+          .onMouse(Pointer.on('guide_x', () => {
+              Feedback.tap();
+              this.closeGuide();
+          }))
       }
       .width(this.dialogW(640))
       .padding(28)

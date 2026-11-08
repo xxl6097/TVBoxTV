@@ -16,6 +16,8 @@ import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import { Store } from '../common/Store';
 import { PlayParam, T } from '../common/Model';
+import { Playlist } from '../common/Playlist';
+import { Pointer } from '../common/Pointer';
 import { QrCode } from '../common/QrCode';
 import { QrServer } from '../common/QrServer';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
@@ -106,6 +108,11 @@ struct Direct {
     await Store.pushDirect(u);
     this.recent = await Store.directList();
     this.closeQr();
+
+    // 直连是一个「孤立的」地址，没有上一集/下一集的概念。
+    // 必须清空播放列表：否则里面还留着上一部剧的剧集，
+    // 播完后 completed 回调 hasNext() 为真，会跳到上一部剧的下一集（串台）。
+    Playlist.clear();
 
     const p = new PlayParam();
     p.url = u;
@@ -213,10 +220,14 @@ struct Direct {
       .onFocus(() => this.hover(key, true))
       .onBlur(() => this.hover(key, false))
       .onHover((hv: boolean) => this.hover(key, hv))
-      .onClick(() => {
-        Feedback.tap();
-        act();
-      })
+      .onClick(() => Pointer.fire('di_btn' + key, () => {
+          Feedback.tap();
+          act();
+      }))
+      .onMouse(Pointer.on('di_btn' + key, () => {
+          Feedback.tap();
+          act();
+      }))
   }
 
   build() {
@@ -233,10 +244,14 @@ struct Direct {
             .onFocus(() => this.hover('back', true))
             .onBlur(() => this.hover('back', false))
             .onHover((hv: boolean) => this.hover('back', hv))
-            .onClick(() => {
-              Feedback.tap();
-              router.back();
-            })
+            .onClick(() => Pointer.fire('di_back', () => {
+                Feedback.tap();
+                router.back();
+            }))
+            .onMouse(Pointer.on('di_back', () => {
+                Feedback.tap();
+                router.back();
+            }))
           Text('直连播放')
             .fontSize(24).fontColor(T.TXT).margin({ left: 8 })
           Text('  不经过站源，直接播一个地址')
@@ -325,10 +340,14 @@ struct Direct {
                   .onFocus(() => this.hover('r_' + i, true))
                   .onBlur(() => this.hover('r_' + i, false))
                   .onHover((hv: boolean) => this.hover('r_' + i, hv))
-                  .onClick(() => {
-                    Feedback.tap();
-                    this.play(u);
-                  })
+                  .onClick(() => Pointer.fire('di_play' + u, () => {
+                      Feedback.tap();
+                      this.play(u);
+                  }))
+                  .onMouse(Pointer.on('di_play' + u, () => {
+                      Feedback.tap();
+                      this.play(u);
+                  }))
                 }, (u: string) => 'd' + u)
               }
               .width('100%')
@@ -351,10 +370,14 @@ struct Direct {
           Column()
             .width('100%').height('100%')
             .backgroundColor(T.BLACK_70)
-            .onClick(() => {
-              Feedback.tap();
-              this.closeQr();
-            })
+            .onClick(() => Pointer.fire('di_qrx', () => {
+                Feedback.tap();
+                this.closeQr();
+            }))
+            .onMouse(Pointer.on('di_qrx', () => {
+                Feedback.tap();
+                this.closeQr();
+            }))
 
           Column() {
             Row() {
@@ -370,10 +393,14 @@ struct Direct {
                 .onFocus(() => this.hover('qclose', true))
                 .onBlur(() => this.hover('qclose', false))
                 .onHover((hv: boolean) => this.hover('qclose', hv))
-                .onClick(() => {
-                  Feedback.tap();
-                  this.closeQr();
-                })
+                .onClick(() => Pointer.fire('di_qrx2', () => {
+                    Feedback.tap();
+                    this.closeQr();
+                }))
+                .onMouse(Pointer.on('di_qrx2', () => {
+                    Feedback.tap();
+                    this.closeQr();
+                }))
             }
             .width('100%')
 

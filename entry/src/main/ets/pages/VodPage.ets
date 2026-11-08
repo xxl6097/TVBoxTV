@@ -19,6 +19,8 @@ import { Cms } from '../common/Cms';
 import { Site, Category, Vod, FilterGroup, FilterValue, VodPage, DetailParam, T } from '../common/Model';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { KEY_IS_PHONE } from '../common/Device';
+import { Poster } from '../common/Poster';
+import { Pointer } from '../common/Pointer';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { isBackCode } from '../common/TvFocus';
 
@@ -416,10 +418,14 @@ struct VodList {
         .onFocus(() => this.hover('back', true))
         .onBlur(() => this.hover('back', false))
         .onHover((hv: boolean) => this.hover('back', hv))
-        .onClick(() => {
-          Feedback.tap();
-          router.back();
-        })
+        .onClick(() => Pointer.fire('vp_back', () => {
+            Feedback.tap();
+            router.back();
+        }))
+        .onMouse(Pointer.on('vp_back', () => {
+            Feedback.tap();
+            router.back();
+        }))
       Text(this.site.name.length > 0 ? this.site.name : '点播')
         .fontSize(24)
         .fontColor(T.TXT)
@@ -468,7 +474,8 @@ struct VodList {
       .onFocus(() => this.hover('t_' + key, true))
       .onBlur(() => this.hover('t_' + key, false))
       .onHover((hv: boolean) => this.hover('t_' + key, hv))
-      .onClick(() => { Feedback.tap(); act(); })
+      .onClick(() => Pointer.fire('vp_tab' + key, () => { Feedback.tap(); act(); }))
+      .onMouse(Pointer.on('vp_tab' + key, () => { Feedback.tap(); act(); }))
   }
 
   @Builder
@@ -496,10 +503,14 @@ struct VodList {
             .onFocus(() => this.hover('c_' + c.id, true))
             .onBlur(() => this.hover('c_' + c.id, false))
             .onHover((hv: boolean) => this.hover('c_' + c.id, hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.pickCat(c);
-            })
+            .onClick(() => Pointer.fire('vp_cat' + c.id, () => {
+                Feedback.tap();
+                this.pickCat(c);
+            }))
+            .onMouse(Pointer.on('vp_cat' + c.id, () => {
+                Feedback.tap();
+                this.pickCat(c);
+            }))
         }, (c: Category) => 'cat' + c.id + c.name)
       }
       .padding({ left: 24, right: 24 })
@@ -533,10 +544,14 @@ struct VodList {
           .onBlur(() => this.hover('retry', false))
           .onHover((hv: boolean) => this.hover('retry', hv))
           .backgroundColor(this.hi('retry') ? T.CARD_HI : '#00000000')
-          .onClick(() => {
-            Feedback.tap();
-            this.retryLoad();
-          })
+          .onClick(() => Pointer.fire('vp_retry', () => {
+              Feedback.tap();
+              this.retryLoad();
+          }))
+          .onMouse(Pointer.on('vp_retry', () => {
+              Feedback.tap();
+              this.retryLoad();
+          }))
       }
       .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
     } else {
@@ -557,14 +572,22 @@ struct VodList {
           .focusable(true)
           .onFocus(() => this.hover('p_' + v.id, true))
           .onBlur(() => this.hover('p_' + v.id, false))
-          .onClick(() => {
-            Feedback.tap();
-            const p = new DetailParam();
-            p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.site.key;
-            p.siteName = v.siteName.length > 0 ? v.siteName : this.site.name;
-            p.vodId = v.id;
-            router.pushUrl({ url: 'pages/Detail', params: p });
-          })
+          .onClick(() => Pointer.fire('vp_card' + v.id, () => {
+              Feedback.tap();
+              const p = new DetailParam();
+              p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.site.key;
+              p.siteName = v.siteName.length > 0 ? v.siteName : this.site.name;
+              p.vodId = v.id;
+              router.pushUrl({ url: 'pages/Detail', params: p });
+          }))
+          .onMouse(Pointer.on('vp_card' + v.id, () => {
+              Feedback.tap();
+              const p = new DetailParam();
+              p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.site.key;
+              p.siteName = v.siteName.length > 0 ? v.siteName : this.site.name;
+              p.vodId = v.id;
+              router.pushUrl({ url: 'pages/Detail', params: p });
+          }))
         }, (v: Vod) => 'v' + v.id + v.name)
       }
       .columnsTemplate(this.isPhone ? '1fr 1fr 1fr' : '1fr 1fr 1fr 1fr 1fr 1fr')
@@ -596,10 +619,14 @@ struct VodList {
             .onFocus(() => this.hover('more', true))
             .onBlur(() => this.hover('more', false))
             .onHover((hv: boolean) => this.hover('more', hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.loadPage(this.page + 1, false);
-            })
+            .onClick(() => Pointer.fire('vp_more', () => {
+                Feedback.tap();
+                this.loadPage(this.page + 1, false);
+            }))
+            .onMouse(Pointer.on('vp_more', () => {
+                Feedback.tap();
+                this.loadPage(this.page + 1, false);
+            }))
         }
         .width('100%')
         .padding({ left: 24, right: 24, bottom: 14 })
@@ -613,13 +640,9 @@ struct VodList {
   Card(v: Vod) {
     Column() {
       Stack({ alignContent: Alignment.BottomStart }) {
-        Image(v.pic.length > 0 ? v.pic : $r('app.media.app_icon'))
+        Poster({ url: v.pic, bot: 0 })
           .width('100%')
           .height('100%')
-          .objectFit(ImageFit.Cover)
-          .backgroundColor(T.CARD)
-          .borderRadius({ topLeft: T.RADIUS, topRight: T.RADIUS })
-          .interpolation(ImageInterpolation.Medium)
         if (v.remark.length > 0) {
           // shape_vod_remark：bg_remark(#177535 @70%)，仅右侧 4dp 圆角，4dp 内边距
           Text(v.remark)
@@ -691,10 +714,14 @@ struct VodList {
           .onFocus(() => this.hover('ss_close', true))
           .onBlur(() => this.hover('ss_close', false))
           .onHover((hv: boolean) => this.hover('ss_close', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.showSites = false;
-          })
+          .onClick(() => Pointer.fire('vp_sclose', () => {
+              Feedback.tap();
+              this.showSites = false;
+          }))
+          .onMouse(Pointer.on('vp_sclose', () => {
+              Feedback.tap();
+              this.showSites = false;
+          }))
       }
       .width('100%')
       .margin({ bottom: 16 })
@@ -732,10 +759,14 @@ struct VodList {
                 .onFocus(() => this.hover('ss_' + s.key, true))
                 .onBlur(() => this.hover('ss_' + s.key, false))
                 .onHover((hv: boolean) => this.hover('ss_' + s.key, hv))
-                .onClick(() => {
-                  Feedback.tap();
-                  this.useSite(s);
-                })
+                .onClick(() => Pointer.fire('vp_site' + s.key, () => {
+                    Feedback.tap();
+                    this.useSite(s);
+                }))
+                .onMouse(Pointer.on('vp_site' + s.key, () => {
+                    Feedback.tap();
+                    this.useSite(s);
+                }))
             }
           }, (s: Site) => 'st' + s.key)
         }
@@ -779,10 +810,14 @@ struct VodList {
           .onFocus(() => this.hover('fl_reset', true))
           .onBlur(() => this.hover('fl_reset', false))
           .onHover((hv: boolean) => this.hover('fl_reset', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.sel = [];
-          })
+          .onClick(() => Pointer.fire('vp_fclr', () => {
+              Feedback.tap();
+              this.sel = [];
+          }))
+          .onMouse(Pointer.on('vp_fclr', () => {
+              Feedback.tap();
+              this.sel = [];
+          }))
       }
       .width('100%')
       .margin({ bottom: 12 })
@@ -813,10 +848,14 @@ struct VodList {
                     .onFocus(() => this.hover('fv_' + g.key + v.v, true))
                     .onBlur(() => this.hover('fv_' + g.key + v.v, false))
                     .onHover((hv: boolean) => this.hover('fv_' + g.key + v.v, hv))
-                    .onClick(() => {
-                      Feedback.tap();
-                      this.setSel(g.key, v.v);
-                    })
+                    .onClick(() => Pointer.fire('vp_f' + g.key + v.v, () => {
+                        Feedback.tap();
+                        this.setSel(g.key, v.v);
+                    }))
+                    .onMouse(Pointer.on('vp_f' + g.key + v.v, () => {
+                        Feedback.tap();
+                        this.setSel(g.key, v.v);
+                    }))
                 }, (v: FilterValue) => 'fv' + g.key + v.v + v.n)
               }
               .width('100%')
@@ -849,10 +888,14 @@ struct VodList {
           .onFocus(() => this.hover('fl_ok', true))
           .onBlur(() => this.hover('fl_ok', false))
           .onHover((hv: boolean) => this.hover('fl_ok', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.applyFilter();
-          })
+          .onClick(() => Pointer.fire('vp_fapply', () => {
+              Feedback.tap();
+              this.applyFilter();
+          }))
+          .onMouse(Pointer.on('vp_fapply', () => {
+              Feedback.tap();
+              this.applyFilter();
+          }))
       }
       .width('100%')
       .margin({ top: 10 })

@@ -9,6 +9,8 @@ import { Cms } from '../common/Cms';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
 import { PhoneTabBar } from '../common/PhoneTabBar';
+import { Pointer } from '../common/Pointer';
+import { Poster } from '../common/Poster';
 
 class Group {
   key: string = '';
@@ -364,7 +366,8 @@ struct SearchPage {
               .onFocus(() => this.hoverTo('sug' + i, true))
               .onBlur(() => this.hoverTo('sug' + i, false))
               .onHover((hv: boolean) => this.hoverTo('sug' + i, hv))
-              .onClick(() => { this.pickSugg(s); })
+              .onClick(() => Pointer.fire('sr_sug' + i, () => { this.pickSugg(s); }))
+              .onMouse(Pointer.on('sr_sug' + i, () => { this.pickSugg(s); }))
             }
           }, (s: Sug, i: number) => 'sug' + i + s.text)
         }
@@ -412,7 +415,8 @@ struct SearchPage {
               .onFocus(() => this.hoverTo('clear', true))
               .onBlur(() => this.hoverTo('clear', false))
               .onHover((hv: boolean) => this.hoverTo('clear', hv))
-              .onClick(() => { Feedback.tap(); this.clearKws(); })
+              .onClick(() => Pointer.fire('sr_kwclr', () => { Feedback.tap(); this.clearKws(); }))
+              .onMouse(Pointer.on('sr_kwclr', () => { Feedback.tap(); this.clearKws(); }))
           }
           .width(Device.panelW(560))
           .margin({ bottom: 14 })
@@ -435,11 +439,16 @@ struct SearchPage {
                   .onFocus(() => this.hoverTo('kw' + i, true))
                   .onBlur(() => this.hoverTo('kw' + i, false))
                   .onHover((hv: boolean) => this.hoverTo('kw' + i, hv))
-                  .onClick(() => {
-                    Feedback.tap();
-                    this.kw = k;
-                    this.doSearch();
-                  })
+                  .onClick(() => Pointer.fire('sr_kw' + k, () => {
+                      Feedback.tap();
+                      this.kw = k;
+                      this.doSearch();
+                  }))
+                  .onMouse(Pointer.on('sr_kw' + k, () => {
+                      Feedback.tap();
+                      this.kw = k;
+                      this.doSearch();
+                  }))
               }, (k: string, i: number) => 'kw' + i + k)
             }
             .width('100%')
@@ -472,9 +481,7 @@ struct SearchPage {
                 ForEach(g.items, (v: Vod) => {
                   ListItem() {
                     Column() {
-                      Image(v.pic.length > 0 ? v.pic : undefined)
-                        .width(104).height(146).objectFit(ImageFit.Cover)
-                        .borderRadius(8).backgroundColor(T.CARD)
+                      Poster({ url: v.pic, w: 104, h: 146 })
                       Text(v.name).fontSize(14).fontColor(T.TXT)
                         .width(104).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                         .margin({ top: 5 })
@@ -492,7 +499,8 @@ struct SearchPage {
                     .focusable(true)
                     .onFocus(() => { this.focusKey = 'r_' + g.key + v.id; })
                     .onBlur(() => { if (this.focusKey === ('r_' + g.key + v.id)) { this.focusKey = ''; } })
-                    .onClick(() => { Feedback.tap(); this.openDetail(g, v); })
+                    .onClick(() => Pointer.fire('sr_r' + g.key + v.id, () => { Feedback.tap(); this.openDetail(g, v); }))
+                    .onMouse(Pointer.on('sr_r' + g.key + v.id, () => { Feedback.tap(); this.openDetail(g, v); }))
                   }
                 }, (v: Vod) => 'r' + g.key + v.id)
               }
@@ -527,7 +535,8 @@ struct SearchPage {
           .onFocus(() => this.hoverTo('back', true))
           .onBlur(() => this.hoverTo('back', false))
           .onHover((hv: boolean) => this.hoverTo('back', hv))
-          .onClick(() => { Feedback.tap(); router.back(); })
+          .onClick(() => Pointer.fire('sr_back', () => { Feedback.tap(); router.back(); }))
+          .onMouse(Pointer.on('sr_back', () => { Feedback.tap(); router.back(); }))
         Stack({ alignContent: Alignment.End }) {
           TextInput({ text: this.kw, placeholder: '输入片名，回车搜索' })
             .height(52)
@@ -550,7 +559,8 @@ struct SearchPage {
               .onFocus(() => this.hoverTo('clr', true))
               .onBlur(() => this.hoverTo('clr', false))
               .onHover((hv: boolean) => this.hoverTo('clr', hv))
-              .onClick(() => { Feedback.tap(); this.kw = ''; })
+              .onClick(() => Pointer.fire('sr_clr', () => { Feedback.tap(); this.kw = ''; }))
+              .onMouse(Pointer.on('sr_clr', () => { Feedback.tap(); this.kw = ''; }))
           }
         }
         .layoutWeight(this.isPhone ? 1 : 0)
@@ -565,7 +575,8 @@ struct SearchPage {
           .backgroundColor(T.ACCENT).fontColor(T.BG)
           .padding({ left: 30, right: 30 })
           .margin({ left: 14 })
-          .onClick(() => { Feedback.tap(); this.doSearch(); })
+          .onClick(() => Pointer.fire('sr_go', () => { Feedback.tap(); this.doSearch(); }))
+          .onMouse(Pointer.on('sr_go', () => { Feedback.tap(); this.doSearch(); }))
         // TV 端：输入框收窄靠左，右侧空间留给下面的建议栏
         if (!this.isPhone) {
           Blank()

@@ -22,6 +22,7 @@ import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { LivePreset, fromLives } from '../common/LivePresets';
 import { Device, KEY_IS_PHONE } from '../common/Device';
 import { PhoneTabBar } from '../common/PhoneTabBar';
+import { Pointer } from '../common/Pointer';
 
 /** 一个站源的测速结果，按 key 与 Site 对应 */
 class SiteSpeed {
@@ -142,10 +143,14 @@ struct SRowView {
     .onHover((hv: boolean) => {
       this.onHoverIn(hv);
     })
-    .onClick(() => {
-      Feedback.tap();
-      this.onTap();
-    })
+    .onClick(() => Pointer.fire('st_row_' + this.label, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
+    .onMouse(Pointer.on('st_row_' + this.label, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
   }
 }
 
@@ -191,10 +196,14 @@ struct SChildView {
     .onHover((hv: boolean) => {
       this.onHoverIn(hv);
     })
-    .onClick(() => {
-      Feedback.tap();
-      this.onTap();
-    })
+    .onClick(() => Pointer.fire('st_child_' + this.label, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
+    .onMouse(Pointer.on('st_child_' + this.label, () => {
+        Feedback.tap();
+        this.onTap();
+    }))
   }
 }
 
@@ -719,10 +728,14 @@ struct SettingPage {
         .width('100%')
         .height('100%')
         .backgroundColor(T.BLACK_70)
-        .onClick(() => {
-          Feedback.tap();
-          this.closeQr();
-        })
+        .onClick(() => Pointer.fire('st_qrx', () => {
+            Feedback.tap();
+            this.closeQr();
+        }))
+        .onMouse(Pointer.on('st_qrx', () => {
+            Feedback.tap();
+            this.closeQr();
+        }))
 
       Column() {
         Row() {
@@ -753,10 +766,14 @@ struct SettingPage {
             .borderRadius(T.RADIUS_PILL)
             .backgroundColor(this.hi('qrx') ? T.CARD_HI : '#00000000')
             .onHover((hv: boolean) => this.hoverTo('qrx', hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.closeQr();
-            })
+            .onClick(() => Pointer.fire('st_qrx2', () => {
+                Feedback.tap();
+                this.closeQr();
+            }))
+            .onMouse(Pointer.on('st_qrx2', () => {
+                Feedback.tap();
+                this.closeQr();
+            }))
         }
         .width('100%')
 
@@ -839,10 +856,14 @@ struct SettingPage {
                 .backgroundColor(T.ACCENT)
                 .margin({ top: 10 })
                 .textAlign(TextAlign.Center)
-                .onClick(() => {
-                  Feedback.tap();
-                  this.applyQrManual();
-                })
+                .onClick(() => Pointer.fire('st_qrok', () => {
+                    Feedback.tap();
+                    this.applyQrManual();
+                }))
+                .onMouse(Pointer.on('st_qrok', () => {
+                    Feedback.tap();
+                    this.applyQrManual();
+                }))
             } else {
               Text('手动输入 ›')
                 .fontSize(15)
@@ -855,10 +876,14 @@ struct SettingPage {
                 .margin({ top: 8 })
                 .textAlign(TextAlign.Center)
                 .onHover((hv: boolean) => this.hoverTo('qrm', hv))
-                .onClick(() => {
-                  Feedback.tap();
-                  this.qrManualMode = true;
-                })
+                .onClick(() => Pointer.fire('st_qrman', () => {
+                    Feedback.tap();
+                    this.qrManualMode = true;
+                }))
+                .onMouse(Pointer.on('st_qrman', () => {
+                    Feedback.tap();
+                    this.qrManualMode = true;
+                }))
             }
           }
           .layoutWeight(1)
@@ -1454,10 +1479,14 @@ struct SettingPage {
         .backgroundColor(this.hi('back') ? S.ROW_HI : '#00000000')
         .animation({ duration: T.ANIM, curve: Curve.EaseOut })
         .onHover((hv: boolean) => this.hoverTo('back', hv))
-        .onClick(() => {
-          Feedback.tap();
-          router.back();
-        })
+        .onClick(() => Pointer.fire('st_back', () => {
+            Feedback.tap();
+            router.back();
+        }))
+        .onMouse(Pointer.on('st_back', () => {
+            Feedback.tap();
+            router.back();
+        }))
       Text('设置')
         .fontSize(28)
         .fontWeight(FontWeight.Bold)
@@ -1799,10 +1828,14 @@ struct SettingPage {
       Column()
         .width('100%').height('100%')
         .backgroundColor(T.BLACK_70)
-        .onClick(() => {
-          Feedback.tap();
-          this.wdEditOpen = false;
-        })
+        .onClick(() => Pointer.fire('st_wdx', () => {
+            Feedback.tap();
+            this.wdEditOpen = false;
+        }))
+        .onMouse(Pointer.on('st_wdx', () => {
+            Feedback.tap();
+            this.wdEditOpen = false;
+        }))
 
       Column() {
         Row() {
@@ -1817,10 +1850,14 @@ struct SettingPage {
             .onFocus(() => this.hoverTo('wdx', true))
             .onBlur(() => this.hoverTo('wdx', false))
             .onHover((hv: boolean) => this.hoverTo('wdx', hv))
-            .onClick(() => {
-              Feedback.tap();
-              this.wdEditOpen = false;
-            })
+            .onClick(() => Pointer.fire('st_wdx2', () => {
+                Feedback.tap();
+                this.wdEditOpen = false;
+            }))
+            .onMouse(Pointer.on('st_wdx2', () => {
+                Feedback.tap();
+                this.wdEditOpen = false;
+            }))
         }
         .width('100%')
 
@@ -1854,10 +1891,14 @@ struct SettingPage {
           .onFocus(() => this.hoverTo('wdqr', true))
           .onBlur(() => this.hoverTo('wdqr', false))
           .onHover((hv: boolean) => this.hoverTo('wdqr', hv))
-          .onClick(() => {
-            Feedback.tap();
-            this.wdQrOpen = true;
-          })
+          .onClick(() => Pointer.fire('st_wdqr', () => {
+              Feedback.tap();
+              this.wdQrOpen = true;
+          }))
+          .onMouse(Pointer.on('st_wdqr', () => {
+              Feedback.tap();
+              this.wdQrOpen = true;
+          }))
         }
 
         Column() {
@@ -1954,10 +1995,14 @@ struct SettingPage {
       .onFocus(() => this.hoverTo(key, true))
       .onBlur(() => this.hoverTo(key, false))
       .onHover((hv: boolean) => this.hoverTo(key, hv))
-      .onClick(() => {
-        Feedback.tap();
-        act();
-      })
+      .onClick(() => Pointer.fire('st_btn' + key, () => {
+          Feedback.tap();
+          act();
+      }))
+      .onMouse(Pointer.on('st_btn' + key, () => {
+          Feedback.tap();
+          act();
+      }))
   }
 
   /**
@@ -2025,10 +2070,14 @@ struct SettingPage {
         this.tvNav = key;
       }
     })
-    .onClick(() => {
-      Feedback.tap();
-      this.tvNav = key;
-    })
+    .onClick(() => Pointer.fire('st_nav' + key, () => {
+        Feedback.tap();
+        this.tvNav = key;
+    }))
+    .onMouse(Pointer.on('st_nav' + key, () => {
+        Feedback.tap();
+        this.tvNav = key;
+    }))
   }
 
   /** TV 端左侧导航栏 */
