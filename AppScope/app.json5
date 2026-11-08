@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.hong.tv",
     "vendor": "yezhen",
-    "versionCode": 1000005,
-    "versionName": "1.0.5",
+    "versionCode": 1000006,
+    "versionName": "1.0.6",
     // 图标用单张 app_icon（由 docs/store/icon_1024.png 缩出的 512 版）：
     // 白底圆角 + 绿色圆盘 + 边圈的那一版。分层资源（background/foreground/
     // layered_image.json）仍留在工程里，需要按 AGC 分层规范提交时改回

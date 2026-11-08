@@ -95,20 +95,29 @@ struct SRowView {
         .height(20)
         .borderRadius(S.BAR_W / 2)
         .backgroundColor(this.focused ? (this.warn ? T.WARN : T.TXT) : '#00000000')
+      // 标签绝不收缩：之前这里给了 layoutWeight(1)，轮到「上次更新」这种
+      // 「短标签 + 一长串值」的组合时，Row 会优先满足值想要的宽度，把标签压到
+      // 只剩 ~37vp，屏幕上直接显示成「上…」——四个字被砍掉三个。
       Text(this.label)
         .fontSize(16)
         .fontColor(this.warn ? T.WARN : T.TXT)
-        .layoutWeight(1)
+        // 没有值时才由标签撑开剩余空间（把箭头顶到最右）；
+        // 有值时标签按自身宽度定住，不跟值抢空间。
+        .layoutWeight(this.value.length > 0 ? 0 : 1)
+        .flexShrink(0)
         .margin({ left: 12 })
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (this.value.length > 0) {
+        // 值改成占剩余空间并靠右省略，短值时位置和原来一致，
+        // 长值时由它自己缩，而不是去抢标签的宽度。
         Text(this.value)
           .fontSize(14)
           .fontColor(this.focused ? T.TXT : (this.warn ? T.DIM : T.SUB))
+          .layoutWeight(1)
+          .textAlign(TextAlign.End)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .constraintSize({ maxWidth: 400 })
           .margin({ left: 12 })
       }
       if (this.arrow) {

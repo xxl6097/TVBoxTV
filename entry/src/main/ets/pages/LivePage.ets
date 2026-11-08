@@ -966,7 +966,10 @@ struct LivePage {
               }
               .width('100%')
             }
-            .width(200)
+            // 手机竖屏把分组栏收窄：200vp 时右侧两列各只有 ~85vp，
+            // 「CCTV5+体育赛事」这类名字必被拦腰切断。收窄后频道区每列多出 ~20vp，
+            // 分组名本身（"全部频道" + 计数）在这个宽度里仍然放得下。
+            .width(this.isPhone ? 170 : 200)
             .height('100%')
             .scrollBar(BarState.Off)
 
@@ -974,7 +977,11 @@ struct LivePage {
               ForEach(this.channels(), (ch: Channel) => {
                 GridItem() {
                   Text(ch.name)
-                    .fontSize(14)
+                    // 手机两列时格子只有 ~85vp 宽，"CCTV5体育"按 14fp 排需要 ~75vp，
+                    // 减去左右 padding 后正好差几个像素，于是被硬断成「CCTV5体 / 育」。
+                    // 手机端降一档字号：整串能进一行，长一点的也断在中英交界
+                    // （"CCTV5+" / "体育赛事"），而不是拦腰切一个汉字。
+                    .fontSize(this.isPhone ? 13 : 14)
                     // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
                     // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
                     .fontColor(this.isDead(ch.url) ? '#5AFFFFFF' : (this.isCur(ch) ? T.SELECTED : T.TXT))
@@ -987,6 +994,8 @@ struct LivePage {
                     .borderRadius(T.RADIUS_SM)
                     .textAlign(TextAlign.Center)
                     .maxLines(2)
+                    // 保留西文单词完整，配合上面的字号让断点落在中英文交界处。
+                    .wordBreak(WordBreak.BREAK_WORD)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
                     .padding({ left: 6, right: 6 })
                     .backgroundColor(this.isCur(ch) ? T.CARD_HI :
