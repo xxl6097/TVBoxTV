@@ -1189,4 +1189,40 @@ export class Store {
     await Store.prefs.put('wdHist', '[]');
     await Store.prefs.flush();
   }
+
+  // ---------- 播放器全局偏好 ----------
+
+  /** 画面显示模式偏好：0=拉伸 / 1=裁剪 / 2=等比适应 */
+  static async scaleModePref(): Promise<number> {
+    if (Store.prefs === null) {
+      return 0;
+    }
+    const v: string = await Store.prefs.get('playerScaleMode', '0') as string;
+    return parseInt(v);
+  }
+
+  static async setScaleModePref(mode: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('playerScaleMode', mode.toString());
+    await Store.prefs.flush();
+  }
+
+  /** 画质档位偏好：0=自动 / >0=指定档位 / 9999=原画 */
+  static async qualityPref(): Promise<number> {
+    if (Store.prefs === null) {
+      return 0;
+    }
+    const v: string = await Store.prefs.get('playerQuality', '0') as string;
+    return parseInt(v);
+  }
+
+  static async setQualityPref(qLvl: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('playerQuality', qLvl.toString());
+    await Store.prefs.flush();
+  }
 }

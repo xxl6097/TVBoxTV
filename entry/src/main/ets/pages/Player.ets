@@ -339,6 +339,8 @@ struct Player {
       this.scaleMode = 2;
     }
     await Store.init(getContext(this) as common.UIAbilityContext);
+    // 恢复全局偏好：画面比例、清晰度
+    await this.restorePreferences();
     if (this.closed) {
       return;
     }
@@ -371,7 +373,7 @@ struct Player {
       }
     }
     // 画质偏好是全局的：上次选了 720P，这次进来自动还是 720P
-    this.qCap = await Store.qPref();
+    this.qCap = await Store.qualityPref();
     // 片头片尾跳过也是全局偏好
     this.introSkipSec = await Store.introSkipSec();
     this.outroSkipSec = await Store.outroSkipSec();
@@ -534,6 +536,16 @@ struct Player {
     this.levels = list;
     this.levelIdx = this.pickInitialLevel();
     this.syncQLabel();
+  }
+
+  /** 从 Store 恢复播放器全局偏好（画面比例、清晰度） */
+  private async restorePreferences(): Promise<void> {
+    try {
+      this.scaleMode = await Store.scaleModePref();
+      this.qCap = await Store.qualityPref();
+    } catch (e) {
+      // 偏好读取失败，用默认值
+    }
   }
 
   /** 初始档位：用户锁了高度就按高度；自动就先用 720P 起步，起来后按实测网速再调 */
@@ -1825,14 +1837,15 @@ struct Player {
     }
     const lv: QLevel = this.levels[i];
     this.qCap = lv.height > 0 ? lv.height : Quality.TOP;
-    await Store.setQPref(this.qCap);
+    await Store.setQualityPref(this.qCap);
     this.showQ = false;
     await this.applyLevel(i, '已切到 ' + Quality.labelOfLevel(lv));
   }
 
   /** 切换画面显示模式（视频缩放）。改 videoScaleType 即时生效，无需重建播放器 */
-  private setScale(mode: number): void {
+  private async setScale(mode: number): Promise<void> {
     this.scaleMode = mode;
+    await Store.setScaleModePref(mode);
     if (this.player !== null) {
       try {
         this.player.videoScaleType = mode as media.VideoScaleType;
