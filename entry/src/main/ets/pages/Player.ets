@@ -125,6 +125,16 @@ struct Player {
   @State holdSpeedOn: boolean = false;
   /** 按下前保存的原倍速，用于长按松开时恢复 */
   private holdSpeedVal: number = 1;
+  
+  // ===== 下一集预加载缓存 =====
+  /** 预加载下一集的 raw url（缓存 key） */
+  private preloadedUrl: string = '';
+  /** 预加载下一集的最终播放地址 */
+  private preloadedFinalUrl: string = '';
+  /** 预加载的 header */
+  private preloadedHeader: Record<string, string> = {};
+  /** 预加载状态：-1=未开始 / 0=加载中 / 1=成功 / 2=失败 */
+  private preloadStatus: number = -1;
 
   private player: media.AVPlayer | null = null;
   private initializing: boolean = false;
@@ -485,6 +495,93 @@ struct Player {
       }
     }
     await this.setupQuality();
+  }
+
+  /**
+   * 后台预加载下一集的播放地址（不初始化播放器，只解析地址）。
+   *
+   * 在 prepared 回调后触发，用户切集时直接用缓存，省去 8-12s 解析等待。
+   * - 不阻塞当前播放（全程后台异步）
+   * - 缓存 key 用下一集 rawUrl，切集前先检查 preloadStatus === 1
+   * - 切集前 raw url 变了说明缓存失效，仍走正常解析
+   */
+  private async preloadNextEpisode(): Promise<void> {
+    // 直播/直连模式不预加载（它们地址本身就是最终地址，不需要解析）
+    if (this.isLive || this.directMode || this.closed) {
+      return;
+    }
+    // 没有下一集
+    if (!Playlist.hasNext()) {
+      return;
+    }
+    // 获取下一集的 raw url（不改动游标）
+    const next = Playlist.eps[Playlist.index() + 1];
+    if (!next || next.url.length === 0) {
+      return;
+    }
+    const nextRaw: string = next.url;
+    // 已经预加载过这集了
+    if (this.preloadedUrl !== '' && this.preloadedUrl === nextRaw && this.preloadStatus === 1) {
+      return;
+    }
+    // 标记开始预加载
+    this.preloadStatus = 0;
+    try {
+      let finalUrl: string = '';
+      let header: Record<string, string> = {};
+      // 先试「补全 m3u8」
+      const guess: string = fixPlayable(nextRaw);
+      let done: boolean = false;
+      if (guess !== nextRaw) {
+        try {
+          const head: string = await Http.text(guess, undefined, 4000);
+          if (head.indexOf('#EXTM3U') >= 0) {
+            finalUrl = guess;
+            done = true;
+          }
+        } catch (_e) {
+          // 猜错了走正常解析
+        }
+      }
+      if (!done) {
+        const r: Resolved = await Resolver.resolve(nextRaw, Store.parses());
+        finalUrl = fixPlayable(r.url);
+        header = r.header;
+      }
+      if (this.closed) {
+        return;
+      }
+      // 缓存下一集的预加载结果
+      this.preloadedUrl = nextRaw;
+      this.preloadedFinalUrl = finalUrl;
+      this.preloadedHeader = header;
+      this.preloadStatus = 1;
+      hilog.info(0x1000, 'BOXN', 'preload next: %{public}s', finalUrl.substring(0, 60));
+    } catch (e) {
+      this.preloadStatus = 2;
+    }
+  }
+
+  /**
+   * 切集/切台时尝试使用预加载缓存。
+   * 缓存命中时把 finalUrl/header 直接写进去，绕过耗时的 resolveUrl。
+   * 缓存未命中或已失效就返回 false，由调用方走正常解析。
+   */
+  private applyPreload(ep: Episode): boolean {
+    if (this.isLive || this.directMode) {
+      return false;
+    }
+    if (this.preloadStatus !== 1 || this.preloadedUrl !== ep.url) {
+      return false;
+    }
+    hilog.info(0x1000, 'BOXN', 'preload hit: %{public}s', ep.url.substring(0, 60));
+    // 从缓存中恢复 finalUrl 和 header
+    this.finalUrl = this.preloadedFinalUrl;
+    this.header = this.preloadedHeader;
+    this.preloadedUrl = '';
+    this.preloadedFinalUrl = '';
+    this.preloadStatus = -1;
+    return true;
   }
 
   // ==================== 画质 ====================
@@ -1006,6 +1103,8 @@ struct Player {
           this.applySpeed(p);
           // 字幕轨只在 prepared 之后才读得到，异步取，不挡起播
           this.loadSubs(p);
+          // 后台预加载下一集，不挡当前播放（异步启动，不 await）
+          this.preloadNextEpisode().catch(() => {});
           // 部分机型 / 部分流不会补发 playing 状态，这里先乐观置上，
           // 否则控制条会一直以为在暂停（暂停态不自动收起，挡住半屏画面）
           this.playing = true;
@@ -1422,8 +1521,22 @@ struct Player {
     this.from = this.isLive ? 'live' : (this.directMode ? 'direct' : Playlist.title());
     this.syncEpLabel();
 
+    // 尝试使用下一集预加载缓存，命中时直接使用，省去 8-12s 解析等待
+    const hitPreload: boolean = this.applyPreload(ep);
+    
     this.resolving = true;
-    await this.resolveUrl();
+    if (hitPreload) {
+      // 命中预加载缓存，已经把 finalUrl/header 写进去，只需 setupQuality
+      try {
+        await this.setupQuality();
+      } catch (e) {
+        // 预加载结果过期了或出错，降级走正常解析
+        await this.resolveUrl();
+      }
+    } else {
+      // 缓存未命中，走正常解析流程
+      await this.resolveUrl();
+    }
     this.resolving = false;
     this.initPlayer();
   }
