@@ -40,6 +40,8 @@ struct SearchPage {
   @State kws: string[] = [];
   /** 右侧联想建议词（根据输入内容实时猜测） */
   @State sugg: Sug[] = [];
+  /** 热门推荐：来自首页 feed，最多 12 张，空态时展示 */
+  @State hotVods: Vod[] = [];
   /** 联想候选池：搜索历史 + 首页最近更新片名，进页面收集一次 */
   private pool: Sug[] = [];
   /** 搜索序号：连续搜索时用来丢弃上一轮的延迟结果 */
@@ -49,6 +51,9 @@ struct SearchPage {
     await Store.init(getContext(this) as common.UIAbilityContext);
     this.kws = await Store.keywords();
     await this.buildPool();
+    // 热门推荐：从首页 feed 取最多 12 条
+    const feed: Vod[] = await Store.feed();
+    this.hotVods = feed.length > 12 ? feed.slice(0, 12) : feed;
     // 从详情页点演员名跳过来时，带 keyword + autoSearch 直接触发搜索
     const p: Object | undefined = router.getParams();
     if (p !== null && p !== undefined && p instanceof Object) {
@@ -275,6 +280,12 @@ struct SearchPage {
     router.pushUrl({ url: 'pages/Detail', params: p });
   }
 
+  /** 点击热门推荐:直接用片名搜索 */
+  openHotVod(v: Vod): void {
+    this.kw = v.name;
+    this.doSearch();
+  }
+
   /** 灵犀遥控器是指针模式，高亮靠 hover 驱动 */
   hoverTo(key: string, isHover: boolean): void {
     if (isHover) {
@@ -412,30 +423,30 @@ struct SearchPage {
     .height(34)
   }
 
-  /** 主体：空态（最近搜过 / 提示）或搜索结果列表 */
+  /** 主体:空态(最近搜过 / 热门推荐 / 提示)或搜索结果列表 */
   @Builder
   ResultBody() {
     if (this.groups.length === 0 && !this.loading) {
-      Column() {
-        if (this.kws.length > 0) {
-          Row() {
-            Text('最近搜过').fontSize(19).fontColor(T.SUB)
-            Blank()
-            Text('清空记录')
-              .fontSize(15)
-              .fontColor(this.hi('clear') ? T.ERR : T.DIM)
-              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-              .focusable(true)
-              .onFocus(() => this.hoverTo('clear', true))
-              .onBlur(() => this.hoverTo('clear', false))
-              .onHover((hv: boolean) => this.hoverTo('clear', hv))
-              .onClick(() => Pointer.fire('sr_kwclr', () => { Feedback.tap(); this.clearKws(); }))
-              .onMouse(Pointer.on('sr_kwclr', () => { Feedback.tap(); this.clearKws(); }))
-          }
-          .width(Device.panelW(560))
-          .margin({ bottom: 14 })
+      Scroll() {
+        Column() {
+          if (this.kws.length > 0) {
+            Row() {
+              Text('最近搜过').fontSize(19).fontColor(T.SUB)
+              Blank()
+              Text('清空记录')
+                .fontSize(15)
+                .fontColor(this.hi('clear') ? T.ERR : T.DIM)
+                .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+                .focusable(true)
+                .onFocus(() => this.hoverTo('clear', true))
+                .onBlur(() => this.hoverTo('clear', false))
+                .onHover((hv: boolean) => this.hoverTo('clear', hv))
+                .onClick(() => Pointer.fire('sr_kwclr', () => { Feedback.tap(); this.clearKws(); }))
+                .onMouse(Pointer.on('sr_kwclr', () => { Feedback.tap(); this.clearKws(); }))
+            }
+            .width('100%')
+            .margin({ bottom: 14 })
 
-          Scroll() {
             Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
               ForEach(this.kws, (k: string, i: number) => {
                 Text(k)
@@ -466,19 +477,65 @@ struct SearchPage {
               }, (k: string, i: number) => 'kw' + i + k)
             }
             .width('100%')
+            .margin({ bottom: this.hotVods.length > 0 ? 32 : 0 })
           }
-          .width(Device.panelW(560))
-          .constraintSize({ maxHeight: 200 })
-          .scrollBar(BarState.Off)
-          .edgeEffect(EdgeEffect.Spring)
-        } else {
-          Text('搜索影片').fontSize(26).fontColor(T.SUB)
-          Text('会在已启用的协议型站源里并发检索（最多 18 个）').fontSize(16).fontColor(T.DIM).margin({ top: 10 })
-          Text(this.isPhone ? '点上方输入框，输片名后点「搜索」' : '用遥控器指针点一下输入框，输片名后点「搜索」').fontSize(15).fontColor(T.DIM).margin({ top: 18 })
+
+          if (this.hotVods.length > 0) {
+            Column() {
+              Text('热门推荐').fontSize(19).fontColor(T.SUB).width('100%').margin({ bottom: 14 })
+              List({ space: 14 }) {
+                ForEach(this.hotVods, (v: Vod) => {
+                  ListItem() {
+                    Column() {
+                      Poster({ url: v.pic, w: 104, h: 146 })
+                      Text(v.name).fontSize(14).fontColor(T.TXT)
+                        .width(104).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .margin({ top: 5 })
+                    }
+                    .padding(6)
+                    .borderRadius(10)
+                    .backgroundColor(this.hi('hot_' + v.id) ? T.CARD_HI : '#00000000')
+                    .border({ width: T.BORDER, color: this.hi('hot_' + v.id) ? T.ACCENT : '#00000000' })
+                    .scale({
+                      x: this.hi('hot_' + v.id) ? T.HOVER_SCALE : 1,
+                      y: this.hi('hot_' + v.id) ? T.HOVER_SCALE : 1
+                    })
+                    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                    .onHover((hv: boolean) => this.hoverTo('hot_' + v.id, hv))
+                    .focusable(true)
+                    .onFocus(() => { this.focusKey = 'hot_' + v.id; })
+                    .onBlur(() => { if (this.focusKey === ('hot_' + v.id)) { this.focusKey = ''; } })
+                    .onClick(() => Pointer.fire('sr_hot' + v.id, () => { Feedback.tap(); this.openHotVod(v); }))
+                    .onMouse(Pointer.on('sr_hot' + v.id, () => { Feedback.tap(); this.openHotVod(v); }))
+                  }
+                }, (v: Vod) => 'hot' + v.id)
+              }
+              .listDirection(Axis.Horizontal)
+              .width('100%')
+              .height(178)
+              .scrollBar(BarState.Off)
+            }
+            .width('100%')
+          }
+
+          if (this.kws.length === 0 && this.hotVods.length === 0) {
+            Column() {
+              Text('搜索影片').fontSize(26).fontColor(T.SUB)
+              Text('会在已启用的协议型站源里并发检索(最多 18 个)').fontSize(16).fontColor(T.DIM).margin({ top: 10 })
+              Text(this.isPhone ? '点上方输入框,输片名后点「搜索」' : '用遥控器指针点一下输入框,输片名后点「搜索」').fontSize(15).fontColor(T.DIM).margin({ top: 18 })
+            }
+            .width('100%')
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          }
         }
+        .width('100%')
+        .padding({ left: 24, right: 24, top: 24 })
       }
-      .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
+      .width('100%').layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
     } else {
       List({ space: 6 }) {
         ForEach(this.groups, (g: Group) => {
