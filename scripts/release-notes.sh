@@ -88,7 +88,8 @@ NOTES="$ROOT/dist/release-notes.md"
   printf '| 签名 | 调试证书（仅限白名单设备直装，不能上架） |\n'
   printf '\n## 安装\n\n'
   printf '```bash\n'
-  printf 'curl -LO %s\n' "$URL"
+  # -L 必须加：CNB 的下载地址会 302 跳到 CDN
+  printf 'curl -fL -O %s\n' "$URL"
   printf 'hdc install -r %s\n' "$ASSET"
   printf '```\n'
   printf '\n## 构建信息\n\n'

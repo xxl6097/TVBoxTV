@@ -219,10 +219,10 @@ ARG OHOS_SDK_TAG=26.0.0.821
 | 仓库「标签」 | 同名 `v1.1.0` tag（指向本次构建的提交） |
 | 直链 | `https://cnb.cool/abber/HarmonyTv/-/releases/download/v1.1.0/yezhen-tv-1.1.0-debug.hap` |
 
-命令行取包：
+命令行取包（`-L` 不能省：CNB 的下载地址会 302 跳到 CDN）：
 
 ```bash
-curl -LO https://cnb.cool/abber/HarmonyTv/-/releases/download/v1.1.0/yezhen-tv-1.1.0-debug.hap
+curl -fL -O https://cnb.cool/abber/HarmonyTv/-/releases/download/v1.1.0/yezhen-tv-1.1.0-debug.hap
 hdc install -r yezhen-tv-1.1.0-debug.hap
 ```
 
