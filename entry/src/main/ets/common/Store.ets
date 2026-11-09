@@ -35,6 +35,8 @@ export class FavItem {
   vodId: string = '';
   name: string = '';
   pic: string = '';
+  /** 收藏时间戳，用于多设备同步时按时间合并 */
+  time: number = 0;
 }
 
 /** 搜索历史记录项：关键词 + 使用次数 + 最近使用时间 */
@@ -637,6 +639,7 @@ export class Store {
       }
     }
     if (!removed) {
+      f.time = Date.now();
       out.unshift(f);
     }
     await Store.prefs.put('fav', JSON.stringify(out));
@@ -1476,5 +1479,29 @@ export class Store {
     } catch (e) {
       // 静默失败
     }
+  }
+
+  // ---------- 解析规则统计持久化 ----------
+
+  /**
+   * 读取解析规则统计（key = 规则name，value = {ok, total}）
+   */
+  static async resolveStats(): Promise<Record<string, Record<string, number>>> {
+    if (Store.prefs === null) {
+      return {};
+    }
+    const val = await Store.prefs.get('resolveStats', '{}');
+    return JSON.parse(val as string) as Record<string, Record<string, number>>;
+  }
+
+  /**
+   * 保存解析规则统计（每 5 分钟或规则命中时调用，防止频繁写盘）
+   */
+  static async saveResolveStats(stats: Record<string, Record<string, number>>): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('resolveStats', JSON.stringify(stats));
+    await Store.prefs.flush();
   }
 }

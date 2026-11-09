@@ -1,6 +1,7 @@
 import { ParseRule } from './Model';
 import { Http } from './Http';
 import { Cms } from './Cms';
+import { Store } from './Store';
 
 export interface ParseResp {
   code?: number;
@@ -23,16 +24,19 @@ class Hit {
 }
 
 /**
- * 每条解析规则的成功率统计（内存缓存，本次会话内有效）。
+ * 每条解析规则的成功率统计（内存缓存 + 本地持久化）。
  *
  * key = rule.name，value = RuleStat {ok: number, total: number}。
  * 用于下次调用时把成功率高的规则排在前面，减少等待时间。
+ * 启动时从 Store 加载历史统计，每 5 分钟自动保存一次。
  */
 class RuleStat {
   ok: number = 0;
   total: number = 0;
 }
 const ruleStats: Map<string, RuleStat> = new Map();
+let statsLoaded: boolean = false;
+let lastSaveTime: number = 0;
 
 /**
  * 全局解析超时（毫秒）：两轮并发都超过这个时间就放弃，直接返回原地址。
@@ -78,6 +82,12 @@ export class Resolver {
       return r;
     }
 
+    // 首次调用时从本地加载历史统计
+    if (!statsLoaded) {
+      await Resolver.loadStats();
+      statsLoaded = true;
+    }
+
     // 按成功率排序：成功率高的规则先跑，减少等待时间
     const pick: ParseRule[] = Resolver.sortBySuccessRate(rules.slice(0, limit));
 
@@ -118,6 +128,7 @@ export class Resolver {
   /**
    * 记录规则命中情况，用于成功率排序。
    * 每条规则单独统计，成功/失败各加 1。
+   * 每 5 分钟自动保存一次统计到本地。
    */
   static recordHit(name: string, ok: boolean): void {
     let s: RuleStat | undefined = ruleStats.get(name);
@@ -129,6 +140,48 @@ export class Resolver {
     if (ok) {
       s.ok++;
     }
+    // 每 5 分钟保存一次（300000ms）
+    const now = Date.now();
+    if (now - lastSaveTime > 300000) {
+      lastSaveTime = now;
+      Resolver.saveStats();
+    }
+  }
+
+  /**
+   * 从本地加载历史统计
+   */
+  private static async loadStats(): Promise<void> {
+    const data = await Store.resolveStats();
+    const names = Object.keys(data);
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const stat = new RuleStat();
+      stat.ok = data[name]['ok'] ?? 0;
+      stat.total = data[name]['total'] ?? 0;
+      ruleStats.set(name, stat);
+    }
+  }
+
+  /**
+   * 保存统计到本地（异步，静默失败）
+   */
+  private static saveStats(): void {
+    const data: Record<string, Record<string, number>> = {};
+    const names = Array.from(ruleStats.keys());
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const stat = ruleStats.get(name);
+      if (stat !== undefined) {
+        const entry: Record<string, number> = {};
+        entry['ok'] = stat.ok;
+        entry['total'] = stat.total;
+        data[name] = entry;
+      }
+    }
+    Store.saveResolveStats(data).catch(() => {
+      // 静默失败
+    });
   }
 
   /**

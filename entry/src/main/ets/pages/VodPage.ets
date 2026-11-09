@@ -67,6 +67,8 @@ struct VodList {
   @State hoverKey: string = '';
   @State showSites: boolean = false;
   @State showFilter: boolean = false;
+  /** 换站弹窗搜索框内容，实时过滤站源列表 */
+  @State siteSearchKw: string = '';
   /** 当前分类是不是「父分类汇总」模式（此时不能翻页，列表是各子分类最新内容的混排） */
   @State merged: boolean = false;
 
@@ -713,12 +715,22 @@ struct VodList {
 
   /** 站源网格的完整高度：不按可用空间裁剪，多出来的交给外层 Scroll */
   siteGridH(): number {
-    const n: number = this.sites.length;
+    const filtered = this.filteredSites();
+    const n: number = filtered.length;
     if (n === 0) {
       return 0;
     }
     const rows: number = Math.ceil(n / this.siteCols());
     return rows * SITE_ITEM_H + (rows - 1) * SITE_GAP;
+  }
+
+  /** 按搜索关键词过滤站源列表（空关键词返回全部） */
+  filteredSites(): Site[] {
+    if (this.siteSearchKw.trim().length === 0) {
+      return this.sites;
+    }
+    const kw = this.siteSearchKw.trim().toLowerCase();
+    return this.sites.filter((s: Site) => s.name.toLowerCase().indexOf(kw) >= 0);
   }
 
   @Builder
@@ -740,14 +752,35 @@ struct VodList {
           .onClick(() => Pointer.fire('vp_sclose', () => {
               Feedback.tap();
               this.showSites = false;
+              this.siteSearchKw = '';
           }))
           .onMouse(Pointer.on('vp_sclose', () => {
               Feedback.tap();
               this.showSites = false;
+              this.siteSearchKw = '';
           }))
       }
       .width('100%')
       .margin({ bottom: 16 })
+
+      // 搜索框：站源超过 8 个时显示，实时过滤
+      if (this.sites.length > 8) {
+        Row() {
+          Text('🔍').fontSize(16)
+          TextInput({ text: this.siteSearchKw, placeholder: '搜索站源…' })
+            .fontSize(16)
+            .layoutWeight(1)
+            .margin({ left: 8 })
+            .backgroundColor(T.CARD)
+            .borderRadius(T.RADIUS_SM)
+            .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+            .onChange((v: string) => {
+              this.siteSearchKw = v;
+            })
+        }
+        .width('100%')
+        .margin({ bottom: 12 })
+      }
 
       /**
        * 站源网格。
@@ -759,7 +792,7 @@ struct VodList {
        */
       Scroll() {
         Grid() {
-          ForEach(this.sites, (s: Site) => {
+          ForEach(this.filteredSites(), (s: Site) => {
             GridItem() {
               Text(s.name)
                 .fontSize(16)

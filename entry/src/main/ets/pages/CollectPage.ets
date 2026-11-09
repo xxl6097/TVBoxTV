@@ -14,6 +14,12 @@ import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
 import { Poster } from '../common/Poster';
 
+/** 收藏分组：一个站源下的所有收藏 */
+class FavGroup {
+  siteName: string = '';
+  items: FavItem[] = [];
+}
+
 @Entry
 @Component
 struct CollectPage {
@@ -25,6 +31,8 @@ struct CollectPage {
   @State ready: boolean = false;
   /** 待二次确认的收藏项键（siteKey+vodId） */
   @State confirmDel: string = '';
+  /** 是否按站源分组展示 */
+  @State grouped: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -86,6 +94,98 @@ struct CollectPage {
     }
   }
 
+  /** 按站源分组，每组内按收藏时间倒序，没有 time 字段的排最后 */
+  groupedFavs(): FavGroup[] {
+    const map: Map<string, FavGroup> = new Map();
+    for (let i = 0; i < this.favs.length; i++) {
+      const f: FavItem = this.favs[i];
+      const key: string = f.siteName.length > 0 ? f.siteName : f.siteKey;
+      let g: FavGroup | undefined = map.get(key);
+      if (g === undefined) {
+        g = new FavGroup();
+        g.siteName = key;
+        map.set(key, g);
+      }
+      g.items.push(f);
+    }
+    const groups: FavGroup[] = [];
+    map.forEach((g: FavGroup) => {
+      g.items.sort((a: FavItem, b: FavItem) => (b.time || 0) - (a.time || 0));
+      groups.push(g);
+    });
+    return groups;
+  }
+
+  /** 提取 Grid 中的卡片内容，供平铺和分组两种布局复用 */
+  @Builder
+  FavCard(f: FavItem) {
+    Column() {
+      Stack({ alignContent: Alignment.TopEnd }) {
+        Poster({ url: f.pic, bot: 0 })
+          .width('100%')
+          .height('100%')
+        Text(this.confirmDel === (f.siteKey + f.vodId) ? '删' : '×')
+          .fontSize(16)
+          .fontColor(this.confirmDel === (f.siteKey + f.vodId) ? T.ERR : T.TXT)
+          .backgroundColor(this.hi('x_' + f.siteKey + f.vodId) ? T.BLACK_80 : T.CARD_HI)
+          .width(26)
+          .height(26)
+          .borderRadius(13)
+          .textAlign(TextAlign.Center)
+          .margin(6)
+          .focusable(true)
+          .onFocus(() => this.hover('x_' + f.siteKey + f.vodId, true))
+          .onBlur(() => this.hover('x_' + f.siteKey + f.vodId, false))
+          .onHover((hv: boolean) => this.hover('x_' + f.siteKey + f.vodId, hv))
+          .onClick(() => Pointer.fire('cp_del' + f.siteKey + f.vodId, () => {
+              Feedback.tap();
+              this.del(f);
+          }))
+          .onMouse(Pointer.on('cp_del' + f.siteKey + f.vodId, () => {
+              Feedback.tap();
+              this.del(f);
+          }))
+      }
+      .width('100%')
+      .aspectRatio(16 / 9)
+
+      Text(f.name)
+        .fontSize(16)
+        .fontColor(T.TXT)
+        .backgroundColor(T.CARD)
+        .width('100%')
+        .padding(6)
+        .textAlign(TextAlign.Center)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .borderRadius({ bottomLeft: T.RADIUS, bottomRight: T.RADIUS })
+    }
+    .width('100%')
+    .borderRadius(T.RADIUS)
+    .border({ width: T.BORDER, color: this.hi('f_' + f.siteKey + f.vodId) ? T.TXT : '#00000000' })
+    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+    .focusable(true)
+    .onFocus(() => this.hover('f_' + f.siteKey + f.vodId, true))
+    .onBlur(() => this.hover('f_' + f.siteKey + f.vodId, false))
+    .onHover((hv: boolean) => this.hover('f_' + f.siteKey + f.vodId, hv))
+    .onClick(() => Pointer.fire('cp_open' + f.siteKey + f.vodId, () => {
+        Feedback.tap();
+        const p = new DetailParam();
+        p.siteKey = f.siteKey;
+        p.siteName = f.siteName;
+        p.vodId = f.vodId;
+        router.pushUrl({ url: 'pages/Detail', params: p });
+    }))
+    .onMouse(Pointer.on('cp_open' + f.siteKey + f.vodId, () => {
+        Feedback.tap();
+        const p = new DetailParam();
+        p.siteKey = f.siteKey;
+        p.siteName = f.siteName;
+        p.vodId = f.vodId;
+        router.pushUrl({ url: 'pages/Detail', params: p });
+    }))
+  }
+
   build() {
     Stack() {
     Column() {
@@ -114,6 +214,27 @@ struct CollectPage {
           .margin({ left: 8 })
         Text('  ' + this.favs.length + ' 部').fontSize(14).fontColor(T.SUB)
         Blank()
+        // 分组切换按钮
+        Text(this.grouped ? '取消分组' : '按站源分组')
+          .fontSize(15)
+          .fontColor(this.hi('cp_grp') ? T.SELECTED : T.SUB)
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .borderRadius(T.RADIUS_PILL)
+          .backgroundColor(this.hi('cp_grp') ? T.CARD_HI : '#00000000')
+          .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+          .visibility(this.favs.length > 0 ? Visibility.Visible : Visibility.None)
+          .focusable(true)
+          .onFocus(() => this.hover('cp_grp', true))
+          .onBlur(() => this.hover('cp_grp', false))
+          .onHover((hv: boolean) => this.hover('cp_grp', hv))
+          .onClick(() => Pointer.fire('cp_grp', () => {
+              Feedback.tap();
+              this.grouped = !this.grouped;
+          }))
+          .onMouse(Pointer.on('cp_grp', () => {
+              Feedback.tap();
+              this.grouped = !this.grouped;
+          }))
       }
       .width('100%')
       .padding({ left: 24, right: 24, top: 24, bottom: 8 })
@@ -125,77 +246,40 @@ struct CollectPage {
             .fontSize(15).fontColor(T.DIM).margin({ top: 10 })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else if (this.grouped) {
+        // 分组模式：按站源分节
+        Scroll() {
+          Column() {
+            ForEach(this.groupedFavs(), (g: FavGroup, gi: number) => {
+              Text(g.siteName + ' (' + g.items.length + ')')
+                .fontSize(18).fontColor(T.SUB)
+                .width('100%')
+                .margin({ top: gi === 0 ? 0 : 24, bottom: 10 })
+              Grid() {
+                ForEach(g.items, (f: FavItem) => {
+                  GridItem() {
+                    this.FavCard(f)
+                  }
+                }, (f: FavItem) => 'fav_g' + gi + '_' + f.siteKey + f.vodId)
+              }
+              .columnsTemplate(this.isPhone ? '1fr 1fr 1fr' : '1fr 1fr 1fr 1fr 1fr 1fr')
+              .columnsGap(12)
+              .rowsGap(20)
+              .width('100%')
+            }, (g: FavGroup, gi: number) => 'grp_' + gi + '_' + g.siteName)
+          }
+          .width('100%')
+          .padding({ left: 24, right: 24, bottom: 24 })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
       } else {
         Grid() {
           ForEach(this.favs, (f: FavItem) => {
             GridItem() {
-              Column() {
-                Stack({ alignContent: Alignment.TopEnd }) {
-                  Poster({ url: f.pic, bot: 0 })
-                    .width('100%')
-                    .height('100%')
-                  // 首次点是「×」，第二次点变成红色「删」——按钮自解释，
-                  // 用户不用回想刚才那条提示
-                  Text(this.confirmDel === (f.siteKey + f.vodId) ? '删' : '×')
-                    .fontSize(16)
-                    .fontColor(this.confirmDel === (f.siteKey + f.vodId) ? T.ERR : T.TXT)
-                    .backgroundColor(this.hi('x_' + f.siteKey + f.vodId) ? T.BLACK_80 : T.CARD_HI)
-                    .width(26)
-                    .height(26)
-                    .borderRadius(13)
-                    .textAlign(TextAlign.Center)
-                    .margin(6)
-                    .focusable(true)
-                    .onFocus(() => this.hover('x_' + f.siteKey + f.vodId, true))
-                    .onBlur(() => this.hover('x_' + f.siteKey + f.vodId, false))
-                    .onHover((hv: boolean) => this.hover('x_' + f.siteKey + f.vodId, hv))
-                    .onClick(() => Pointer.fire('cp_del' + f.siteKey + f.vodId, () => {
-                        Feedback.tap();
-                        this.del(f);
-                    }))
-                    .onMouse(Pointer.on('cp_del' + f.siteKey + f.vodId, () => {
-                        Feedback.tap();
-                        this.del(f);
-                    }))
-                }
-                .width('100%')
-                .aspectRatio(16 / 9)
-
-                Text(f.name)
-                  .fontSize(16)
-                  .fontColor(T.TXT)
-                  .backgroundColor(T.CARD)
-                  .width('100%')
-                  .padding(6)
-                  .textAlign(TextAlign.Center)
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .borderRadius({ bottomLeft: T.RADIUS, bottomRight: T.RADIUS })
-              }
-              .width('100%')
-              .borderRadius(T.RADIUS)
-              .border({ width: T.BORDER, color: this.hi('f_' + f.siteKey + f.vodId) ? T.TXT : '#00000000' })
-              .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-              .focusable(true)
-              .onFocus(() => this.hover('f_' + f.siteKey + f.vodId, true))
-              .onBlur(() => this.hover('f_' + f.siteKey + f.vodId, false))
-              .onHover((hv: boolean) => this.hover('f_' + f.siteKey + f.vodId, hv))
-              .onClick(() => Pointer.fire('cp_open' + f.siteKey + f.vodId, () => {
-                  Feedback.tap();
-                  const p = new DetailParam();
-                  p.siteKey = f.siteKey;
-                  p.siteName = f.siteName;
-                  p.vodId = f.vodId;
-                  router.pushUrl({ url: 'pages/Detail', params: p });
-              }))
-              .onMouse(Pointer.on('cp_open' + f.siteKey + f.vodId, () => {
-                  Feedback.tap();
-                  const p = new DetailParam();
-                  p.siteKey = f.siteKey;
-                  p.siteName = f.siteName;
-                  p.vodId = f.vodId;
-                  router.pushUrl({ url: 'pages/Detail', params: p });
-              }))
+              this.FavCard(f)
             }
           }, (f: FavItem) => 'fav' + f.siteKey + f.vodId)
         }

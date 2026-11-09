@@ -26,6 +26,8 @@ struct HistoryPage {
   @State confirmDel: string = '';
   @State hoverKey: string = '';
   @State ready: boolean = false;
+  /** 是否展开分组模式（有多个站源时才显示切换按钮） */
+  @State grouped: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -119,6 +121,31 @@ struct HistoryPage {
     }
   }
 
+  /** 按站源分组历史记录 */
+  groupedHist(): Map<string, HistItem[]> {
+    const map = new Map<string, HistItem[]>();
+    for (const h of this.hist) {
+      const key = h.siteKey;
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key)!.push(h);
+    }
+    return map;
+  }
+
+  /** 获取站源名列表(用于分组标题) */
+  siteNames(): string[] {
+    const map = this.groupedHist();
+    const names: string[] = [];
+    map.forEach((items, key) => {
+      if (items.length > 0) {
+        names.push(items[0].siteName);
+      }
+    });
+    return names;
+  }
+
   build() {
     Stack() {
     Column() {
@@ -147,6 +174,32 @@ struct HistoryPage {
           .margin({ left: 8 })
         Text('  ' + this.hist.length + ' 条').fontSize(14).fontColor(T.SUB)
         Blank()
+        // 有多个站源时显示分组切换按钮
+        if (this.hist.length > 0) {
+          Text(this.grouped ? '平铺' : '分组')
+            .fontSize(16)
+            .fontColor(this.hi('grp') ? T.TXT : T.SUB)
+            .height(40)
+            .padding({ left: 16, right: 16 })
+            .borderRadius(T.RADIUS)
+            .textAlign(TextAlign.Center)
+            .backgroundColor(this.grouped ? T.CARD_HI : (this.hi('grp') ? T.CARD : '#00000000'))
+            .border({ width: T.BORDER, color: this.hi('grp') || this.grouped ? T.TXT : '#00000000' })
+            .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+            .focusable(true)
+            .onFocus(() => this.hover('grp', true))
+            .onBlur(() => this.hover('grp', false))
+            .onHover((hv: boolean) => this.hover('grp', hv))
+            .onClick(() => Pointer.fire('hp_grp', () => {
+                Feedback.tap();
+                this.grouped = !this.grouped;
+            }))
+            .onMouse(Pointer.on('hp_grp', () => {
+                Feedback.tap();
+                this.grouped = !this.grouped;
+            }))
+            .margin({ right: 8 })
+        }
         if (this.hist.length > 0) {
           Text(this.confirmClear ? '确认清空？' : '清空')
             .fontSize(16)
@@ -181,6 +234,90 @@ struct HistoryPage {
           Text('看过的影片会出现在这里').fontSize(15).fontColor(T.DIM).margin({ top: 10 })
         }
         .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+      } else if (this.grouped) {
+        // 分组模式：按站源分组展示
+        List({ space: 12 }) {
+          ForEach(Array.from(this.groupedHist().entries()), (entry: [string, HistItem[]]) => {
+            ListItem() {
+              Column() {
+                // 站源标题
+                Row() {
+                  Text(entry[1][0].siteName).fontSize(17).fontColor(T.SELECTED).fontWeight(FontWeight.Bold)
+                  Text('  ' + entry[1].length + ' 条').fontSize(13).fontColor(T.DIM).margin({ left: 6 })
+                }
+                .width('100%')
+                .margin({ bottom: 8 })
+
+                // 该站源下的历史记录
+                Column({ space: 8 }) {
+                  ForEach(entry[1], (h: HistItem) => {
+                    Row() {
+                      Poster({ url: h.pic, w: 84, h: 48 })
+                      Column() {
+                        Text(h.name)
+                          .fontSize(16)
+                          .fontColor(T.TXT)
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        Text((h.epName.length > 0 ? h.epName : '未开始') + '   ·   ' + this.ago(h.time))
+                          .fontSize(14)
+                          .fontColor(T.SUB)
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .margin({ top: 4 })
+                      }
+                      .alignItems(HorizontalAlign.Start)
+                      .layoutWeight(1)
+                      .margin({ left: 16 })
+
+                      Text(this.confirmDel === (h.siteKey + h.vodId) ? '确认删除？' : '删除')
+                        .fontSize(14)
+                        .fontColor(this.confirmDel === (h.siteKey + h.vodId) ? T.ERR : T.SUB)
+                        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+                        .borderRadius(T.RADIUS)
+                        .focusable(true)
+                        .onClick(() => Pointer.fire('hp_del' + h.siteKey + h.vodId, () => {
+                            Feedback.tap();
+                            this.removeOne(h);
+                        }))
+                        .onMouse(Pointer.on('hp_del' + h.siteKey + h.vodId, () => {
+                            Feedback.tap();
+                            this.removeOne(h);
+                        }))
+                    }
+                    .width('100%')
+                    .padding(16)
+                    .borderRadius(T.RADIUS)
+                    .backgroundColor(T.CARD)
+                    .focusable(true)
+                    .onClick(() => Pointer.fire('hp_open' + h.siteKey + h.vodId, () => {
+                        Feedback.tap();
+                        const p = new DetailParam();
+                        p.siteKey = h.siteKey;
+                        p.siteName = h.siteName;
+                        p.vodId = h.vodId;
+                        router.pushUrl({ url: 'pages/Detail', params: p });
+                    }))
+                    .onMouse(Pointer.on('hp_open' + h.siteKey + h.vodId, () => {
+                        Feedback.tap();
+                        const p = new DetailParam();
+                        p.siteKey = h.siteKey;
+                        p.siteName = h.siteName;
+                        p.vodId = h.vodId;
+                        router.pushUrl({ url: 'pages/Detail', params: p });
+                    }))
+                  }, (h: HistItem) => 'g_hist' + h.siteKey + h.vodId + h.time)
+                }
+                .width('100%')
+              }
+              .width('100%')
+            }
+          }, (entry: [string, HistItem[]]) => 'grp_' + entry[0])
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .padding({ left: 24, right: 24, bottom: 24 })
+        .scrollBar(BarState.Off)
       } else {
         List({ space: 8 }) {
           ForEach(this.hist, (h: HistItem) => {
