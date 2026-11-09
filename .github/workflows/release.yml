@@ -89,6 +89,8 @@ jobs:
       - name: 创建 GitHub Release
         if: ${{ github.event_name == 'push' || inputs.mode == 'release' }}
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
           name: 夜帧影视 ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
