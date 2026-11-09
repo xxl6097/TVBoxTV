@@ -183,6 +183,38 @@ export class Http {
     }
   }
 
+  /**
+   * WebDAV PUT 上传文件。用于历史记录云同步。
+   * 成功返回 true，失败返回 false（不抛异常，调用方用于后台静默同步）。
+   */
+  static async put(url: string, body: string, extra?: Record<string, string>, timeout?: number): Promise<boolean> {
+    const ms: number = timeout === undefined ? 10000 : timeout;
+    const req = http.createHttp();
+    try {
+      const header: Record<string, string> = { 'User-Agent': UA, 'Content-Type': 'application/json; charset=utf-8' };
+      if (extra !== undefined) {
+        const keys: string[] = Object.keys(extra);
+        for (let i = 0; i < keys.length; i++) {
+          header[keys[i]] = extra[keys[i]];
+        }
+      }
+      const res = await req.request(url, {
+        method: 'PUT' as http.RequestMethod,
+        header: header,
+        connectTimeout: ms,
+        readTimeout: ms,
+        expectDataType: http.HttpDataType.STRING,
+        usingCache: false,
+        extraData: body
+      } as http.HttpRequestOptions);
+      return res.responseCode >= 200 && res.responseCode < 300;
+    } catch (err) {
+      return false;
+    } finally {
+      req.destroy();
+    }
+  }
+
   private static async once(url: string, extra: Record<string, string> | undefined, ms: number): Promise<Resp> {    const req = http.createHttp();
     const r = new Resp();
     try {

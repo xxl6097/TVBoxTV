@@ -328,6 +328,8 @@ struct SettingPage {
   @State soundOn: boolean = true;
   /** 点击反馈：震动开关 */
   @State vibrateOn: boolean = true;
+  /** 播放历史 WebDAV 云同步开关 */
+  @State histSyncOn: boolean = false;
   /** TV 端左侧导航当前选中分组：source/update/webdav/sites/data/about */
   @State tvNav: string = 'source';
   /** WebDAV 网盘源列表 */
@@ -381,6 +383,9 @@ struct SettingPage {
     this.readVersion();
     this.soundOn = (await Store.tapSound()) !== 0;
     this.vibrateOn = (await Store.tapVibrate()) !== 0;
+    this.histSyncOn = await Store.histSyncEnabled();
+    // 进入设置页时静默拉取一次云历史（不阻塞 UI）
+    Store.pullHistFromWebDAV().catch(() => {});
     await this.refresh();
   }
 
@@ -421,6 +426,19 @@ struct SettingPage {
     this.vibrateOn = !this.vibrateOn;
     await Store.setTapVibrate(this.vibrateOn ? 1 : 0);
     Feedback.refresh();
+  }
+
+  /** 历史云同步开关切换 */
+  async toggleHistSync(): Promise<void> {
+    this.histSyncOn = !this.histSyncOn;
+    await Store.setHistSyncEnabled(this.histSyncOn);
+    if (this.histSyncOn) {
+      // 开启后立即触发一次上传
+      Store.syncHistToWebDAV().catch(() => {});
+      this.toast('历史同步已开启，将同步到第一个网盘', '#4CAF50');
+    } else {
+      this.toast('历史同步已关闭', '#FF9800');
+    }
   }
 
   cfgState(): string {
@@ -1724,6 +1742,12 @@ struct SettingPage {
           this.toggleTapVibrate();
         },
         onHoverIn: (on: boolean) => this.hoverTo('r_vib', on) })
+      this.SDiv()
+      SRowView({ label: '历史同步', value: this.histSyncOn ? '开' : '关', arrow: false, focused: this.hi('r_hsy'),
+        onTap: () => {
+          this.toggleHistSync();
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_hsy', on) })
       this.SDiv()
       SRowView({ label: '版本', value: 'v' + this.verName, arrow: false, focused: this.hi('r_ver'),
         onTap: () => {

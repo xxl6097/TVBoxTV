@@ -3,6 +3,7 @@ import common from '@ohos.app.ability.common';
 import { RawConfig, RawSite, RawParse, RawLive, Site, ParseRule, Vod, WebdavSource, WebdavVod, WdHistory } from './Model';
 import { Http } from './Http';
 import { Cms } from './Cms';
+import { Webdav } from './Webdav';
 
 const STORE: string = 'boxtv_store_v1';
 
@@ -526,6 +527,8 @@ export class Store {
     }
     await Store.prefs.put('hist', JSON.stringify(out));
     await Store.prefs.flush();
+    // 异步上传到 WebDAV，不阻塞当前操作
+    Store.syncHistToWebDAV().catch(() => {});
   }
 
   /** 更新某条记录的播放进度（同一个 siteKey+vodId 只保留一条） */
@@ -556,6 +559,8 @@ export class Store {
     }
     await Store.prefs.put('hist', JSON.stringify(out));
     await Store.prefs.flush();
+    // 异步上传到 WebDAV，不阻塞当前操作
+    Store.syncHistToWebDAV().catch(() => {});
   }
 
   /** 删除单条历史记录（按 siteKey+vodId 匹配，同一部只留一条，因此唯一） */
@@ -1236,5 +1241,107 @@ export class Store {
     }
     await Store.prefs.put('playerVolume', vol.toString());
     await Store.prefs.flush();
+  }
+
+  // ---------- 播放历史 WebDAV 云同步 ----------
+
+  /** 历史同步开关：1=开，0=关（默认关） */
+  static async histSyncEnabled(): Promise<boolean> {
+    if (Store.prefs === null) {
+      return false;
+    }
+    return (await Store.prefs.get('histSync', '0') as string) === '1';
+  }
+
+  static async setHistSyncEnabled(on: boolean): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('histSync', on ? '1' : '0');
+    await Store.prefs.flush();
+  }
+
+  /**
+   * 把本地历史记录上传到第一个 WebDAV 源。
+   * 存为 /夜帧影视/history.json，用 PUT 方法上传 JSON 文本。
+   * 失败静默忽略——同步是后台行为，不能打扰用户看片。
+   */
+  static async syncHistToWebDAV(): Promise<void> {
+    if (!await Store.histSyncEnabled()) {
+      return;
+    }
+    const sources: WebdavSource[] = await Store.webdavSources();
+    if (sources.length === 0) {
+      return;
+    }
+    const src = sources[0];
+    const list: HistItem[] = await Store.history();
+    if (list.length === 0) {
+      return;
+    }
+    try {
+      const origin = Webdav.originOf(src.url);
+      const base = Webdav.mountHref(src);
+      const dir = base === '/' ? '' : base;
+      const url = origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86/history.json';
+      const body = JSON.stringify({ time: Date.now(), items: list });
+      await Http.put(url, body, Webdav.authHeader(src), 10000);
+    } catch (e) {
+      // 静默失败
+    }
+  }
+
+  /**
+   * 从 WebDAV 拉取历史记录，与本地按 time 合并。
+   * 同一部（siteKey+vodId）取 time 更大的那条。
+   */
+  static async pullHistFromWebDAV(): Promise<void> {
+    if (!await Store.histSyncEnabled()) {
+      return;
+    }
+    const sources: WebdavSource[] = await Store.webdavSources();
+    if (sources.length === 0) {
+      return;
+    }
+    const src = sources[0];
+    try {
+      const origin = Webdav.originOf(src.url);
+      const base = Webdav.mountHref(src);
+      const dir = base === '/' ? '' : base;
+      const url = origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86/history.json';
+      const txt = await Http.text(url, Webdav.authHeader(src), 8000);
+      if (txt.length === 0) {
+        return;
+      }
+      const parsed = JSON.parse(Cms.cleanJson(txt));
+      const remote: HistItem[] = (parsed && parsed.items) ? parsed.items as HistItem[] : [];
+      if (remote.length === 0) {
+        return;
+      }
+      const local: HistItem[] = await Store.history();
+      // 合并：以 siteKey+vodId 为 key，取 time 最大的
+      const map: Record<string, HistItem> = {};
+      for (const it of local) {
+        map[it.siteKey + '|' + it.vodId] = it;
+      }
+      for (const it of remote) {
+        const k = it.siteKey + '|' + it.vodId;
+        const exist = map[k];
+        if (!exist || (it.time ?? 0) > (exist.time ?? 0)) {
+          map[k] = it;
+        }
+      }
+      const merged: HistItem[] = Object.values(map);
+      merged.sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
+      if (merged.length > 40) {
+        merged.length = 40;
+      }
+      if (Store.prefs !== null) {
+        await Store.prefs.put('hist', JSON.stringify(merged));
+        await Store.prefs.flush();
+      }
+    } catch (e) {
+      // 静默失败
+    }
   }
 }

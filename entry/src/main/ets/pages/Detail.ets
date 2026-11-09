@@ -38,6 +38,14 @@ struct Detail {
   @State epDesc: boolean = false;
   /** 上次看到第几集（-1 表示没看过） */
   @State seen: number = -1;
+  /** 上次看到第几毫秒（用于续播提示显示百分比） */
+  @State seenPos: number = 0;
+  /** 上次那一集的总时长（用于算百分比） */
+  @State seenDur: number = 0;
+  /** 续播提示弹窗是否显示 */
+  @State showResume: boolean = false;
+  /** 续播提示自动消失计时器 */
+  private resumeTimer: number = -1;
 
   /** 剧集网格的滚动控制器：进页面要自动滚到「上次看到」那一集 */
   private epScroller: Scroller = new Scroller();
@@ -78,15 +86,59 @@ struct Detail {
     });
   }
 
-  /** 从播放历史里捞出本片上次看到第几集 */
+  /** 从播放历史里捞出本片上次看到第几集，同时记录进度用于续播提示 */
   async loadSeen(): Promise<void> {
     const h: HistItem[] = await Store.history();
     for (let i = 0; i < h.length; i++) {
       if (h[i].siteKey === this.siteKey && h[i].vodId === this.vodId) {
         this.seen = h[i].epIndex;
+        this.seenPos = h[i].pos;
+        this.seenDur = h[i].dur;
         return;
       }
     }
+  }
+
+  /**
+   * 续播提示：仅在首次进入且有有效历史进度（>5s，且未接近结尾）时显示。
+   * 5 秒后自动消失（用户未操作时不打扰）。
+   */
+  private triggerResumePrompt(): void {
+    // 条件：看过 + 进度 > 5s + 未到结尾（距结尾 > 15s）
+    if (this.seen < 0) {
+      return;
+    }
+    if (this.seenPos <= 5000) {
+      return;
+    }
+    if (this.seenDur > 0 && this.seenPos >= this.seenDur - 15000) {
+      return; // 接近结尾，不提示续播（下次应该看新集）
+    }
+    this.showResume = true;
+    if (this.resumeTimer >= 0) {
+      clearTimeout(this.resumeTimer);
+    }
+    this.resumeTimer = setTimeout(() => {
+      this.showResume = false;
+      this.resumeTimer = -1;
+    }, 5000);
+  }
+
+  /** 续播提示的百分比字符串（如「67%」）；进度未知时返回空串 */
+  private resumePercent(): string {
+    if (this.seenDur <= 0 || this.seenPos <= 0) {
+      return '';
+    }
+    const pct: number = Math.round((this.seenPos / this.seenDur) * 100);
+    return pct + '%';
+  }
+
+  /** 格式化毫秒为 mm:ss */
+  private fmtMs(ms: number): string {
+    const sec: number = Math.floor(ms / 1000);
+    const m: number = Math.floor(sec / 60);
+    const s: number = sec % 60;
+    return (m < 10 ? '0' + m : '' + m) + ':' + (s < 10 ? '0' + s : '' + s);
   }
 
   /** 当前线路的剧集，按用户选的顺序返回 */
@@ -155,6 +207,8 @@ struct Detail {
       this.loading = false;
       // 剧集节点这一刻才真正生成，等一帧再滚，否则 scroller 还没有可滚内容
       this.locateSeen();
+      // 有历史进度时弹出续播提示
+      this.triggerResumePrompt();
     }
   }
 
@@ -475,6 +529,159 @@ struct Detail {
 
       if (this.tipMsg.length > 0) {
         TipLayer(this.tipMsg)
+      }
+
+      // 续播提示浮层：有进度记录时短暂显示，自动 5s 消失
+      if (this.showResume) {
+        Column() {
+          Column() {
+            Text('继续观看')
+              .fontSize(16).fontColor(T.TXT).fontWeight(FontWeight.Medium)
+            Text('第 ' + (this.seen + 1) + ' 集' +
+              (this.resumePercent().length > 0 ? '  ·  看到 ' + this.resumePercent() : '') +
+              (this.seenPos > 0 ? '  ·  ' + this.fmtMs(this.seenPos) : ''))
+              .fontSize(14).fontColor(T.DIM).margin({ top: 4 })
+            Row() {
+              Text('从头看')
+                .fontSize(14).fontColor(T.SUB)
+                .height(36).padding({ left: 16, right: 16 })
+                .borderRadius(T.RADIUS_SM)
+                .backgroundColor(this.hi('rp_head') ? T.CARD_HI : T.CARD)
+                .border({ width: T.BORDER, color: this.hi('rp_head') ? T.TXT : '#00000000' })
+                .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                .onHover((hv: boolean) => this.hoverTo('rp_head', hv))
+                .focusable(true)
+                .onFocus(() => this.hoverTo('rp_head', true))
+                .onBlur(() => this.hoverTo('rp_head', false))
+                .onClick(() => Pointer.fire('rp_head', () => {
+                    Feedback.tap();
+                    this.showResume = false;
+                    if (this.resumeTimer >= 0) {
+                      clearTimeout(this.resumeTimer);
+                      this.resumeTimer = -1;
+                    }
+                    // 从头播：覆盖续播进度
+                    const ep: Episode = this.lines[this.lineIdx].eps[this.seen];
+                    if (ep !== null && ep !== undefined) {
+                      const line: Line = this.lines[this.lineIdx];
+                      const p = new PlayParam();
+                      p.url = ep.url;
+                      p.title = this.vod.name + ' ' + ep.name;
+                      p.siteKey = this.siteKey;
+                      p.vodId = this.vodId;
+                      p.from = line.name;
+                      p.epIndex = this.seen;
+                      p.seek = 0;
+                      Playlist.set(line.eps, this.seen, this.vod.name);
+                      router.pushUrl({ url: 'pages/Player', params: p });
+                    }
+                }))
+                .onMouse(Pointer.on('rp_head', () => {
+                    Feedback.tap();
+                    this.showResume = false;
+                    if (this.resumeTimer >= 0) {
+                      clearTimeout(this.resumeTimer);
+                      this.resumeTimer = -1;
+                    }
+                    const ep: Episode = this.lines[this.lineIdx].eps[this.seen];
+                    if (ep !== null && ep !== undefined) {
+                      const line: Line = this.lines[this.lineIdx];
+                      const p = new PlayParam();
+                      p.url = ep.url;
+                      p.title = this.vod.name + ' ' + ep.name;
+                      p.siteKey = this.siteKey;
+                      p.vodId = this.vodId;
+                      p.from = line.name;
+                      p.epIndex = this.seen;
+                      p.seek = 0;
+                      Playlist.set(line.eps, this.seen, this.vod.name);
+                      router.pushUrl({ url: 'pages/Player', params: p });
+                    }
+                }))
+              Text('继续播放')
+                .fontSize(14).fontColor(T.BG)
+                .height(36).padding({ left: 16, right: 16 })
+                .borderRadius(T.RADIUS_SM)
+                .backgroundColor(this.hi('rp_cont') ? T.ACCENT : T.TXT)
+                .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                .margin({ left: 12 })
+                .onHover((hv: boolean) => this.hoverTo('rp_cont', hv))
+                .focusable(true)
+                .defaultFocus(true)
+                .onFocus(() => this.hoverTo('rp_cont', true))
+                .onBlur(() => this.hoverTo('rp_cont', false))
+                .onClick(() => Pointer.fire('rp_cont', () => {
+                    Feedback.tap();
+                    this.showResume = false;
+                    if (this.resumeTimer >= 0) {
+                      clearTimeout(this.resumeTimer);
+                      this.resumeTimer = -1;
+                    }
+                    // 直接续播对应集
+                    if (this.lines.length > 0) {
+                      const ep: Episode = this.lines[this.lineIdx].eps[this.seen];
+                      if (ep !== null && ep !== undefined) {
+                        this.play(ep, this.seen);
+                      }
+                    }
+                }))
+                .onMouse(Pointer.on('rp_cont', () => {
+                    Feedback.tap();
+                    this.showResume = false;
+                    if (this.resumeTimer >= 0) {
+                      clearTimeout(this.resumeTimer);
+                      this.resumeTimer = -1;
+                    }
+                    if (this.lines.length > 0) {
+                      const ep: Episode = this.lines[this.lineIdx].eps[this.seen];
+                      if (ep !== null && ep !== undefined) {
+                        this.play(ep, this.seen);
+                      }
+                    }
+                }))
+              Text('取消')
+                .fontSize(14).fontColor(T.DIM)
+                .height(36).padding({ left: 16, right: 16 })
+                .borderRadius(T.RADIUS_SM)
+                .backgroundColor(this.hi('rp_cancel') ? T.CARD_HI : '#00000000')
+                .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                .margin({ left: 8 })
+                .onHover((hv: boolean) => this.hoverTo('rp_cancel', hv))
+                .focusable(true)
+                .onFocus(() => this.hoverTo('rp_cancel', true))
+                .onBlur(() => this.hoverTo('rp_cancel', false))
+                .onClick(() => Pointer.fire('rp_cancel', () => {
+                    Feedback.tap();
+                    this.showResume = false;
+                    if (this.resumeTimer >= 0) {
+                      clearTimeout(this.resumeTimer);
+                      this.resumeTimer = -1;
+                    }
+                }))
+                .onMouse(Pointer.on('rp_cancel', () => {
+                    Feedback.tap();
+                    this.showResume = false;
+                    if (this.resumeTimer >= 0) {
+                      clearTimeout(this.resumeTimer);
+                      this.resumeTimer = -1;
+                    }
+                }))
+            }
+            .margin({ top: 14 })
+          }
+          .padding({ left: 24, right: 24, top: 20, bottom: 20 })
+          .backgroundColor(T.SURFACE)
+          .borderRadius(16)
+          .shadow({ radius: 30, color: T.BLACK_80 })
+          .alignItems(HorizontalAlign.Start)
+          .border({ width: T.BORDER, color: T.WHITE_15 })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.End)
+        .alignItems(HorizontalAlign.Center)
+        .padding({ bottom: 40 })
+        .animation({ duration: 280, curve: Curve.FastOutSlowIn })
       }
     }
     .width('100%')

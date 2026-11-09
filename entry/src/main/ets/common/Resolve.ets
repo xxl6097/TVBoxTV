@@ -23,6 +23,21 @@ class Hit {
 }
 
 /**
+ * 每条解析规则的成功率统计（内存缓存，本次会话内有效）。
+ *
+ * key = rule.name，value = {ok: number, total: number}。
+ * 用于下次调用时把成功率高的规则排在前面，减少等待时间。
+ */
+const ruleStats: Map<string, { ok: number; total: number }> = new Map();
+
+/**
+ * 全局解析超时（毫秒）：两轮并发都超过这个时间就放弃，直接返回原地址。
+ * 实测每条规则 4.5s 单超时 × 两轮 ≈ 9s；把总预算限在 12s，
+ * 极端情况（多台规则全挂）不会让用户等超过这个时间。
+ */
+const RESOLVE_TOTAL_TIMEOUT_MS: number = 12000;
+
+/**
  * 播放地址解析。
  *
  * 采集源给出的地址通常是直链（m3u8/mp4），少数需要走「解析接口」把
@@ -35,6 +50,8 @@ class Hit {
  *    等于对每个接口先白等一个超时，8 条 × 6 秒 = 48 秒才轮到正确写法。
  *  - 规则串行最坏 8 × 2 × 6 秒 = 96 秒，用户早就退出了。
  *    现在 8 条规则同时发，命中即可返回，总耗时约等于「最慢的一条」。
+ *
+ * 优化：成功率排序 + 全局超时（最坏 12s 放行）。
  */
 export class Resolver {
   static async resolve(raw: string, rules: ParseRule[]): Promise<Resolved> {
@@ -56,18 +73,31 @@ export class Resolver {
       r.via = '未解析（可能需要专用解析器）';
       return r;
     }
-    const pick: ParseRule[] = [];
-    for (let i = 0; i < limit; i++) {
-      pick.push(rules[i]);
-    }
 
-    // 第一轮：编码（绝大多数接口走这条）
-    let hit: Hit | null = await Resolver.round(pick, raw, true);
-    if (hit === null) {
-      // 第二轮：原样。少数老接口自己做解码，传编码值反而失败
-      hit = await Resolver.round(pick, raw, false);
-    }
-    if (hit !== null) {
+    // 按成功率排序：成功率高的规则先跑，减少等待时间
+    const pick: ParseRule[] = Resolver.sortBySuccessRate(rules.slice(0, limit));
+
+    // 全局超时：两轮并发都不超 RESOLVE_TOTAL_TIMEOUT_MS
+    const globalTimeoutProm = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), RESOLVE_TOTAL_TIMEOUT_MS);
+    });
+
+    const resolveProm: Promise<Hit | null> = (async (): Promise<Hit | null> => {
+      // 第一轮：编码（绝大多数接口走这条）
+      let hit: Hit | null = await Resolver.round(pick, raw, true);
+      if (hit === null) {
+        // 第二轮：原样。少数老接口自己做解码，传编码值反而失败
+        hit = await Resolver.round(pick, raw, false);
+      }
+      return hit;
+    })();
+
+    // 全局超时 race：超时后直接放行，不卡住播放器
+    const winner = await Promise.race([resolveProm, globalTimeoutProm]);
+
+    if (winner !== null) {
+      const hit = winner as Hit;
+      Resolver.recordHit(hit.rule.name, true);
       r.url = Cms.s(hit.resp.url);
       r.via = hit.rule.name;
       r.ok = true;
@@ -79,6 +109,33 @@ export class Resolver {
 
     r.via = '未解析（可能需要专用解析器）';
     return r;
+  }
+
+  /**
+   * 记录规则命中情况，用于成功率排序。
+   * 每条规则单独统计，成功/失败各加 1。
+   */
+  static recordHit(name: string, ok: boolean): void {
+    const s = ruleStats.get(name) ?? { ok: 0, total: 0 };
+    s.total++;
+    if (ok) {
+      s.ok++;
+    }
+    ruleStats.set(name, s);
+  }
+
+  /**
+   * 按成功率排序：成功次数多的优先，从未试过的排末尾。
+   * 这样随着使用积累，「好使」的规则会越来越靠前，首次命中延迟下降。
+   */
+  private static sortBySuccessRate(rules: ParseRule[]): ParseRule[] {
+    return rules.slice().sort((a: ParseRule, b: ParseRule) => {
+      const sa = ruleStats.get(a.name);
+      const sb = ruleStats.get(b.name);
+      const rateA: number = (sa !== undefined && sa.total > 0) ? sa.ok / sa.total : 0.5;
+      const rateB: number = (sb !== undefined && sb.total > 0) ? sb.ok / sb.total : 0.5;
+      return rateB - rateA;
+    });
   }
 
   /** 单条规则试一次。失败一律返回 null，不抛异常 */
