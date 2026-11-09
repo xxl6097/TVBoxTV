@@ -8,8 +8,11 @@ node_modules/
 # 本地凭证与密钥：绝不能入库
 .agc-secret
 *.p12
+*.cer
 *.p7b
 *.keystore
+# CI 从密钥仓库解码出来的签名材料落在这里，同样不能入库
+.ci-sign/
 
 # 编辑器
 .idea/

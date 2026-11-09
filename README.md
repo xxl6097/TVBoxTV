@@ -189,6 +189,9 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 > `hdc shell hilog -x -T BOXN | grep cache` → `cache HIT` / `cache MISS ... 480 ms`。
 
 ```bash
+./scripts/ci-build.sh --toolchain       # 只打印工具链解析结果（排环境问题先看这个）
+./scripts/ci-build.sh --mode compile    # 只编译，与 CNB 的 compile 按钮同一条命令
+./scripts/ci-build.sh --mode sign       # 编译 + 补签，与 CNB 的 build 按钮同一条命令
 ./scripts/build.sh                      # 编译（DevEco 26 内置 hvigor + API 26 SDK）
 ./scripts/build-tv.sh                   # 编译 + 用调试证书补签（电视真机联调用）
 ./scripts/build-tv.sh --install 192.168.100.176:5555   # 编译 → 签名 → 装机，一条命令
@@ -236,6 +239,21 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 > `build-profile.json5` 里 `products[].signingConfig` 已预置为 `"default"`，
 > 这是上次做 ZspaceTV 时踩过的坑：DevEco 只会写 `signingConfigs`，不写引用，导致
 > `WARN No signingConfig found for product default`、只出未签名包。这次提前补上了。
+
+### 云端出包（CNB）
+
+不用开 DevEco 也能出包：CNB 仓库页「执行」下拉有两个按钮，配置在 `.cnb.yml`。
+
+| 按钮 | 做什么 | 要密钥 |
+|---|---|---|
+| `compile` | 命令行工具镜像里编译未签名 hap，输出 `build/ci/build-info.txt` | 不要 |
+| `build` | 编译 + 调试签名 + 把 hap 推 `oci.cnb.cool` 制品库（版本号 + latest 双标签） | 要 |
+
+云端与本地**共用同一份构建实现** `scripts/ci-build.sh`，差别只有工具链来源
+（本地 DevEco / 云端 `COMMAND_LINE_TOOLS_HOME`），由 `scripts/lib/harmony-env.sh` 统一推断。
+签名材料不放仓库，走私有密钥仓库 `abber/secrets`，通过 `imports` 注入成环境变量。
+
+CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含镜像自建、制品取回、报错对照表）。
 
 ## 五、已知限制
 
@@ -418,7 +436,10 @@ TVBoxTV/
 │   │   ├── Player.ets     播放器
 │   │   └── Settings.ets   配置导入 + 站源管理
 │   └── entryability/EntryAbility.ets
+├── .cnb.yml                  CNB 流水线：compile / build 两个手动按钮
 ├── scripts/build.sh          一键编译
+├── scripts/ci-build.sh       编译 + 补签的唯一实现（本地与 CNB 共用，含 build-info 清单）
+├── scripts/lib/harmony-env.sh 工具链定位（DevEco / 命令行工具 / SDK / 签名工具，跨平台）
 ├── scripts/build-tv.sh       编译 + 调试证书补签 + 装机（电视真机联调，一条命令）
 ├── scripts/build-release.sh  Release 编译 + 证书类型自检（上架用）
 ├── scripts/preflight.sh      提审前自检（8 组检查，红绿结论）
@@ -429,6 +450,7 @@ TVBoxTV/
 ├── tools/parse-check.mjs     协议解析自检（Node，与 Cms.ets 同一套逻辑）
 └── docs/
     ├── 可行性分析.md
+    ├── CNB构建.md            云端出包、密钥仓库、镜像自建、报错对照
     ├── 安装与排错.md
     ├── 上架指南.md
     ├── 隐私政策.md

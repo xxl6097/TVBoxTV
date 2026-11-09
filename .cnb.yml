@@ -1,0 +1,79 @@
+# 夜帧影视 · CNB 云原生构建
+#
+# 与本地 `scripts/build-tv.sh` 共用同一份构建实现（scripts/ci-build.sh），
+# 差别只有工具链来源：本地是 DevEco Studio，云端是 Command Line Tools 镜像。
+#
+# 触发方式：仓库页「执行」下拉里有两个按钮
+#   compile  只编译，验证工具链/代码能过，不碰任何密钥
+#   build    编译 + 调试签名 + 推 CNB OCI 制品库（需密钥仓库，见 docs/CNB构建.md）
+#
+# 想「推代码就自动编译」的话，把文件末尾注释的那段 push 打开即可。
+#
+# 注意：web_trigger_* 按钮必须挂在 `$`（兜底分支）下。
+
+$:
+  # ── 按钮一：只编译 ──────────────────────────────────────────────
+  # 换镜像、升 SDK 之后先用它验证；不需要任何密钥，谁都能点。
+  web_trigger_compile:
+    - # 构建镜像是社区维护的鸿蒙命令行工具镜像，内含
+      # hvigorw / ohpm / SDK / hap-sign-tool.jar。换镜像只改这一处。
+      docker: &docker
+        image: docker.cnb.cool/mayflyee/examples/harmony-command-line-tools:latest
+        volumes:
+          - /root/.ohpm:copy-on-write
+          - /root/.hvigor:copy-on-write
+      stages:
+        - name: 工具链自检
+          script: ./scripts/ci-build.sh --toolchain
+        - name: 编译未签名 hap
+          script: ./scripts/ci-build.sh --mode compile
+        - name: 构建结果
+          script: cat build/ci/build-info.txt
+
+  # ── 按钮二：完整出包（编译 + 调试签名 + 归档）────────────────────
+  web_trigger_build:
+    - docker: *docker
+      # 签名材料（p12 / cer / p7b 的 base64、库口令）来自私有密钥仓库。
+      # 换证书只更新那个仓库，这里不用动；仓库本身不留任何证书文件。
+      imports: https://cnb.cool/abber/secrets/-/blob/main/envs/harmony-sign.yml
+      stages:
+        - name: 工具链自检
+          script: ./scripts/ci-build.sh --toolchain
+        - name: 编译 + 调试签名
+          script: ./scripts/ci-build.sh --mode sign
+
+        # 把 hap 作为通用 OCI 制品归档，带版本号 + commit 双标签
+        - name: 推 OCI 制品库
+          image: ghcr.io/oras-project/oras:latest
+          # 归档失败不判定「构建失败」——包已经出好了，日志里会明确提示
+          allowFailure: true
+          script: |
+            set -e
+            HAP=$(sed -n 's/^hap=//p' build/ci/build-info.txt)
+            VER=$(sed -n 's/^version=//p' build/ci/build-info.txt)
+            TAG="${VER}-${CNB_COMMIT_SHORT}"
+            REF="${CNB_OCI_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/yezhen-tv"
+            [ -f "$HAP" ] || { echo "✗ 构建产物不见了：$HAP"; exit 1; }
+            oras login "${CNB_OCI_REGISTRY}" -u "${CNB_TOKEN_USER_NAME}" -p "${CNB_TOKEN}"
+            oras push --artifact-type application/vnd.yezhen.hap.v1 "${REF}:${TAG}"    "${HAP}:application/vnd.yezhen.hap.v1"
+            oras push --artifact-type application/vnd.yezhen.hap.v1 "${REF}:latest"   "${HAP}:application/vnd.yezhen.hap.v1"
+            echo "已归档：${REF}:${TAG}"
+            echo "取回：  oras pull ${REF}:${TAG}"
+
+        - name: 构建结果
+          script: cat build/ci/build-info.txt
+
+  # ── 可选：push 自动编译校验（默认关闭）─────────────────────────
+  # 打开后每次 push 跑一遍编译，约 1~2 分钟；两个按钮不受影响。
+  # 只想对 main 生效就把这段挪到顶层的 `main:` 下。
+  #push:
+  #  - docker: *docker
+  #    ifModify:
+  #      - "entry/**"
+  #      - "AppScope/**"
+  #      - "scripts/**"
+  #      - "build-profile.json5"
+  #      - "oh-package.json5"
+  #    stages:
+  #      - name: 编译校验
+  #        script: ./scripts/ci-build.sh --mode compile
