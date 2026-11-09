@@ -845,13 +845,8 @@ struct Detail {
 
   /** 点击演员名 → 搜索该演员 */
   searchActor(name: string): void {
-    router.pushUrl({
-      url: 'pages/Search',
-      params: {
-        keyword: name,
-        autoSearch: true
-      }
-    } as Record<string, Object>);
+    const params: Record<string, Object> = { 'keyword': name, 'autoSearch': true };
+    router.pushUrl({ url: 'pages/Search', params: params });
     Tip.show('搜索演员：' + name);
   }
 }

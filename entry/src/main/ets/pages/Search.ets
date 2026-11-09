@@ -50,12 +50,17 @@ struct SearchPage {
     this.kws = await Store.keywords();
     await this.buildPool();
     // 从详情页点演员名跳过来时，带 keyword + autoSearch 直接触发搜索
-    const p = router.getParams() as Record<string, Object> | null;
-    if (p !== null && typeof p['keyword'] === 'string' && (p['keyword'] as string).length > 0) {
-      const kw: string = p['keyword'] as string;
-      this.kw = kw;
-      if (p['autoSearch'] === true) {
-        await this.doSearch(kw);
+    const p: Object | undefined = router.getParams();
+    if (p !== null && p !== undefined && p instanceof Object) {
+      const rec: Record<string, Object> = p as Record<string, Object>;
+      const kwObj: Object | undefined = rec['keyword'];
+      if (kwObj !== undefined && typeof kwObj === 'string') {
+        const kw: string = kwObj as string;
+        this.kw = kw;
+        const autoObj: Object | undefined = rec['autoSearch'];
+        if (autoObj === true) {
+          await this.doSearch();
+        }
       }
     }
   }
