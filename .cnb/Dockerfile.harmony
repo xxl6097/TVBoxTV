@@ -20,9 +20,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     LANG=C.UTF-8
 
+# libGL / libEGL 等：资源编译阶段的可执行工具（image_transcoder）链了 libGL.so.1，
+# 缺了会报 11201001 Dependency Error；其余是常见渲染/字体依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip tar gzip xz-utils \
       openjdk-17-jdk-headless libstdc++6 libatomic1 \
+      libgl1 libglu1-mesa libfreetype6 libgbm1 \
     && rm -rf /var/lib/apt/lists/*
 
 # ohos-sdk release 标签，形如 26.0.0.821；用 latest 跟随最新 API 26 版
