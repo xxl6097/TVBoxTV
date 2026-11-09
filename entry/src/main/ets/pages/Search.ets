@@ -46,6 +46,8 @@ struct SearchPage {
   private pool: Sug[] = [];
   /** 搜索序号：连续搜索时用来丢弃上一轮的延迟结果 */
   private gen: number = 0;
+  /** 联想建议防抖计时器（300ms）：快速打字时不每个字都触发 */
+  private suggTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -100,11 +102,22 @@ struct SearchPage {
   }
 
   /**
-   * 根据输入内容实时刷新右侧建议。
+   * 根据输入内容实时刷新右侧建议（带 300ms 防抖）。
    * 中文：前缀命中优先、包含命中其次；
    * 纯字母/数字：按「拼音首字母缩写」猜测（输 sgyy / sg 都能命中「三国演义」）。
    */
   private refreshSugg(): void {
+    if (this.suggTimer >= 0) {
+      clearTimeout(this.suggTimer);
+    }
+    this.suggTimer = setTimeout(() => {
+      this.doRefreshSugg();
+      this.suggTimer = -1;
+    }, 300);
+  }
+
+  /** 实际执行联想刷新的逻辑（由防抖定时器调用） */
+  private doRefreshSugg(): void {
     const kw: string = this.kw.trim().toLowerCase();
     if (kw.length === 0) {
       this.sugg = this.pool.slice(0, 12);
@@ -164,11 +177,11 @@ struct SearchPage {
     this.sugg = prefix.concat(contain).slice(0, 12);
   }
 
-  /** 点右侧建议词：填入输入框并直接搜索 */
+  /** 点右侧建议词：填入输入框并直接搜索（建议词点击无需防抖，立即刷新） */
   private pickSugg(s: Sug): void {
     Feedback.tap();
     this.kw = s.text;
-    this.refreshSugg();
+    this.doRefreshSugg();
     this.doSearch();
   }
 

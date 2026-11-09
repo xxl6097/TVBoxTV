@@ -287,15 +287,37 @@ export class Http {
   /** 把底层网络库的英文错误翻译成用户能看懂的中文 */
   private static humanize(msg: string): string {
     const m: string = msg.toLowerCase();
+    // 超时类
     if (m.indexOf('timeout') >= 0 || m.indexOf('timed out') >= 0) {
       return '网络超时，请检查网络后重试';
     }
+    // 连接失败类
     if (m.indexOf('connect') >= 0 && m.indexOf('fail') >= 0) {
-      return '无法连接服务器';
+      return '无法连接服务器，请检查网络或稍后再试';
     }
-    if (m.indexOf('resolve') >= 0 || m.indexOf('getaddrinfo') >= 0) {
-      return '域名解析失败';
+    if (m.indexOf('refused') >= 0 || m.indexOf('reject') >= 0) {
+      return '连接被拒绝，服务器可能未启动或不可用';
     }
-    return msg;
+    if (m.indexOf('unreachable') >= 0 || m.indexOf('network is') >= 0) {
+      return '网络不可达，请检查网络连接';
+    }
+    // DNS类
+    if (m.indexOf('resolve') >= 0 || m.indexOf('getaddrinfo') >= 0 || m.indexOf('enotfound') >= 0) {
+      return '域名解析失败，请检查网络或域名是否正确';
+    }
+    // SSL/TLS类
+    if (m.indexOf('ssl') >= 0 || m.indexOf('certificate') >= 0 || m.indexOf('handshake') >= 0) {
+      return 'SSL/TLS证书验证失败，可能网络劫持或服务器配置问题';
+    }
+    // 其他类
+    if (m.indexOf('reset') >= 0 || m.indexOf('broken pipe') >= 0) {
+      return '连接中断，请重试';
+    }
+    if (m.indexOf('abort') >= 0 || m.indexOf('cancel') >= 0) {
+      return '请求已取消';
+    }
+    // 兜底：返回简化后的原始错误（去掉冗长的堆栈信息）
+    const firstLine = msg.split('\n')[0];
+    return firstLine.length > 100 ? firstLine.substring(0, 100) + '...' : firstLine;
   }
 }
