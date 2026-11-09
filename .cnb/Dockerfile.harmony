@@ -1,0 +1,57 @@
+# 夜帧影视 CI 构建镜像：HarmonyOS Command Line Tools 26（API 26）
+#
+# 为什么不直接用现成的社区镜像：
+#   那个镜像里的 SDK 是 API 21（HarmonyOS 6.0.1），本工程目标是 API 26
+#   （DevEco Studio 26 / HarmonyOS 26.0.0），编译会报
+#     - 10311009 ArkTS: ERROR / es2abc 语法错
+#     - "@ohos.multimedia.soundPool" could not be resolved
+#   两边 SDK 差一代，源码没错，是工具链版本不够。
+#
+# 来源：https://github.com/ErBWs/ohos-sdk —— 把华为官方 Command Line Tools（Linux）
+# 原样镜像到 GitHub Release，免去登录开发者账号才能下载的麻烦。分卷压缩，
+# 需要 .aa + .ab 拼回完整 tar.gz，并用官方 .sha256 校验。
+#
+# 构建（CNB 上点「执行 → image」，或本地）：
+#   docker build -f .cnb/Dockerfile.harmony \
+#     -t docker.cnb.cool/abber/harmonytv:harmony-26 .
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip tar gzip xz-utils \
+      openjdk-17-jdk-headless libstdc++6 libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ohos-sdk release 标签，形如 26.0.0.821；用 latest 跟随最新 API 26 版
+ARG OHOS_SDK_TAG=latest
+ARG TARBALL=ohos-sdk-linux-amd64.tar.gz
+
+RUN set -eux; \
+    base="https://github.com/ErBWs/ohos-sdk/releases/${OHOS_SDK_TAG}/download"; \
+    cd /tmp; \
+    curl -fL --retry 3 --retry-delay 2 "$base/${TARBALL}.aa" -o part.aa; \
+    curl -fL --retry 3 --retry-delay 2 "$base/${TARBALL}.ab" -o part.ab; \
+    curl -fL --retry 3 --retry-delay 2 "$base/${TARBALL}.sha256" -o sum.sha256; \
+    cat part.aa part.ab > "$TARBALL"; \
+    sha256sum -c sum.sha256; \
+    mkdir -p /opt/harmony; \
+    tar -xzf "$TARBALL" -C /opt/harmony; \
+    rm -f part.aa part.ab "$TARBALL" sum.sha256; \
+    test -d /opt/harmony/command-line-tools
+
+ENV HARMONY_TOOLS_HOME=/opt/harmony \
+    COMMAND_LINE_TOOLS_HOME=/opt/harmony/command-line-tools \
+    HVIGOR_HOME=/opt/harmony/command-line-tools/hvigor \
+    OHPM_HOME=/opt/harmony/command-line-tools/ohpm \
+    NODE_HOME=/opt/harmony/command-line-tools/tool/node \
+    DEVECO_SDK_HOME=/opt/harmony/command-line-tools/sdk
+
+ENV PATH=${COMMAND_LINE_TOOLS_HOME}/bin:${COMMAND_LINE_TOOLS_HOME}/hvigor/bin:${NODE_HOME}/bin:${PATH}
+
+WORKDIR /workspace
+
+# 自检：镜像能起来就说明 CLT / SDK / node 都在位
+RUN hvigorw -v && node -v && ohpm -v && cat /opt/harmony/command-line-tools/sdk/default/sdk-pkg.json

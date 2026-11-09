@@ -12,11 +12,26 @@
 # 注意：web_trigger_* 按钮必须挂在 `$`（兜底分支）下。
 
 $:
+  # ── 按钮零：构建镜像（只在升 SDK / 换工具链时点一次）──────────────
+  # 镜像是本仓库自建的 HarmonyOS Command Line Tools 26（API 26），见
+  # .cnb/Dockerfile.harmony。社区镜像只有 API 21，编不过本工程（差一代）。
+  web_trigger_image:
+    - services:
+        - docker
+      stages:
+        - name: 登录制品库
+          script: docker login -u "${CNB_TOKEN_USER_NAME}" -p "${CNB_TOKEN}" "${CNB_DOCKER_REGISTRY}"
+        - name: 构建镜像
+          script: |
+            docker build -f .cnb/Dockerfile.harmony \
+              -t "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:harmony-26" .
+        - name: 推送镜像
+          script: docker push "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:harmony-26"
+
   # ── 按钮一：只编译 ──────────────────────────────────────────────
   # 换镜像、升 SDK 之后先用它验证；不需要任何密钥，谁都能点。
   web_trigger_compile:
-    - # 构建镜像是社区维护的鸿蒙命令行工具镜像，内含
-      # hvigorw / ohpm / SDK / hap-sign-tool.jar。换镜像只改这一处。
+    - # 换工具链只改这一处（自建镜像的构建见上面 web_trigger_image）
       docker: &docker
         image: docker.cnb.cool/mayflyee/examples/harmony-command-line-tools:latest
         volumes:
