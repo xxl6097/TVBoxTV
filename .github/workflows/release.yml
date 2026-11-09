@@ -1,0 +1,137 @@
+name: 编译发布
+
+# ─── 触发方式 ────────────────────────────────────────────────────────
+# 1. 推送 v* tag  → 自动构建签名包并创建 GitHub Release
+# 2. 手动触发    → 可选 compile（只编译）/ sign（编译+签名）/ release（签名+发布）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '构建模式'
+        required: true
+        default: 'sign'
+        type: choice
+        options:
+          - compile    # 只编译，验证工具链
+          - sign       # 编译 + 签名（不发 Release）
+          - release    # 签名 + 创建 Release
+      version:
+        description: '版本号（release 模式必填，须与 app.json5 versionName 一致）'
+        required: false
+        default: ''
+      release_notes:
+        description: '更新说明（release 模式）'
+        required: false
+        default: ''
+
+# ─── 权限 ─────────────────────────────────────────────────────────────
+permissions:
+  contents: write   # 创建 Release 需要写权限
+
+jobs:
+  build:
+    name: ${{ (github.event_name == 'push' || inputs.mode == 'release') && '签名发布' || inputs.mode == 'sign' && '签名出包' || '编译验证' }}
+    runs-on: ubuntu-latest
+
+    # 使用 CNB 同款镜像（HarmonyOS Command Line Tools API 26）
+    # 镜像由 .cnb/Dockerfile.harmony 构建后推送到 GitHub Container Registry
+    # 若镜像不存在，先手动运行 build-image job 或本地构建并推送
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/harmony-26:latest
+      options: --user root
+
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 工具链自检
+        run: ./scripts/ci-build.sh --toolchain
+
+      # ─── 只编译 ───────────────────────────────────────────────────
+      - name: 编译未签名 HAP
+        if: ${{ inputs.mode == 'compile' }}
+        run: ./scripts/ci-build.sh --mode compile
+
+      # ─── 签名出包 ─────────────────────────────────────────────────
+      - name: 编译并签名 HAP
+        if: ${{ inputs.mode != 'compile' }}
+        env:
+          HMY_P12_B64: ${{ secrets.HMY_P12_B64 }}
+          HMY_CER_B64: ${{ secrets.HMY_CER_B64 }}
+          HMY_P7B_B64: ${{ secrets.HMY_P7B_B64 }}
+          HMY_STOREPASS: ${{ secrets.HMY_STOREPASS }}
+          HMY_ALIAS: ${{ secrets.HMY_ALIAS }}
+        run: ./scripts/ci-build.sh --mode sign
+
+      - name: 查看构建结果
+        if: always()
+        run: '[ -f dist/build-info.txt ] && cat dist/build-info.txt || echo "无 build-info.txt"'
+
+      - name: 上传 HAP 到 Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yezhen-tv-${{ github.sha }}
+          path: |
+            dist/*.hap
+            dist/release/*.hap
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ─── 创建 Release ────────────────────────────────────────────
+      - name: 整理发布材料
+        if: ${{ github.event_name == 'push' || inputs.mode == 'release' }}
+        env:
+          REL_VERSION: ${{ inputs.version || github.ref_name }}
+          REL_NOTE: ${{ inputs.release_notes }}
+          # release-notes.sh 里的 CNB_REPO_SLUG 兼容处理
+          CNB_REPO_SLUG: ${{ github.repository }}
+        run: ./scripts/release-notes.sh
+
+      - name: 创建 GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.mode == 'release' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+          name: 夜帧影视 ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+          body_path: dist/release-notes.md
+          files: dist/release/*.hap
+          draft: false
+          prerelease: false
+
+  # ─── 构建 Docker 镜像（首次或升级 SDK 时手动触发）──────────────────
+  build-image:
+    name: 构建 HarmonyOS CI 镜像
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && false }}  # 默认禁用，需手动修改触发
+    permissions:
+      packages: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: .cnb/Dockerfile.harmony
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/harmony-26:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
