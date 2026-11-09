@@ -361,6 +361,35 @@ struct Detail {
                 Column() {
                   Text(this.metaLine()).fontSize(16).fontColor(T.SUB)
                     .width('100%').maxLines(this.isPhone ? 4 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  // 演员可点击标签（点击搜索该演员）
+                  if (this.vod.actor.length > 0) {
+                    Row() {
+                      Text('主演').fontSize(14).fontColor(T.DIM).margin({ right: 8 })
+                        .flexShrink(0)
+                      Flex({ wrap: FlexWrap.Wrap }) {
+                        ForEach(this.actors(), (a: string) => {
+                          Text(a)
+                            .fontSize(14)
+                            .fontColor(this.hi('act_' + a) ? T.SELECTED : T.ACCENT)
+                            .backgroundColor(this.hi('act_' + a) ? T.CARD_HI : T.CARD)
+                            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                            .borderRadius(T.RADIUS_SM)
+                            .margin({ right: 8, bottom: 6 })
+                            .onHover((hv: boolean) => this.hoverTo('act_' + a, hv))
+                            .onClick(() => Pointer.fire('act_' + a, () => {
+                              Feedback.tap();
+                              this.searchActor(a);
+                            }))
+                            .onMouse(Pointer.on('act_' + a, () => {
+                              Feedback.tap();
+                              this.searchActor(a);
+                            }))
+                        }, (a: string) => a)
+                      }
+                      .layoutWeight(1)
+                    }
+                    .width('100%').margin({ top: 6 }).alignItems(VerticalAlign.Top)
+                  }
                   Text(this.vod.content.length > 0 ? this.vod.content : '暂无简介')
                     .fontSize(16).fontColor(T.SUB).lineHeight(25)
                     .width('100%')
@@ -795,9 +824,34 @@ struct Detail {
     if (this.vod.remark.length > 0) {
       parts.push(this.vod.remark);
     }
-    if (this.vod.actor.length > 0) {
-      parts.push('主演：' + this.vod.actor);
-    }
     return parts.length > 0 ? parts.join('  ·  ') : '暂无资料';
+  }
+
+  /** 把 actor 字符串按 ,/$$$/、 分隔成数组 */
+  actors(): string[] {
+    if (this.vod.actor.length === 0) {
+      return [];
+    }
+    const out: string[] = [];
+    const names: string[] = this.vod.actor.split(/[,，/$$$$\u3001]/);
+    for (let i = 0; i < names.length; i++) {
+      const n: string = names[i].trim();
+      if (n.length > 0 && out.indexOf(n) < 0) {
+        out.push(n);
+      }
+    }
+    return out.length > 8 ? out.slice(0, 8) : out;
+  }
+
+  /** 点击演员名 → 搜索该演员 */
+  searchActor(name: string): void {
+    router.pushUrl({
+      url: 'pages/Search',
+      params: {
+        keyword: name,
+        autoSearch: true
+      }
+    } as Record<string, Object>);
+    Tip.show('搜索演员：' + name);
   }
 }

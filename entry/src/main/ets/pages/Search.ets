@@ -49,6 +49,15 @@ struct SearchPage {
     await Store.init(getContext(this) as common.UIAbilityContext);
     this.kws = await Store.keywords();
     await this.buildPool();
+    // 从详情页点演员名跳过来时，带 keyword + autoSearch 直接触发搜索
+    const p = router.getParams() as Record<string, Object> | null;
+    if (p !== null && typeof p['keyword'] === 'string' && (p['keyword'] as string).length > 0) {
+      const kw: string = p['keyword'] as string;
+      this.kw = kw;
+      if (p['autoSearch'] === true) {
+        await this.doSearch(kw);
+      }
+    }
   }
 
   /** 收集联想候选词：搜索历史 + 首页「最近更新」片名，进页面收集一次 */
