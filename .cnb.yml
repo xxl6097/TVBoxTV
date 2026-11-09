@@ -31,9 +31,11 @@ $:
   # ── 按钮一：只编译 ──────────────────────────────────────────────
   # 换镜像、升 SDK 之后先用它验证；不需要任何密钥，谁都能点。
   web_trigger_compile:
-    - # 换工具链只改这一处（自建镜像的构建见上面 web_trigger_image）
+    - # 换工具链只改这一处；镜像由 .cnb/Dockerfile.harmony 构建（按钮 web_trigger_image）
+      # 注意：社区镜像 docker.cnb.cool/mayflyee/examples/harmony-command-line-tools:latest
+      # 的 SDK 是 API 21，本工程要 API 26，用它会报 es2abc 语法错 / soundPool 解析失败
       docker: &docker
-        image: docker.cnb.cool/mayflyee/examples/harmony-command-line-tools:latest
+        image: docker.cnb.cool/abber/harmonytv:harmony-26
         volumes:
           - /root/.ohpm:copy-on-write
           - /root/.hvigor:copy-on-write
