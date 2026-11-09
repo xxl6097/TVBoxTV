@@ -111,13 +111,25 @@ if [ "$MODE" = "sign" ]; then
     printf '%s' "$HMY_CER_B64" | base64 -d > "$SIGN_DIR/hongmengyingshi-debug.cer" 2>/dev/null
     printf '%s' "$HMY_P7B_B64" | base64 -d > "$SIGN_DIR/hongmengyingshi-debug.p7b" 2>/dev/null
     chmod 600 "$SIGN_DIR"/*.p12 "$SIGN_DIR"/*.p7b 2>/dev/null
-  elif [ ! -f "$SIGN_DIR/hongmengyingshi-debug.p7b" ] && [ -d "$HOME/.ohos/debug-key" ]; then
+  elif [ ! -f "$SIGN_DIR/hongmengyingshi-debug.p7b" ] && [ ! -f "$SIGN_DIR"/*.p7b ] 2>/dev/null && [ -d "$HOME/.ohos/debug-key" ]; then
     SIGN_DIR="$HOME/.ohos/debug-key"
   fi
 
-  P12="$SIGN_DIR/hongmengyingshi-debug.p12"
-  CER="$SIGN_DIR/hongmengyingshi-debug.cer"
-  P7B="$SIGN_DIR/hongmengyingshi-debug.p7b"
+  # 自动寻找签名文件（支持多种命名约定）
+  # 优先找标准命名 hongmengyingshi-debug.*，其次扫目录中任意 .p12/.cer/.p7b
+  _find_sign_file() {
+    local dir="$1" std="$2" ext="$3"
+    if [ -f "$dir/$std" ]; then echo "$dir/$std"; return; fi
+    find "$dir" -maxdepth 1 -name "*$ext" -type f 2>/dev/null | head -1
+  }
+
+  P12="$(_find_sign_file "$SIGN_DIR" "hongmengyingshi-debug.p12" ".p12")"
+  CER="$(_find_sign_file "$SIGN_DIR" "hongmengyingshi-debug.cer" ".cer")"
+  # .p7b 优先选调试类型（包含 debug 的文件名）
+  P7B="$(_find_sign_file "$SIGN_DIR" "hongmengyingshi-debug.p7b" ".p7b")"
+  if [ -z "$P7B" ] || [ ! -f "$P7B" ]; then
+    P7B="$(find "$SIGN_DIR" -maxdepth 1 -name "*[Dd]ebug*.p7b" -type f 2>/dev/null | head -1)"
+  fi
   ALIAS="${HMY_ALIAS:-debugkey}"
   PASS="${HMY_STOREPASS:-}"
 

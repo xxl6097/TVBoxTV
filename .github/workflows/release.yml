@@ -34,15 +34,8 @@ permissions:
 jobs:
   build:
     name: ${{ (github.event_name == 'push' || inputs.mode == 'release') && '签名发布' || inputs.mode == 'sign' && '签名出包' || '编译验证' }}
-    runs-on: ubuntu-latest
-
-    # 使用 CNB 同款镜像（HarmonyOS Command Line Tools API 26）
-    # 镜像由 .cnb/Dockerfile.harmony 构建后推送到 GitHub Container Registry
-    # 若镜像不存在，先手动运行 build-image job 或本地构建并推送
-    container:
-      image: ghcr.io/${{ github.repository_owner }}/harmony-26:latest
-      options: --user root
-
+    # 使用本机 self-hosted runner，直接使用本地 DevEco Studio 环境
+    runs-on: self-hosted
     timeout-minutes: 30
 
     steps:
@@ -63,11 +56,11 @@ jobs:
       - name: 编译并签名 HAP
         if: ${{ inputs.mode != 'compile' }}
         env:
-          HMY_P12_B64: ${{ secrets.HMY_P12_B64 }}
-          HMY_CER_B64: ${{ secrets.HMY_CER_B64 }}
-          HMY_P7B_B64: ${{ secrets.HMY_P7B_B64 }}
-          HMY_STOREPASS: ${{ secrets.HMY_STOREPASS }}
-          HMY_ALIAS: ${{ secrets.HMY_ALIAS }}
+          # self-hosted 模式：直接使用仓库内的签名材料（docs/ID/）
+          # ci-build.sh 检测到 SIGN_DIR 有对应文件时会跳过 base64 解码
+          SIGN_DIR: ${{ github.workspace }}/docs/ID
+          HMY_STOREPASS: het002402
+          HMY_ALIAS: hong
         run: ./scripts/ci-build.sh --mode sign
 
       - name: 查看构建结果
@@ -79,9 +72,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: yezhen-tv-${{ github.sha }}
-          path: |
-            dist/*.hap
-            dist/release/*.hap
+          path: dist/*.hap
           if-no-files-found: warn
           retention-days: 7
 
@@ -102,7 +93,7 @@ jobs:
           tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
           name: 夜帧影视 ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
           body_path: dist/release-notes.md
-          files: dist/release/*.hap
+          files: dist/*.hap
           draft: false
           prerelease: false
 
