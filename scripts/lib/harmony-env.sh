@@ -179,10 +179,17 @@ hv_sha256() {
 }
 
 # 人类可读大小
+# 用文件字节数算，不用 du —— du 读的是磁盘占用，APFS 上刚 cp 出来的副本会
+# 因为 clone/块对齐报得比原文件大（实测同一个 hap 一处 2.4M、一处 3.1M）。
 hv_size() {
-  if du -h "$1" >/dev/null 2>&1; then
-    du -h "$1" | cut -f1
-  else
-    ls -lh "$1" | awk '{print $5}'
-  fi
+  [ -f "$1" ] || { echo "-"; return; }
+  local bytes
+  bytes="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+  [ -n "$bytes" ] || { echo "-"; return; }
+  awk -v b="$bytes" 'BEGIN {
+    split("B K M G T", u, " "); i = 1
+    while (b >= 1024 && i < 5) { b /= 1024; i++ }
+    if (i == 1) printf "%d%s\n", b, u[i]
+    else printf "%.1f%s\n", b, u[i]
+  }'
 }

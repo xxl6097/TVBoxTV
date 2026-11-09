@@ -246,9 +246,13 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 
 | 按钮 | 做什么 | 要密钥 |
 |---|---|---|
-| `image` | 构建构建镜像（命令行工具 26 / API 26），升 SDK 才点，约 14 分钟 | 不要 |
-| `compile` | 镜像里编译未签名 hap，输出 `dist/build-info.txt`，约 2 分钟 | 不要 |
-| `build` | 编译 + 调试签名 + 把**可直装的 hap** 推 `oci.cnb.cool` 制品库（版本号 + latest 双标签） | 要 |
+| **出包并发布 Release** | 编译 + 调试签名 + 建 Release `v<版本号>` + 把**可直装的 hap** 挂成附件（页面填版本号/更新说明） | 要 |
+| `出包（不发布）` | 编译 + 调试签名 + 推 `oci.cnb.cool` 制品库（版本号 + latest 双标签） | 要 |
+| `编译校验` | 镜像里编译未签名 hap，输出 `dist/build-info.txt`，约 2 分钟 | 不要 |
+| `重建构建镜像` | 构建命令行工具 26 / API 26 镜像，升 SDK 才点，约 14 分钟 | 不要 |
+
+按钮定义在 `.cnb/web_trigger.yml`，实际跑的流水线在 `.cnb.yml`。发版产物直链形如
+`https://cnb.cool/abber/HarmonyTv/-/releases/download/v1.1.0/yezhen-tv-1.1.0-debug.hap`。
 
 > 镜像必须自建：社区现成镜像的 SDK 是 API 21，本工程要 API 26，会报
 > `es2abc` 语法错和 `soundPool` 解析失败——源码没问题，是工具链差一代。

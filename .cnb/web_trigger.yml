@@ -1,0 +1,47 @@
+# 仓库页「执行」下拉里的自定义按钮
+#
+# 只有在这里登记过的按钮才会出现在页面上；按钮触发的 event 必须在 .cnb.yml 里
+# 有对应流水线（web_trigger_*），否则点了不会跑。
+#
+# inputs 里的字段会以环境变量注入流水线，脚本里直接 $REL_VERSION / $REL_NOTE 取。
+
+branch:
+  - buttons:
+      # ── 发版：编译 + 签名 + 建 Release + 挂 hap 附件 ──────────────
+      - name: 出包并发布 Release
+        description: 编译 → 调试签名 → 发布 v${REL_VERSION}（附可直装 hap）
+        event: web_trigger_release
+        groupName: 发版
+        # 点「执行」直接弹这个按钮的填参框
+        isDefault: true
+        inputs:
+          REL_VERSION:
+            name: 版本号
+            description: 必须与 AppScope/app.json5 的 versionName 一致，不一致会直接失败（防止 v1.2.0 挂了个 1.1.0 的包）
+            type: input
+            required: true
+            default: "1.1.0"
+          REL_NOTE:
+            name: 更新说明
+            description: 写进 Release 正文开头；留空则只列构建信息
+            type: textarea
+            required: false
+            placeholder: 例如：修复选集列表在低内存机型上闪退
+
+      # ── 只出包，不发版（内部联调用）───────────────────────────────
+      - name: 出包（不发布）
+        description: 编译 + 调试签名，推 OCI 制品库，不建 Release
+        event: web_trigger_build
+        groupName: 构建
+
+      # ── 只编译，不碰密钥（换镜像 / 升 SDK 后先跑它）────────────────
+      - name: 编译校验
+        description: 只编译未签名 hap，不需要任何密钥
+        event: web_trigger_compile
+        groupName: 构建
+
+      # ── 重建构建镜像（升 SDK 时才点）──────────────────────────────
+      - name: 重建构建镜像
+        description: 重新构建 API 26 命令行工具镜像，约 14 分钟
+        event: web_trigger_image
+        groupName: 维护

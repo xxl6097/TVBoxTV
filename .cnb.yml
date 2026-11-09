@@ -3,9 +3,11 @@
 # 与本地 `scripts/build-tv.sh` 共用同一份构建实现（scripts/ci-build.sh），
 # 差别只有工具链来源：本地是 DevEco Studio，云端是 Command Line Tools 镜像。
 #
-# 触发方式：仓库页「执行」下拉里有两个按钮
+# 触发方式：仓库页「执行」下拉里的按钮（按钮本身在 .cnb/web_trigger.yml 里登记）
+#   release  编译 + 调试签名 + 建 Release（v版本号）+ 把 hap 挂成附件  ← 发版用这个
+#   build    编译 + 调试签名 + 推 CNB OCI 制品库（内部联调，不发 Release）
 #   compile  只编译，验证工具链/代码能过，不碰任何密钥
-#   build    编译 + 调试签名 + 推 CNB OCI 制品库（需密钥仓库，见 docs/CNB构建.md）
+#   image    重建构建镜像（升 SDK / 换工具链时才点）
 #
 # 想「推代码就自动编译」的话，把文件末尾注释的那段 push 打开即可。
 #
@@ -79,6 +81,54 @@ $:
 
         - name: 构建结果
           script: cat dist/build-info.txt
+
+  # ── 按钮三：出包并发布 Release（发版走这条）─────────────────────
+  # 页面填「版本号 + 更新说明」（见 .cnb/web_trigger.yml 的 inputs），跑完在
+  # 仓库「发行版」里生成 v<版本号>，hap 作为附件可直接下载。
+  #
+  # 版本号必须与 AppScope/app.json5 的 versionName 一致，不一致会在
+  # 「整理发布材料」阶段直接失败，避免 tag 与包体对不上。
+  web_trigger_release:
+    - docker: *docker
+      imports: https://cnb.cool/abber/secrets/-/blob/main/envs/harmony-sign.yml
+      stages:
+        - name: 工具链自检
+          script: ./scripts/ci-build.sh --toolchain
+
+        - name: 编译 + 调试签名
+          script: ./scripts/ci-build.sh --mode sign
+
+        # 校验版本号、把 hap 改成 ASCII 名、生成 Release 正文
+        - name: 整理发布材料
+          script: ./scripts/release-notes.sh
+
+        # 建 Release：tag = v<版本号>，正文取上一步生成的文件。
+        # 同名 tag 已存在时会先删后建（overlying 默认 false），
+        # 所以「用同一版本号再点一次」＝重发这一版，不会堆出重复版本。
+        - name: 发布 Release
+          type: git:release
+          options:
+            tag: v${REL_VERSION}
+            title: 夜帧影视 v${REL_VERSION}
+            descriptionFromFile: dist/release-notes.md
+            latest: true
+
+        # Release 建好之后才能挂附件（顺序不能反）
+        - name: 上传 hap 附件
+          image: cnbcool/attachments:latest
+          settings:
+            tag: v${REL_VERSION}
+            attachments:
+              - "./dist/release/*.hap"
+          exports:
+            FILES: FILES
+
+        - name: 发布结果
+          script: |
+            echo "附件：$FILES"
+            cat dist/release-info.txt
+            echo
+            echo "下载页：https://cnb.cool/${CNB_REPO_SLUG}/-/releases/tag/v${REL_VERSION}"
 
   # ── 可选：push 自动编译校验（默认关闭）─────────────────────────
   # 打开后每次 push 跑一遍编译，约 1~2 分钟；两个按钮不受影响。

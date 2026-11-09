@@ -6,32 +6,53 @@
 | 项 | 本地（Mac + DevEco Studio 26） | 云端（CNB） |
 |---|---|---|
 | 工具链来源 | `/Applications/DevEco-Studio.app` | 命令行工具镜像（含 `hvigorw` / SDK / `hap-sign-tool.jar`） |
-| 入口 | `scripts/build-tv.sh` | 仓库页「执行」→ `compile` / `build` 按钮 |
+| 入口 | `scripts/build-tv.sh` | 仓库页「执行」→ `release` / `build` / `compile` 按钮 |
 | 构建实现 | `scripts/ci-build.sh --mode sign` | 同一个 `scripts/ci-build.sh` |
 | 签名材料 | `~/.ohos/debug-key/` | 私有密钥仓库 `abber/secrets`（`imports` 注入） |
-| 产物 | `dist/*.hap` | 同上 + 推 `oci.cnb.cool` 制品库 |
+| 产物 | `dist/*.hap` | 同上 + 发 Release（附 hap）或推 `oci.cnb.cool` 制品库 |
 
 ---
 
-## 一、三个按钮
+## 一、四个按钮
 
-仓库页顶部「执行」下拉里有两条流水线，配置见 [`.cnb.yml`](../.cnb.yml)：
+按钮本身在 [`.cnb/web_trigger.yml`](../.cnb/web_trigger.yml) 里登记（名字、描述、填参项），
+点了之后跑什么在 [`.cnb.yml`](../.cnb.yml) 里（`web_trigger_*`）。
 
-| 按钮 | 做什么 | 要不要密钥 |
+| 按钮 | 做什么 | 要密钥 | 耗时 |
+|---|---|---|---|
+| **出包并发布 Release** | 编译 → 调试签名 → 建 Release `v<版本号>` → 把 hap 挂成附件 | 要 | 约 3 分钟 |
+| `出包（不发布）` | 编译 → 调试签名 → 推 OCI 制品库，不建 Release | 要 | 约 3 分钟 |
+| `编译校验` | 只编译未签名 hap，输出清单 | 不要 | 约 2 分钟 |
+| `重建构建镜像` | 重建 API 26 命令行工具镜像 | 不要 | 约 14 分钟 |
+
+> 前 2 分钟基本都花在拉 2.2G 的构建镜像上，真正编译只有 20~40 秒。
+
+**发版按钮要填两个字段**（`inputs`，会以环境变量注入流水线）：
+
+| 字段 | 环境变量 | 说明 |
 |---|---|---|
-| `image` | 构建/重建构建镜像（API 26 命令行工具），升 SDK 时才点，约 14 分钟 | 不要 |
-| `compile` | 打印工具链解析结果 → 编译未签名 hap → 输出清单，约 2 分钟 | 不要 |
-| `build` | 上面全做，再补调试签名，最后把 hap 推到 OCI 制品库 | 要（密钥仓库） |
+| 版本号 | `REL_VERSION` | 必填。**必须等于 `AppScope/app.json5` 的 `versionName`**，不一致直接失败 |
+| 更新说明 | `REL_NOTE` | 选填，会放在 Release 正文最前面；留空只列构建信息 |
 
-**换镜像、升 SDK 之后先用 `compile` 验证**，它不碰任何密钥，失败信息也最干净。
+版本号故意不做「自动改写」：写错就报错，而不是悄悄给你打个 `v1.2.0` 的 tag 却挂着 1.1.0 的包。
 
-一次 `build` 的产物：
+**换镜像、升 SDK 之后先用 `编译校验` 验证**，它不碰任何密钥，失败信息也最干净。
+
+一次 `出包` 的产物：
 
 ```
-dist/夜帧影视-<版本>-debug-signed.hap
+dist/夜帧影视-<版本>-debug-signed.hap   ← 真机直装用这个
 dist/hvigor.log
 dist/sign.log
-dist/build-info.txt      ← 扁平清单，供后续阶段/脚本消费
+dist/build-info.txt                    ← 扁平清单，供后续阶段/脚本消费
+```
+
+发版还会多出发布材料：
+
+```
+dist/release/yezhen-tv-<版本>-debug.hap  ← 实际发出去的附件（ASCII 名，避免 URL 一堆 %E5%…）
+dist/release-notes.md                    ← Release 正文
+dist/release-info.txt                    ← tag / 附件名 / 下载地址
 ```
 
 > 产物统一放 `dist/`，**不放 `build/`** —— `build/` 是 hvigor 自己的输出目录，
@@ -177,7 +198,44 @@ ARG OHOS_SDK_TAG=26.0.0.821
 `web_trigger_build` 引用同一锚点。工具链路径由 `scripts/lib/harmony-env.sh` 从
 `COMMAND_LINE_TOOLS_HOME` 自动推断，**脚本一行都不用改**。
 
-## 四、取回制品
+## 四、发版与取回制品
+
+### 发版（`出包并发布 Release` 按钮）
+
+按顺序四步，任一步失败就停：
+
+1. `scripts/ci-build.sh --mode sign` —— 编译 + 调试签名
+2. `scripts/release-notes.sh` —— 校验版本号、把 hap 改成 ASCII 名、生成正文
+3. `type: git:release` —— 建 tag `v<版本号>` 并生成 Release（`latest: true`）
+4. `cnbcool/attachments` —— 把 `dist/release/*.hap` 挂成附件
+
+> 第 3、4 步顺序不能反：附件插件要求 tag 上已经有 Release，否则报错。
+
+跑完在哪看：
+
+| 位置 | 内容 |
+|---|---|
+| 仓库「发行版」 | `v1.1.0` 版本页，正文含版本/SHA-256/安装命令 |
+| 仓库「标签」 | 同名 `v1.1.0` tag（指向本次构建的提交） |
+| 直链 | `https://cnb.cool/abber/HarmonyTv/-/releases/download/v1.1.0/yezhen-tv-1.1.0-debug.hap` |
+
+命令行取包：
+
+```bash
+curl -LO https://cnb.cool/abber/HarmonyTv/-/releases/download/v1.1.0/yezhen-tv-1.1.0-debug.hap
+hdc install -r yezhen-tv-1.1.0-debug.hap
+```
+
+几点行为约定：
+
+- **同一版本号重复点＝重发这一版**：`git:release` 默认先删后建，不会堆出一串同名版本
+- **版本号填错会失败**，不会产出 tag 与包体不一致的 Release
+- 附件固定叫 `yezhen-tv-<版本>-<debug|release>.hap`：中文名进 URL 会被转义成长串 `%E5%A4%9C…`，
+  分享出去既难看又容易被截断
+- 这里的包是**调试证书签名**，只能装白名单设备（手机 + 电视），不能上架；
+  上架用本机 `scripts/sign-release.sh` 出 release `.app`
+
+### 制品库（`出包（不发布）` 按钮）
 
 `build` 按钮跑完后，hap 会以通用 OCI 制品形式归档（`allowFailure` 打开，归档失败不影响出包）：
 
@@ -206,6 +264,10 @@ CI 出问题时的标准动作：**在本地跑同一条命令**，两边结果�
 
 ./scripts/build-tv.sh                          # = --mode sign + 提示装包命令
 ./scripts/build-tv.sh --install 192.168.1.207:33609   # 构建 + 装到手机
+
+# 复现发版（本地只生成材料，不建 Release —— 建 Release 是 CI 里的 git:release 干的）
+REL_VERSION=1.1.0 REL_NOTE="修了个闪退" ./scripts/release-notes.sh
+cat dist/release-notes.md dist/release-info.txt
 ```
 
 `scripts/ci-build.sh` 的退出码是稳定的，脚本里可以直接判断：
