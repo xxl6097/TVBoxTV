@@ -18,3 +18,6 @@ node_modules/
 # 编辑器
 .idea/
 .DS_Store
+
+# 本地临时的装机脚本（已被 scripts/build-tv.sh 取代，包名/路径均过期）
+install-to-phone.sh
