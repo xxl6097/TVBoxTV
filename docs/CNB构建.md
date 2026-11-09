@@ -9,7 +9,7 @@
 | 入口 | `scripts/build-tv.sh` | 仓库页「执行」→ `compile` / `build` 按钮 |
 | 构建实现 | `scripts/ci-build.sh --mode sign` | 同一个 `scripts/ci-build.sh` |
 | 签名材料 | `~/.ohos/debug-key/` | 私有密钥仓库 `abber/secrets`（`imports` 注入） |
-| 产物 | `build/ci/*.hap` | 同上 + 推 `oci.cnb.cool` 制品库 |
+| 产物 | `dist/*.hap` | 同上 + 推 `oci.cnb.cool` 制品库 |
 
 ---
 
@@ -27,13 +27,16 @@
 一次 `build` 的产物：
 
 ```
-build/ci/夜帧影视-<版本>-debug-signed.hap
-build/ci/hvigor.log
-build/ci/sign.log
-build/ci/build-info.txt      ← 扁平清单，供后续阶段/脚本消费
+dist/夜帧影视-<版本>-debug-signed.hap
+dist/hvigor.log
+dist/sign.log
+dist/build-info.txt      ← 扁平清单，供后续阶段/脚本消费
 ```
 
-`build-info.txt` 长这样（`key=value`，一行一个字段）：
+> 产物统一放 `dist/`，**不放 `build/`** —— `build/` 是 hvigor 自己的输出目录，
+> 构建开始时会被清理（cloud 上表现为「日志文件刚写完就没了」）。
+
+`dist/build-info.txt` 长这样（`key=value`，一行一个字段）：
 
 ```
 app=夜帧影视
@@ -42,7 +45,7 @@ version=1.1.0
 version_code=1000008
 build_mode=debug
 signed=yes
-hap=build/ci/夜帧影视-1.1.0-debug-signed.hap
+hap=dist/夜帧影视-1.1.0-debug-signed.hap
 size=2.4M
 sha256=e557011bf5fd3789d0387c1c5ec69a90de4d1526eec5d744ab4f9fbd50e1c19a
 ```
@@ -217,7 +220,7 @@ CI 出问题时的标准动作：**在本地跑同一条命令**，两边结果�
 |---|---|---|
 | `00303312 Cannot find the corresponding SDK version` | 镜像 SDK 版本与工程要求不符 | 换镜像 / 自建镜像（第三节） |
 | `The length of the storePassword or keyPassword field is less than 32` | 把明文口令写进了 `signingConfigs` | 别写 `signingConfigs`，走 `ci-build.sh` 补签 |
-| `sign-app success` 没有、签名阶段失败 | `.ci-sign/` 没落地或口令错 | 看 `build/ci/sign.log`；本地 `--toolchain` 确认 `hap-sign-tool.jar` 找到 |
+| `sign-app success` 没有、签名阶段失败 | `.ci-sign/` 没落地或口令错 | 看 `dist/sign.log`；本地 `--toolchain` 确认 `hap-sign-tool.jar` 找到 |
 | `device is unauthorized` / `9568425` | 设备 UDID 不在 `.p7b` 白名单 | AGC 添加设备 → 重签 `.p7b` → 更新密钥仓库 |
 | `9568322 not trusted app source` | 装的是上架用 `.app`（release 签名） | 真机自测要用 debug 签名的 `.hap` |
 | 按钮点了没反应 / 没有 `build` 按钮 | `.cnb.yml` 里 `web_trigger_*` 没挂在 `$` 下 | 参考本仓库的 `.cnb.yml` 结构 |

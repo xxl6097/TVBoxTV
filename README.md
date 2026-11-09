@@ -246,7 +246,7 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 
 | 按钮 | 做什么 | 要密钥 |
 |---|---|---|
-| `compile` | 命令行工具镜像里编译未签名 hap，输出 `build/ci/build-info.txt` | 不要 |
+| `compile` | 命令行工具镜像里编译未签名 hap，输出 `dist/build-info.txt` | 不要 |
 | `build` | 编译 + 调试签名 + 把 hap 推 `oci.cnb.cool` 制品库（版本号 + latest 双标签） | 要 |
 
 云端与本地**共用同一份构建实现** `scripts/ci-build.sh`，差别只有工具链来源

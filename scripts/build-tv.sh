@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 一条命令出「可直接装到真机/电视」的调试包，并可选安装。
 #
-#   ./scripts/build-tv.sh                                  # 只构建，产出 build/ci/*-signed.hap
+#   ./scripts/build-tv.sh                                  # 只构建，产出 dist/*-signed.hap
 #   ./scripts/build-tv.sh --install 192.168.100.176:5555   # 构建 + 装到电视
 #   ./scripts/build-tv.sh --install 192.168.10.168:37713   # 构建 + 装到手机
 #   ./scripts/build-tv.sh --build-mode release             # 换构建模式（默认 debug）
@@ -51,7 +51,7 @@ export HMY_ALIAS="${HMY_ALIAS:-debugkey}"
 # ---------- 1. 编译 + 签名（与 CNB 流水线同一实现）----------
 "$ROOT/scripts/ci-build.sh" --mode sign --build-mode "$BUILD_MODE" || exit $?
 
-INFO="$ROOT/build/ci/build-info.txt"
+INFO="$ROOT/dist/build-info.txt"
 HAP="$ROOT/$(sed -n 's/^hap=//p' "$INFO" | head -1)"
 BUNDLE="$(sed -n 's/^bundle=//p' "$INFO" | head -1)"
 [ -f "$HAP" ] || { echo "✗ 没找到签名包：$HAP"; exit 8; }

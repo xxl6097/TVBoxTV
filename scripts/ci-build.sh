@@ -15,8 +15,8 @@
 #        SIGN_DIR 默认 .ci-sign，其次 $HOME/.ohos/debug-key
 #
 # 产物：
-#   build/ci/*.hap          可直装的包
-#   build/ci/build-info.txt key=value 扁平清单，供后续阶段或脚本消费
+#   dist/*.hap          可直装的包
+#   dist/build-info.txt key=value 扁平清单，供后续阶段或脚本消费
 #
 # 退出码：
 #   0 成功 / 2 工具链不全 / 3 编译失败 / 4 签名材料缺失 / 5 未签名包没找到 / 6 签名失败
@@ -56,25 +56,33 @@ fi
 [ -n "${HV_HVIGOR:-}" ] || hv_die "没找到 hvigorw" 2
 
 # ---------------- 1. 编译 ----------------
-OUT_DIR="$ROOT/build/ci"
+OUT_DIR="$ROOT/dist"
 LOG_DIR="$OUT_DIR"
 mkdir -p "$LOG_DIR"
 BUILD_LOG="$LOG_DIR/hvigor.log"
 
 hv_log "编译（product=$PRODUCT, buildMode=${BUILD_MODE}）…"
 set +e
-"$HV_HVIGOR" --mode module -p "product=$PRODUCT" -p "buildMode=$BUILD_MODE" \
-  assembleHap --no-daemon > "$BUILD_LOG" 2>&1
-rc=$?
+if [ -n "${CNB_BUILD_WORKSPACE:-}" ]; then
+  # 云端把全量 hvigor 日志打到构建日志里，排障不用再翻文件
+  "$HV_HVIGOR" --mode module -p "product=$PRODUCT" -p "buildMode=$BUILD_MODE" \
+    assembleHap --no-daemon 2>&1 | tee "$BUILD_LOG"
+  rc=${PIPESTATUS[0]}
+else
+  "$HV_HVIGOR" --mode module -p "product=$PRODUCT" -p "buildMode=$BUILD_MODE" \
+    assembleHap --no-daemon > "$BUILD_LOG" 2>&1
+  rc=$?
+  [ -f "$BUILD_LOG" ] && tail -5 "$BUILD_LOG" | sed 's/^/    /'
+fi
 set -e
-tail -5 "$BUILD_LOG" | sed 's/^/    /'
-if [ $rc -ne 0 ] || ! grep -q "BUILD SUCCESSFUL" "$BUILD_LOG"; then
+if [ $rc -ne 0 ] || [ ! -f "$BUILD_LOG" ] || ! grep -q "BUILD SUCCESSFUL" "$BUILD_LOG"; then
   echo
-  echo "✗ 编译失败，完整日志：${BUILD_LOG}（CNB 上会随构建日志一起显示）"
-  grep -nE "ERROR|Error Message|error:|00303[0-9]{3}" "$BUILD_LOG" | head -20
+  echo "✗ 编译失败（日志：${BUILD_LOG#$ROOT/}）"
+  [ -f "$BUILD_LOG" ] && grep -nE "ERROR|Error Message|error:|00303[0-9]{3}" "$BUILD_LOG" | head -20
   exit 3
 fi
 hv_ok "编译通过"
+mkdir -p "$OUT_DIR"
 
 # ---------------- 2. 找未签名包 ----------------
 UNSIGNED="$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
