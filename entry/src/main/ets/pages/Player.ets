@@ -17,6 +17,7 @@ import { Tip } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
 import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
+import window from '@ohos.window';
 
 /** 单击快进快退步长 */
 const SEEK_STEP: number = 10000;
@@ -125,6 +126,13 @@ struct Player {
   @State holdSpeedOn: boolean = false;
   /** 按下前保存的原倍速，用于长按松开时恢复 */
   private holdSpeedVal: number = 1;
+  /** 当前屏幕亮度（0-1），仅手机端手势调节使用 */
+  @State brightness: number = 0.5;
+  /** 亮度 HUD 是否可见 */
+  @State showBrightness: boolean = false;
+  private brightTimer: number = -1;
+  /** 手势起始 X（用于判断左/右半屏） */
+  private panStartX: number = 0;
   
   // ===== 下一集预加载缓存 =====
   /** 预加载下一集的 raw url（缓存 key） */
@@ -3187,6 +3195,8 @@ struct Player {
           if (this.dragSeeking) {
             return;
           }
+          // 记录手势起始 X，用于后续判断左/右半屏
+          this.panStartX = e.fingerList.length > 0 ? e.fingerList[0].localX : 0;
         })
         .onActionUpdate((e: GestureEvent) => {
           if (this.dragSeeking || this.durMs <= 0) {
@@ -3206,18 +3216,47 @@ struct Player {
             return;
           }
           
-          // 纵向手势：音量（仅手机）
+          // 纵向手势：左半屏调亮度，右半屏调音量（仅手机）
           if (absY > absX && absY > 20 && this.isPhone) {
-            const deltaVol = (e.offsetY > 0 ? -1 : 1) * VOL_STEP;
-            let vol = this.volume + deltaVol;
-            vol = vol < 0 ? 0 : (vol > 1 ? 1 : vol);
-            this.volume = vol;
-            this.showVol = true;
-            this.popOsd();
-            this.volTimer && clearTimeout(this.volTimer);
-            this.volTimer = setTimeout(() => {
-              this.showVol = false;
-            }, 2000) as number;
+            const isLeftHalf: boolean = this.panStartX < 200;
+            if (isLeftHalf) {
+              // 左半屏：调亮度
+              const bDelta: number = e.offsetY > 0 ? -0.05 : 0.05;
+              let bri: number = this.brightness + bDelta;
+              bri = bri < 0.05 ? 0.05 : (bri > 1.0 ? 1.0 : bri);
+              this.brightness = bri;
+              this.showBrightness = true;
+              this.popOsd();
+              // 调节系统窗口亮度（不支持时静默忽略）
+              try {
+                window.getLastWindow(getContext(this), (_err: Object, win: window.Window) => {
+                  win.setWindowBrightness(bri).catch(() => {});
+                });
+              } catch (_e) {
+                // 不支持时忽略
+              }
+              if (this.brightTimer >= 0) {
+                clearTimeout(this.brightTimer);
+              }
+              this.brightTimer = setTimeout(() => {
+                this.showBrightness = false;
+                this.brightTimer = -1;
+              }, 2000) as number;
+            } else {
+              // 右半屏：调音量
+              const deltaVol: number = e.offsetY > 0 ? -VOL_STEP : VOL_STEP;
+              let vol: number = this.volume + deltaVol;
+              vol = vol < 0 ? 0 : (vol > 1 ? 1 : vol);
+              this.volume = vol;
+              this.showVol = true;
+              this.popOsd();
+              if (this.volTimer >= 0) {
+                clearTimeout(this.volTimer);
+              }
+              this.volTimer = setTimeout(() => {
+                this.showVol = false;
+              }, 2000) as number;
+            }
           }
         })
         .onActionEnd(() => {

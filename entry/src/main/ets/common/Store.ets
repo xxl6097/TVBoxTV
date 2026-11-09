@@ -670,8 +670,13 @@ export class Store {
   // ---------- 搜索历史 ----------
 
   /** 最多留几条。电视上用指针输入关键词很费劲，历史点一下就能重搜 */
-  private static KW_MAX: number = 8;
+  private static KW_MAX: number = 20;
 
+  /**
+   * 搜索历史：记录每个关键词被点击使用的次数，按「点击次数降序 → 最近使用」排列。
+   * 存储格式 JSON: [{"kw":"庆余年","hits":3,"time":1699526400000}, ...]
+   * 旧格式（纯文本 \n 分隔）自动迁移。
+   */
   static async keywords(): Promise<string[]> {
     if (Store.prefs === null) {
       return [];
@@ -680,6 +685,21 @@ export class Store {
     if (raw.length === 0) {
       return [];
     }
+    // 新格式：JSON
+    if (raw.startsWith('[')) {
+      try {
+        const arr: { kw: string; hits: number; time: number }[] = JSON.parse(raw);
+        arr.sort((a, b) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+        const out: string[] = [];
+        for (let i = 0; i < arr.length && i < Store.KW_MAX; i++) {
+          out.push(arr[i].kw);
+        }
+        return out;
+      } catch (_e) {
+        // JSON 损坏，走旧格式
+      }
+    }
+    // 旧格式：纯文本 \n 分隔
     const out: string[] = [];
     const parts: string[] = raw.split('\n');
     for (let i = 0; i < parts.length; i++) {
@@ -691,21 +711,56 @@ export class Store {
     return out;
   }
 
-  /** 记一条关键词：去重、最近用的排最前 */
+  /** 记一条关键词：增加点击次数，按「次数降序 → 最近使用」排列 */
   static async pushKeyword(kw: string): Promise<string[]> {
     const k: string = kw.trim();
     if (Store.prefs === null || k.length === 0) {
       return Store.keywords();
     }
-    const old: string[] = await Store.keywords();
-    const out: string[] = [k];
-    for (let i = 0; i < old.length; i++) {
-      if (old[i] !== k && out.length < Store.KW_MAX) {
-        out.push(old[i]);
+    // 读取现有记录（JSON 格式）
+    const raw: string = await Store.prefs.get('kwHist', '') as string;
+    let arr: { kw: string; hits: number; time: number }[] = [];
+    if (raw.startsWith('[')) {
+      try {
+        arr = JSON.parse(raw);
+      } catch (_e) {
+        arr = [];
+      }
+    } else if (raw.length > 0) {
+      // 旧格式迁移
+      const parts: string[] = raw.split('\n');
+      for (let i = 0; i < parts.length; i++) {
+        const p: string = parts[i].trim();
+        if (p.length > 0) {
+          arr.push({ kw: p, hits: 1, time: Date.now() - i * 1000 });
+        }
       }
     }
-    await Store.prefs.put('kwHist', out.join('\n'));
+    // 找到或新增
+    let found: boolean = false;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i].kw === k) {
+        arr[i].hits++;
+        arr[i].time = Date.now();
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      arr.unshift({ kw: k, hits: 1, time: Date.now() });
+    }
+    // 截断到 KW_MAX
+    if (arr.length > Store.KW_MAX) {
+      arr.length = Store.KW_MAX;
+    }
+    await Store.prefs.put('kwHist', JSON.stringify(arr));
     await Store.prefs.flush();
+    // 返回排序后的关键词列表
+    arr.sort((a, b) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+    const out: string[] = [];
+    for (let i = 0; i < arr.length; i++) {
+      out.push(arr[i].kw);
+    }
     return out;
   }
 
