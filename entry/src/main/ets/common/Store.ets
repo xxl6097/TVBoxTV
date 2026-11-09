@@ -37,6 +37,13 @@ export class FavItem {
   pic: string = '';
 }
 
+/** 搜索历史记录项：关键词 + 使用次数 + 最近使用时间 */
+export class KwRecord {
+  kw: string = '';
+  hits: number = 1;
+  time: number = 0;
+}
+
 /** loadSubscription 的返回：订阅名 + 点播站点数 + 直播源数 */
 export class SubResult {
   name: string = '';
@@ -688,8 +695,8 @@ export class Store {
     // 新格式：JSON
     if (raw.startsWith('[')) {
       try {
-        const arr: { kw: string; hits: number; time: number }[] = JSON.parse(raw);
-        arr.sort((a, b) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+        const arr: KwRecord[] = JSON.parse(raw) as KwRecord[];
+        arr.sort((a: KwRecord, b: KwRecord) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
         const out: string[] = [];
         for (let i = 0; i < arr.length && i < Store.KW_MAX; i++) {
           out.push(arr[i].kw);
@@ -719,10 +726,10 @@ export class Store {
     }
     // 读取现有记录（JSON 格式）
     const raw: string = await Store.prefs.get('kwHist', '') as string;
-    let arr: { kw: string; hits: number; time: number }[] = [];
+    let arr: KwRecord[] = [];
     if (raw.startsWith('[')) {
       try {
-        arr = JSON.parse(raw);
+        arr = JSON.parse(raw) as KwRecord[];
       } catch (_e) {
         arr = [];
       }
@@ -732,7 +739,11 @@ export class Store {
       for (let i = 0; i < parts.length; i++) {
         const p: string = parts[i].trim();
         if (p.length > 0) {
-          arr.push({ kw: p, hits: 1, time: Date.now() - i * 1000 });
+          const rec: KwRecord = new KwRecord();
+          rec.kw = p;
+          rec.hits = 1;
+          rec.time = Date.now() - i * 1000;
+          arr.push(rec);
         }
       }
     }
@@ -747,7 +758,11 @@ export class Store {
       }
     }
     if (!found) {
-      arr.unshift({ kw: k, hits: 1, time: Date.now() });
+      const rec: KwRecord = new KwRecord();
+      rec.kw = k;
+      rec.hits = 1;
+      rec.time = Date.now();
+      arr.unshift(rec);
     }
     // 截断到 KW_MAX
     if (arr.length > Store.KW_MAX) {
@@ -756,7 +771,7 @@ export class Store {
     await Store.prefs.put('kwHist', JSON.stringify(arr));
     await Store.prefs.flush();
     // 返回排序后的关键词列表
-    arr.sort((a, b) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+    arr.sort((a: KwRecord, b: KwRecord) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
     const out: string[] = [];
     for (let i = 0; i < arr.length; i++) {
       out.push(arr[i].kw);
@@ -1368,8 +1383,8 @@ export class Store {
       if (txt.length === 0) {
         return;
       }
-      const parsed = JSON.parse(Cms.cleanJson(txt));
-      const remote: HistItem[] = (parsed && parsed.items) ? parsed.items as HistItem[] : [];
+      const parsedObj: Record<string, Object> = JSON.parse(Cms.cleanJson(txt)) as Record<string, Object>;
+      const remote: HistItem[] = (parsedObj && parsedObj['items']) ? parsedObj['items'] as HistItem[] : [];
       if (remote.length === 0) {
         return;
       }

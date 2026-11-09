@@ -25,10 +25,14 @@ class Hit {
 /**
  * 每条解析规则的成功率统计（内存缓存，本次会话内有效）。
  *
- * key = rule.name，value = {ok: number, total: number}。
+ * key = rule.name，value = RuleStat {ok: number, total: number}。
  * 用于下次调用时把成功率高的规则排在前面，减少等待时间。
  */
-const ruleStats: Map<string, { ok: number; total: number }> = new Map();
+class RuleStat {
+  ok: number = 0;
+  total: number = 0;
+}
+const ruleStats: Map<string, RuleStat> = new Map();
 
 /**
  * 全局解析超时（毫秒）：两轮并发都超过这个时间就放弃，直接返回原地址。
@@ -116,12 +120,15 @@ export class Resolver {
    * 每条规则单独统计，成功/失败各加 1。
    */
   static recordHit(name: string, ok: boolean): void {
-    const s = ruleStats.get(name) ?? { ok: 0, total: 0 };
+    let s: RuleStat | undefined = ruleStats.get(name);
+    if (s === undefined) {
+      s = new RuleStat();
+      ruleStats.set(name, s);
+    }
     s.total++;
     if (ok) {
       s.ok++;
     }
-    ruleStats.set(name, s);
   }
 
   /**

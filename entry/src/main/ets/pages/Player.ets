@@ -127,7 +127,7 @@ struct Player {
   /** 按下前保存的原倍速，用于长按松开时恢复 */
   private holdSpeedVal: number = 1;
   /** 当前屏幕亮度（0-1），仅手机端手势调节使用 */
-  @State brightness: number = 0.5;
+  @State brightnessVal: number = 0.5;
   /** 亮度 HUD 是否可见 */
   @State showBrightness: boolean = false;
   private brightTimer: number = -1;
@@ -3222,9 +3222,9 @@ struct Player {
             if (isLeftHalf) {
               // 左半屏：调亮度
               const bDelta: number = e.offsetY > 0 ? -0.05 : 0.05;
-              let bri: number = this.brightness + bDelta;
+              let bri: number = this.brightnessVal + bDelta;
               bri = bri < 0.05 ? 0.05 : (bri > 1.0 ? 1.0 : bri);
-              this.brightness = bri;
+              this.brightnessVal = bri;
               this.showBrightness = true;
               this.popOsd();
               // 调节系统窗口亮度（不支持时静默忽略）
