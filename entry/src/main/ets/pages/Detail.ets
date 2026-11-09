@@ -46,6 +46,11 @@ struct Detail {
   @State showResume: boolean = false;
   /** 续播提示自动消失计时器 */
   private resumeTimer: number = -1;
+  /**
+   * 剧集定位后，已看那集短暂闪亮（高对比度边框），帮助用户在网格里快速找到进度。
+   * locateSeen() 完成后置 true，1.5s 后回 false。
+   */
+  @State seenPulse: boolean = false;
 
   /** 剧集网格的滚动控制器：进页面要自动滚到「上次看到」那一集 */
   private epScroller: Scroller = new Scroller();
@@ -514,10 +519,11 @@ struct Detail {
                         .borderRadius(T.RADIUS_SM)
                         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                         .border({
-                          width: T.BORDER,
-                          color: this.hi('e' + this.realIdx(ep)) ? T.TXT : '#00000000'
+                          width: this.realIdx(ep) === this.seen && this.seenPulse ? 2 : T.BORDER,
+                          color: this.realIdx(ep) === this.seen && this.seenPulse ? T.ACCENT
+                            : (this.hi('e' + this.realIdx(ep)) ? T.TXT : '#00000000')
                         })
-                        .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                        .animation({ duration: 400, curve: Curve.EaseInOut })
                         .onHover((hv: boolean) => this.hoverTo('e' + this.realIdx(ep), hv))
                         .focusable(true)
                         .onFocus(() => this.hoverTo('e' + this.realIdx(ep), true))
@@ -775,6 +781,10 @@ struct Detail {
         tries, target, y);
       if (y <= 0 && tries < 6) {
         setTimeout(tick, 120);
+      } else {
+        // 滚到位后触发已看那集的高亮脉冲（1.5s 后消退）
+        this.seenPulse = true;
+        setTimeout(() => { this.seenPulse = false; }, 1500);
       }
     };
     setTimeout(tick, 80);

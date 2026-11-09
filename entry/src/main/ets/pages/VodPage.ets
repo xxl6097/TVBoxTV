@@ -130,6 +130,7 @@ struct VodList {
       const first: Category = cs.length > 0 ? cs[0] : new Category();
       this.curCat = first;
       this.fGroups = Cms.filtersOf(s.ext, first.id);
+      await this.restoreSel(first);
       await this.loadPage(1, true);
     } catch (e) {
       if (my !== this.reqId) {
@@ -183,11 +184,32 @@ struct VodList {
       return;
     }
     this.curCat = c;
-    this.sel = [];
     this.fGroups = Cms.filtersOf(this.site.ext, c.id);
     this.items = [];
     this.page = 1;
+    // 恢复该分类的筛选条件
+    await this.restoreSel(c);
     await this.loadPage(1, true);
+  }
+
+  /** 从 Store 恢复当前站源+分类的筛选条件 */
+  async restoreSel(c: Category): Promise<void> {
+    const json: string = await Store.filterSel(this.site.key, c.id);
+    if (json.length === 0) {
+      this.sel = [];
+      return;
+    }
+    try {
+      const arr: Sel[] = JSON.parse(json) as Sel[];
+      this.sel = arr;
+    } catch (_e) {
+      this.sel = [];
+    }
+  }
+
+  /** 持久化当前筛选条件 */
+  async saveSel(): Promise<void> {
+    await Store.setFilterSel(this.site.key, this.curCat.id, JSON.stringify(this.sel));
   }
 
   /**
@@ -339,6 +361,7 @@ struct VodList {
 
   async applyFilter(): Promise<void> {
     this.showFilter = false;
+    await this.saveSel();
     this.items = [];
     await this.loadPage(1, true);
   }

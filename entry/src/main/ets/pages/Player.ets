@@ -228,6 +228,8 @@ struct Player {
   private isLive: boolean = false;
   /** 直播连续失败次数：单台失效是常态，自动顺延，连挂 3 台才停手 */
   private liveFail: number = 0;
+  /** 点播连续失败次数：失败 3 次自动返回详情页，让用户尝试其他线路 */
+  private vodFail: number = 0;
   /** 当前频道的备用线路（同名频道的其它地址） */
   private liveAlts: string[] = [];
 
@@ -1066,6 +1068,27 @@ struct Player {
           this.switchEpisode(1);
           return;
         }
+        // 点播连续失败 3 次自动返回详情页，让用户尝试其他线路
+        if (!this.isLive) {
+          this.vodFail++;
+          if (this.vodFail < 3) {
+            this.showTip('播放失败，正在重试(' + this.vodFail + '/3)');
+            this.releasePlayer();
+            setTimeout(() => {
+              if (!this.closed) {
+                this.initPlayer();
+              }
+            }, 1000);
+            return;
+          }
+          this.showTip('多次播放失败，请尝试其他线路');
+          setTimeout(() => {
+            if (!this.closed) {
+              router.back();
+            }
+          }, 2000);
+          return;
+        }
         // 走到这里说明这一台/这一集彻底播不了。错误态的 AVPlayer 只会一直报错，
         // 不会再自己恢复，而 UI 焦点还停在根节点上——用户按「确定」就会进
         // togglePlay 对 error 态调 play()，抛 5400102 且没人捕获。
@@ -1090,6 +1113,9 @@ struct Player {
           // 直播流没有总时长（duration 为 -1），置 0 让 UI 走「直播」分支
           this.durMs = this.isLive ? 0 : p.duration;
           this.prepared = true;
+          // 成功 prepared 说明这一次播放正常，重置失败计数
+          this.vodFail = 0;
+          this.liveFail = 0;
           this.buffering = false;
           // prepared 时恢复音量偏好（异步，不挡起播）
           Store.volumePref().then((volPref: number) => {

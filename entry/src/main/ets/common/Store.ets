@@ -787,6 +787,69 @@ export class Store {
     await Store.prefs.flush();
   }
 
+  // ---------- 筛选条件持久化 ----------
+
+  /**
+   * 按站源+分类缓存筛选条件。
+   * key = siteKey + '|' + catId，value = JSON 数组 [{key,v}, ...]
+   */
+  static async filterSel(siteKey: string, catId: string): Promise<string> {
+    if (Store.prefs === null) {
+      return '';
+    }
+    const k: string = 'flt_' + siteKey + '_' + catId;
+    return await Store.prefs.get(k, '') as string;
+  }
+
+  static async setFilterSel(siteKey: string, catId: string, selJson: string): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const k: string = 'flt_' + siteKey + '_' + catId;
+    await Store.prefs.put(k, selJson);
+    await Store.prefs.flush();
+  }
+
+  // ---------- 直播频道收藏 ----------
+
+  static async favChannels(): Promise<string[]> {
+    if (Store.prefs === null) {
+      return [];
+    }
+    const s: string = await Store.prefs.get('favChan', '') as string;
+    if (s.length === 0) {
+      return [];
+    }
+    try {
+      return JSON.parse(s) as string[];
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  static async toggleFavChannel(url: string): Promise<boolean> {
+    if (Store.prefs === null) {
+      return false;
+    }
+    const list: string[] = await Store.favChannels();
+    const idx: number = list.indexOf(url);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+      await Store.prefs.put('favChan', JSON.stringify(list));
+      await Store.prefs.flush();
+      return false;
+    }
+    list.push(url);
+    await Store.prefs.put('favChan', JSON.stringify(list));
+    await Store.prefs.flush();
+    return true;
+  }
+
+  static async isFavChannel(url: string): Promise<boolean> {
+    const list: string[] = await Store.favChannels();
+    return list.indexOf(url) >= 0;
+  }
+
   // ---------- 直播源 ----------
 
   static async liveUrl(): Promise<string> {
