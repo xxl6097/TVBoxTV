@@ -13,13 +13,14 @@
 
 ---
 
-## 一、两个按钮
+## 一、三个按钮
 
 仓库页顶部「执行」下拉里有两条流水线，配置见 [`.cnb.yml`](../.cnb.yml)：
 
 | 按钮 | 做什么 | 要不要密钥 |
 |---|---|---|
-| `compile` | 打印工具链解析结果 → 编译未签名 hap → 输出清单 | 不要 |
+| `image` | 构建/重建构建镜像（API 26 命令行工具），升 SDK 时才点，约 14 分钟 | 不要 |
+| `compile` | 打印工具链解析结果 → 编译未签名 hap → 输出清单，约 2 分钟 | 不要 |
 | `build` | 上面全做，再补调试签名，最后把 hap 推到 OCI 制品库 | 要（密钥仓库） |
 
 **换镜像、升 SDK 之后先用 `compile` 验证**，它不碰任何密钥，失败信息也最干净。
@@ -115,60 +116,66 @@ The length of the storePassword or keyPassword field is less than 32
 
 ---
 
-## 三、构建镜像
+## 三、构建镜像（自建，API 26）
 
-当前用的镜像是社区维护的鸿蒙命令行工具镜像：
-
-```
-docker.cnb.cool/mayflyee/examples/harmony-command-line-tools:latest
-```
-
-它由华为 **Command Line Tools**（Linux 版）打包而成，已包含 `hvigorw`、`ohpm`、SDK 与
-`hap-sign-tool.jar`，开箱即用。`.cnb.yml` 里改这一处就能换镜像。
-
-### 什么时候需要自建
-
-镜像里的 SDK 版本比本机 DevEco 低时，编译会报：
+流水线用的镜像是本仓库自己构建的：
 
 ```
-00303312 Cannot find the corresponding SDK version
+docker.cnb.cool/abber/harmonytv:harmony-26
 ```
 
-这时要么把镜像换新版，要么自建一个和本机对齐的：
+### 为什么不用现成的社区镜像
 
-```dockerfile
-# .cnb/Dockerfile.harmony
-FROM ubuntu:22.04
-ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Shanghai
+社区有个现成的鸿蒙命令行镜像，但它的 SDK 是 **API 21（HarmonyOS 6.0.1）**，
+本工程目标 **API 26（DevEco Studio 26 / HarmonyOS 26.0.0）**，差一代工具链，实测两个报错：
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl wget unzip git ca-certificates openjdk-17-jdk \
-    && rm -rf /var/lib/apt/lists/*
+| 报错 | 真实原因 |
+|---|---|
+| `10705000 Syntax Error: ',' expected [LivePage.ts:1418:29]` + `Failed to execute es2abc` | 旧版 es2abc 解析不了新编译器产出的中间代码 |
+| `"@ohos.multimedia.soundPool" is imported by "Feedback.ets", but could not be resolved` | 旧 SDK 的 API 面里没有该模块 |
 
-# 华为 Command Line Tools（Linux 版）需登录开发者账号下载，
-# 下载后与本 Dockerfile 放同一目录，或用 ARG 传直链
-ARG CLT_ZIP=command-line-tools-linux.zip
-COPY ${CLT_ZIP} /tmp/clt.zip
-RUN mkdir -p /opt/harmony && cd /opt/harmony \
-    && unzip -q /tmp/clt.zip && rm /tmp/clt.zip
+**源码没错，是工具链版本不够。** 所以镜像必须自建，且与本机 DevEco 同一代。
 
-ENV COMMAND_LINE_TOOLS_HOME=/opt/harmony/command-line-tools
-ENV PATH=${COMMAND_LINE_TOOLS_HOME}/bin:${COMMAND_LINE_TOOLS_HOME}/hvigor/bin:${PATH}
-WORKDIR /workspace
-```
+### 镜像怎么来的
 
-推成自己的镜像（很轻，只跑一次）：
+见 [`.cnb/Dockerfile.harmony`](../.cnb/Dockerfile.harmony)，两步：
+
+1. ubuntu:22.04 + `openjdk-17`（`hap-sign-tool.jar` 要用）+ `libgl1` 等系统库
+2. 下载 Huawei **Command Line Tools 26（Linux）** 并解压到 `/opt/harmony/command-line-tools`
+
+CLT 官方下载要登录华为开发者账号，所以这里用 GitHub 上的镜像仓库
+[`ErBWs/ohos-sdk`](https://github.com/ErBWs/ohos-sdk)（原样搬运官方包，含 `.sha256` 校验）。
+包是分卷的，`Dockerfile` 里 `.aa` + `.ab` 拼回完整 tar.gz 再校验解压，共约 2.2GB。
+
+> **构建一次约 14 分钟**（下载 2.2GB + 解压 + 推镜像）。只有升 SDK / 换工具链才需要重建。
+
+### 构建 / 重建镜像
+
+仓库页「执行」→ **image**（`.cnb.yml` 里的 `web_trigger_image`）：
 
 ```bash
-docker build -f .cnb/Dockerfile.harmony -t docker.cnb.cool/abber/harmony-tools:latest .
-docker login -u cnb -p "<CNB_TOKEN>" docker.cnb.cool
-docker push docker.cnb.cool/abber/harmony-tools:latest
+# 它做的事，等价的本地命令：
+docker build -f .cnb/Dockerfile.harmony \
+  -t docker.cnb.cool/abber/harmonytv:harmony-26 .
+docker push docker.cnb.cool/abber/harmonytv:harmony-26
 ```
 
-然后把 `.cnb.yml` 的 `docker.image` 换成新地址即可 —— **脚本不用改**，工具链路径由
-`scripts/lib/harmony-env.sh` 从 `COMMAND_LINE_TOOLS_HOME` / `HVIGOR_HOME` 自动推断。
+### 升 SDK 怎么办
 
----
+`Dockerfile.harmony` 里 `ARG OHOS_SDK_TAG` 默认 `latest`（跟随最新的 API 26 版）。
+要钉死某个版本：
+
+```dockerfile
+ARG OHOS_SDK_TAG=26.0.0.821
+```
+
+改完重新点一次 **image** 按钮，再点 **compile** 验证，最后 **build** 出包。
+
+### 换镜像
+
+`.cnb.yml` 里两处 `docker.image`（`web_trigger_compile` 的锚点）改一处即可，
+`web_trigger_build` 引用同一锚点。工具链路径由 `scripts/lib/harmony-env.sh` 从
+`COMMAND_LINE_TOOLS_HOME` 自动推断，**脚本一行都不用改**。
 
 ## 四、取回制品
 
@@ -218,7 +225,10 @@ CI 出问题时的标准动作：**在本地跑同一条命令**，两边结果�
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `00303312 Cannot find the corresponding SDK version` | 镜像 SDK 版本与工程要求不符 | 换镜像 / 自建镜像（第三节） |
+| `00303312 Cannot find the corresponding SDK version` | 镜像 SDK 版本与工程要求不符 | 重建镜像 / 换 `OHOS_SDK_TAG`（第三节） |
+| `11201001 Dependency Error` + `libGL.so.1: cannot open shared object file` | 镜像缺系统库（资源编译的 image_transcoder 依赖 libGL） | 镜像里已补 `libgl1 libglu1-mesa libfreetype6 libgbm1` |
+| `Failed to execute es2abc` / `10705000 Syntax Error` | 工具链版本低于源码要求（社区镜像 API 21 vs 工程 API 26） | 用自建 harmony-26 镜像 |
+| `"@ohos.multimedia.soundPool" could not be resolved` | 同上，旧 SDK 没有该模块 | 同上 |
 | `The length of the storePassword or keyPassword field is less than 32` | 把明文口令写进了 `signingConfigs` | 别写 `signingConfigs`，走 `ci-build.sh` 补签 |
 | `sign-app success` 没有、签名阶段失败 | `.ci-sign/` 没落地或口令错 | 看 `dist/sign.log`；本地 `--toolchain` 确认 `hap-sign-tool.jar` 找到 |
 | `device is unauthorized` / `9568425` | 设备 UDID 不在 `.p7b` 白名单 | AGC 添加设备 → 重签 `.p7b` → 更新密钥仓库 |

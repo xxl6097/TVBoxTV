@@ -246,8 +246,13 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 
 | 按钮 | 做什么 | 要密钥 |
 |---|---|---|
-| `compile` | 命令行工具镜像里编译未签名 hap，输出 `dist/build-info.txt` | 不要 |
-| `build` | 编译 + 调试签名 + 把 hap 推 `oci.cnb.cool` 制品库（版本号 + latest 双标签） | 要 |
+| `image` | 构建构建镜像（命令行工具 26 / API 26），升 SDK 才点，约 14 分钟 | 不要 |
+| `compile` | 镜像里编译未签名 hap，输出 `dist/build-info.txt`，约 2 分钟 | 不要 |
+| `build` | 编译 + 调试签名 + 把**可直装的 hap** 推 `oci.cnb.cool` 制品库（版本号 + latest 双标签） | 要 |
+
+> 镜像必须自建：社区现成镜像的 SDK 是 API 21，本工程要 API 26，会报
+> `es2abc` 语法错和 `soundPool` 解析失败——源码没问题，是工具链差一代。
+> 上架用的 release `.app` 需要 AGC 发布证书，仍走本机 `scripts/sign-release.sh`。
 
 云端与本地**共用同一份构建实现** `scripts/ci-build.sh`，差别只有工具链来源
 （本地 DevEco / 云端 `COMMAND_LINE_TOOLS_HOME`），由 `scripts/lib/harmony-env.sh` 统一推断。
