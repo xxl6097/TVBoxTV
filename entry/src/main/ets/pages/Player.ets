@@ -40,6 +40,8 @@ const LIVE_PROBE_MS: number = 2500;
 const LIVE_SKIP_MAX: number = 4;
 /** 一次换台最多探几条地址，兜住「全源失效」时无限试下去 */
 const LIVE_PROBE_MAX: number = 7;
+/** 直播错误去重窗口：同一频道X秒内只计一次错误，避免网络抖动误换台 */
+const LIVE_ERR_WINDOW: number = 8000;
 /** 卡顿看门狗：位置多久不动就认为在缓冲 */
 const FREEZE_MS: number = 5000;
 /** 两次自动换档的最小间隔，避免来回抖 */
@@ -228,6 +230,8 @@ struct Player {
   private isLive: boolean = false;
   /** 直播连续失败次数：单台失效是常态，自动顺延，连挂 3 台才停手 */
   private liveFail: number = 0;
+  /** 上次直播错误时间戳（毫秒），用于去重避免网络抖动误换台 */
+  private lastLiveErrMs: number = 0;
   /** 点播连续失败次数：失败 3 次自动返回详情页，让用户尝试其他线路 */
   private vodFail: number = 0;
   /** 当前频道的备用线路（同名频道的其它地址） */
@@ -1063,6 +1067,14 @@ struct Player {
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
+          const now: number = Date.now();
+          // 8秒内的重复错误不换台：网络抖动、缓冲超时等临时问题，不代表频道失效
+          // 若频繁报错，放行后 liveFail 计数也有上限（<3），不会无限换
+          if (now - this.lastLiveErrMs < LIVE_ERR_WINDOW) {
+            hilog.info(0x1000, 'BOXN', 'live error suppressed (within %{public}dms window)', LIVE_ERR_WINDOW);
+            return;
+          }
+          this.lastLiveErrMs = now;
           this.liveFail++;
           this.showTip('该频道无法播放，自动换下一个');
           this.switchEpisode(1);
@@ -1178,8 +1190,12 @@ struct Player {
           this.playing = false;
         } else if (state === 'completed') {
           this.playing = false;
-          // 追剧体验：一集播完自动接下一集，没有下一集才停在结束画面
-          if (Playlist.hasNext()) {
+          // 直播不走 completed 自动换台：直播流的 completed 通常是短暂断流
+          // 或 HLS 分片结束，不代表频道播完，自动换台会造成正常收看时乱跳
+          if (this.isLive) {
+            hilog.info(0x1000, 'BOXN', 'live completed, ignore auto-switch');
+          } else if (Playlist.hasNext()) {
+            // 点播追剧：一集播完自动接下一集
             this.switchEpisode(1);
           } else {
             this.showOsd = true;
