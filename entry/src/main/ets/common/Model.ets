@@ -386,6 +386,20 @@ export class T {
   /** 直播标记点。取 FongMi values/colors.xml 的 red_500 */
   static LIVE: string = '#F44336';
 
+  // ---- 播放器面板专用色（**不随主题变化**）----
+  /**
+   * 控制条、按钮、进度条都叠在视频画面上，只能按「恒深色」设计：
+   * 浅色主题里那套深灰字 + 近透明黑底压到画面上，会随画面亮度忽隐忽现。
+   * 所以这几个值写死在这里，Theme 不会覆盖它们。
+   */
+  static PANEL_TXT: string = '#FFFFFF';
+  static PANEL_SUB: string = '#B3FFFFFF';
+  static PANEL_DIM: string = '#80FFFFFF';
+  static PANEL_BTN: string = '#26FFFFFF';
+  static PANEL_BTN_HI: string = '#4DFFFFFF';
+  /** 控制条/设置面板的底：恒为深灰，不跟主题 */
+  static PANEL_SURFACE: string = '#1C1B1F';
+
   // ---- 交互动效 ----
   /** hover / 选中态过渡时长（ms） */
   static ANIM: number = 140;

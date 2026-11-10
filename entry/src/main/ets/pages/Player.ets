@@ -15,7 +15,7 @@ import { Resolver, Resolved } from '../common/Resolve';
 import { QLevel, QSpeed, Quality } from '../common/Quality';
 import { Tip } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
-import { Theme, KEY_THEME } from '../common/Theme';
+import { Theme, KEY_THEME, THEME_DARK } from '../common/Theme';
 import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
 import window from '@ohos.window';
@@ -125,7 +125,10 @@ struct Player {
   @State subSel: number = -1;
   /** 设备形态：手机竖屏默认等比适应，避免横屏视频被拉伸变形 */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
-  /** 当前主题。播放页底色恒为黑（视频画面），这个只用于让 OSD 文案跟着换色 */
+  /**
+   * 当前主题。播放页自己不跟着换色（面板恒深色，见 T.PANEL_*），
+   * 这里只用于让 build 依赖主题状态、保证从设置页切主题回来后能重建。
+   */
   @StorageProp(KEY_THEME) themeMode: string = 'dark';
   /** 长按倍速播放中 */
   @State holdSpeedOn: boolean = false;
@@ -1893,11 +1896,11 @@ struct Player {
     // styles.xml 的 <style name="Control">：selector_chip(4dp) + textColor=@color/text + 14sp
     Text(this.ctlText(act))
       .fontSize(14)
-      .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.TXT)
+      .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-      .backgroundColor(this.hi('ctl' + act) ? T.CARD_HI : '#00000000')
+      .backgroundColor(this.hi('ctl' + act) ? T.PANEL_BTN_HI : '#00000000')
       .borderRadius(T.RADIUS_SM)
-      .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.TXT : '#00000000' })
+      .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
       .margin({ right: 8, bottom: 8 })
       .textAlign(TextAlign.Center)
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
@@ -1979,9 +1982,9 @@ struct Player {
   QChip(cap: number, label: string) {
     Text(label)
       .fontSize(15)
-      .fontColor(this.capOn(cap) ? T.SELECTED : T.TXT)
+      .fontColor(this.capOn(cap) ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.capOn(cap) ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.capOn(cap) ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.capOn(cap) ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2000,9 +2003,9 @@ struct Player {
   QLvChip(i: number) {
     Text(Quality.labelOfLevel(this.levels[i]))
       .fontSize(15)
-      .fontColor(this.lvOn(i) ? T.SELECTED : T.TXT)
+      .fontColor(this.lvOn(i) ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.lvOn(i) ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.lvOn(i) ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.lvOn(i) ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2057,9 +2060,9 @@ struct Player {
   ScaleChip(mode: number, label: string) {
     Text(label)
       .fontSize(15)
-      .fontColor(this.scaleMode === mode ? T.SELECTED : T.TXT)
+      .fontColor(this.scaleMode === mode ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.scaleMode === mode ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.scaleMode === mode ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.scaleMode === mode ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2073,9 +2076,9 @@ struct Player {
   SkipChip(kind: string, sec: number) {
     Text(this.skipLabel(sec))
       .fontSize(15)
-      .fontColor(this.skipOn(kind, sec) ? T.SELECTED : T.TXT)
+      .fontColor(this.skipOn(kind, sec) ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.skipOn(kind, sec) ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.skipOn(kind, sec) ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.skipOn(kind, sec) ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2204,9 +2207,9 @@ struct Player {
   SpeedChip(v: number) {
     Text(v === 1 ? '1.0x' : (v + 'x'))
       .fontSize(15)
-      .fontColor(this.speed === v ? T.SELECTED : T.TXT)
+      .fontColor(this.speed === v ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.speed === v ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.speed === v ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.speed === v ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2243,9 +2246,9 @@ struct Player {
   SubChip(i: number, label: string) {
     Text(label)
       .fontSize(15)
-      .fontColor(this.subSel === i ? T.SELECTED : T.TXT)
+      .fontColor(this.subSel === i ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.subSel === i ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.subSel === i ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.subSel === i ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2457,9 +2460,9 @@ struct Player {
   SkipActionChip(kind: string, mode: string, label: string) {
     Text(label)
       .fontSize(15)
-      .fontColor(this.hi('sk_' + kind + '_' + mode) ? T.SELECTED : T.SUB)
+      .fontColor(this.hi('sk_' + kind + '_' + mode) ? T.SELECTED : T.PANEL_SUB)
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.hi('sk_' + kind + '_' + mode) ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.hi('sk_' + kind + '_' + mode) ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.hi('sk_' + kind + '_' + mode) ? T.SELECTED : '#00000000' })
       .margin({ right: 10, bottom: 8 })
@@ -2478,9 +2481,9 @@ struct Player {
   StepBtn(delta: number, label: string) {
     Text(label)
       .fontSize(15)
-      .fontColor(this.hi('skstep_' + delta) ? T.SELECTED : T.TXT)
+      .fontColor(this.hi('skstep_' + delta) ? T.SELECTED : T.PANEL_TXT)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .backgroundColor(this.hi('skstep_' + delta) ? T.CARD_HI : T.WHITE_15)
+      .backgroundColor(this.hi('skstep_' + delta) ? T.PANEL_BTN_HI : T.WHITE_15)
       .borderRadius(T.RADIUS_PILL)
       .border({ width: T.BORDER, color: this.hi('skstep_' + delta) ? T.SELECTED : '#00000000' })
       .margin({ right: 8 })
@@ -2496,11 +2499,11 @@ struct Player {
     Column() {
       Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center, justifyContent: FlexAlign.Start }) {
         Text(kind === 'intro' ? '片头结束点' : '片尾起点')
-          .fontSize(14).fontColor(T.DIM)
+          .fontSize(14).fontColor(T.PANEL_DIM)
           .margin({ right: 14 })
 
         Text('分')
-          .fontSize(14).fontColor(T.SUB)
+          .fontSize(14).fontColor(T.PANEL_SUB)
           .margin({ right: 4 })
         this.StepBtn(-60, '-1')
         Text(this.skipEditMin().toString())
@@ -2509,7 +2512,7 @@ struct Player {
         this.StepBtn(60, '+1')
 
         Text('秒')
-          .fontSize(14).fontColor(T.SUB)
+          .fontSize(14).fontColor(T.PANEL_SUB)
           .margin({ left: 14, right: 4 })
         this.StepBtn(-5, '-5')
         Text(this.skipEditSecOnly().toString())
@@ -2523,10 +2526,10 @@ struct Player {
         Blank()
         Text('取消')
           .fontSize(14)
-          .fontColor(this.hi('skcancel') ? T.SELECTED : T.SUB)
+          .fontColor(this.hi('skcancel') ? T.SELECTED : T.PANEL_SUB)
           .padding({ left: 14, right: 14, top: 6, bottom: 6 })
           .borderRadius(T.RADIUS_PILL)
-          .backgroundColor(this.hi('skcancel') ? T.CARD_HI : '#00000000')
+          .backgroundColor(this.hi('skcancel') ? T.PANEL_BTN_HI : '#00000000')
           .onHover((hv: boolean) => this.hoverTo('skcancel', hv))
           .onClick(() => this.tap('skcancel', () => {
             this.skipEditKind = '';
@@ -2536,10 +2539,10 @@ struct Player {
           }))
         Text('确定')
           .fontSize(14)
-          .fontColor(this.hi('skok') ? T.SELECTED : T.TXT)
+          .fontColor(this.hi('skok') ? T.SELECTED : T.PANEL_TXT)
           .padding({ left: 16, right: 16, top: 6, bottom: 6 })
           .borderRadius(T.RADIUS_PILL)
-          .backgroundColor(this.hi('skok') ? T.CARD_HI : T.WHITE_15)
+          .backgroundColor(this.hi('skok') ? T.PANEL_BTN_HI : T.WHITE_15)
           .border({ width: T.BORDER, color: this.hi('skok') ? T.SELECTED : '#00000000' })
           .margin({ left: 8 })
           .onHover((hv: boolean) => this.hoverTo('skok', hv))
@@ -2619,17 +2622,17 @@ struct Player {
 
       Column() {
         Row() {
-          Text('播放设置').fontSize(21).fontColor(T.TXT)
+          Text('播放设置').fontSize(21).fontColor(T.PANEL_TXT)
           Text(this.qLabel.length > 0 ? ('  当前 ' + this.qLabel) : '')
-            .fontSize(15).fontColor(T.DIM)
+            .fontSize(15).fontColor(T.PANEL_DIM)
           Blank()
           Text('关闭')
             .fontSize(15)
-            .fontColor(this.hi('qclose') ? T.SELECTED : T.SUB)
+            .fontColor(this.hi('qclose') ? T.SELECTED : T.PANEL_SUB)
             .padding({ left: 16, right: 16, top: 8, bottom: 8 })
             .borderRadius(T.RADIUS_SM)
-            .backgroundColor(this.hi('qclose') ? T.CARD_HI : '#00000000')
-            .border({ width: T.BORDER, color: this.hi('qclose') ? T.TXT : '#00000000' })
+            .backgroundColor(this.hi('qclose') ? T.PANEL_BTN_HI : '#00000000')
+            .border({ width: T.BORDER, color: this.hi('qclose') ? T.PANEL_TXT : '#00000000' })
             .animation({ duration: T.ANIM, curve: Curve.EaseOut })
             .onHover((hv: boolean) => this.hoverTo('qclose', hv))
             .onClick(() => this.tap('qclose', () => {
@@ -2659,20 +2662,20 @@ struct Player {
           Text(this.netTxt.length > 0
             ? ('实测网速 ' + this.netTxt + '，共 ' + this.levels.length + ' 档可切。选「自动」后播放器会按网速升降档。')
             : ('源提供 ' + this.levels.length + ' 档清晰度。选「自动」后先起播再按网速调整。'))
-            .fontSize(14).fontColor(T.DIM).width('100%').margin({ top: 12 }).lineHeight(22)
+            .fontSize(14).fontColor(T.PANEL_DIM).width('100%').margin({ top: 12 }).lineHeight(22)
         } else {
           Text(this.levels.length === 1
             ? ('当前 ' + Quality.labelOfLevel(this.levels[0]) +
               '，源只提供了这一档清晰度，切不了。\n网络差时播放器会自动加大缓冲，卡住会自动重连。')
             : '这个片源没有提供多档清晰度，切不了。\n网络差时播放器会自动加大缓冲，卡住会自动重连。')
-            .fontSize(15).fontColor(T.SUB).width('100%').lineHeight(24)
+            .fontSize(15).fontColor(T.PANEL_SUB).width('100%').lineHeight(24)
         }
 
         // 画面显示模式：不依赖源是否多码率，直播/点播都可用，
         // 解决直播常见的「4:3 画面被拉宽变形」或「四周黑边」问题。
         // 手机竖屏默认「等比适应」；电视端默认「拉伸铺满」。
         Text('画面比例')
-          .fontSize(14).fontColor(T.DIM)
+          .fontSize(14).fontColor(T.PANEL_DIM)
           .width('100%')
           .margin({ top: 16 })
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
@@ -2686,9 +2689,9 @@ struct Player {
         // 倍速：追剧常用 1.25/1.5，一次设定整部都生效（全局偏好）
         Row() {
           Text('倍速')
-            .fontSize(14).fontColor(T.DIM)
+            .fontSize(14).fontColor(T.PANEL_DIM)
           Text(this.speed === 1 ? '正常' : (this.speed + ' 倍'))
-            .fontSize(13).fontColor(this.speed === 1 ? T.DIM : T.SELECTED)
+            .fontSize(13).fontColor(this.speed === 1 ? T.PANEL_DIM : T.SELECTED)
             .margin({ left: 10 })
         }
         .width('100%')
@@ -2704,12 +2707,12 @@ struct Player {
         // 字幕：只有源里确实带字幕轨时才列出可选项
         Row() {
           Text('字幕')
-            .fontSize(14).fontColor(T.DIM)
+            .fontSize(14).fontColor(T.PANEL_DIM)
           Text(this.subs.length === 0
             ? '这个源没有字幕轨'
             : (this.subSel < 0 ? '已关闭' : this.subs[this.subSel].label))
             .fontSize(13)
-            .fontColor(this.subs.length > 0 && this.subSel >= 0 ? T.SELECTED : T.DIM)
+            .fontColor(this.subs.length > 0 && this.subSel >= 0 ? T.SELECTED : T.PANEL_DIM)
             .margin({ left: 10 })
         }
         .width('100%')
@@ -2728,7 +2731,7 @@ struct Player {
         // 跳过片头片尾：起播自动跳片头，播到片尾自动切下一集（或结束）
         Row() {
           Text('跳过片头')
-            .fontSize(14).fontColor(T.DIM)
+            .fontSize(14).fontColor(T.PANEL_DIM)
           if (this.introSkipSec > 0) {
             Text('当前 ' + this.fmtSec(this.introSkipSec))
               .fontSize(13).fontColor(T.SELECTED)
@@ -2755,7 +2758,7 @@ struct Player {
 
         Row() {
           Text('跳过片尾')
-            .fontSize(14).fontColor(T.DIM)
+            .fontSize(14).fontColor(T.PANEL_DIM)
           if (this.outroSkipSec > 0) {
             Text('当前 ' + this.fmtSec(this.outroSkipSec))
               .fontSize(13).fontColor(T.SELECTED)
@@ -2788,7 +2791,7 @@ struct Player {
       }
       .width(Device.panelW(700))
       .padding(24)
-      .backgroundColor(T.SURFACE)
+      .backgroundColor(T.PANEL_SURFACE)
       .borderRadius(20)
       .alignItems(HorizontalAlign.Start)
       .shadow({ radius: 40, color: T.BLACK_80 })
@@ -2832,8 +2835,8 @@ struct Player {
 
       if (this.resolving) {
         Column() {
-          LoadingProgress().width(52).height(52).color(T.PRIMARY)
-          Text(this.isLive ? '正在连接频道…' : '正在解析播放地址…').fontSize(18).fontColor(T.SUB).margin({ top: 14 })
+          LoadingProgress().width(52).height(52).color(T.PANEL_TXT)
+          Text(this.isLive ? '正在连接频道…' : '正在解析播放地址…').fontSize(18).fontColor(T.PANEL_SUB).margin({ top: 14 })
         }
         .width('100%').height('100%').justifyContent(FlexAlign.Center)
         .backgroundColor('#000000')
@@ -2843,11 +2846,11 @@ struct Player {
       if (this.buffering && this.prepared && this.errMsg.length === 0 && !this.resolving) {
         Column() {
           Row() {
-            LoadingProgress().width(26).height(26).color(T.PRIMARY)
+            LoadingProgress().width(26).height(26).color(T.PANEL_TXT)
             Text(this.netTxt.length > 0 ? ('缓冲中…  网络 ' + this.netTxt) : '缓冲中…')
-              .fontSize(17).fontColor(T.TXT).margin({ left: 14 })
+              .fontSize(17).fontColor(T.PANEL_TXT).margin({ left: 14 })
             if (this.levels.length > 1 && this.qCap === 0) {
-              Text('网络偏慢会自动降画质').fontSize(14).fontColor(T.DIM).margin({ left: 14 })
+              Text('网络偏慢会自动降画质').fontSize(14).fontColor(T.PANEL_DIM).margin({ left: 14 })
             }
           }
           .padding({ left: 24, right: 24, top: 14, bottom: 14 })
@@ -2863,19 +2866,19 @@ struct Player {
         Column() {
           Text('无法播放').fontSize(30).fontColor(T.ERR)
           Text(this.errMsg)
-            .fontSize(19).fontColor(T.SUB).margin({ top: 12 })
+            .fontSize(19).fontColor(T.PANEL_SUB).margin({ top: 12 })
             .textAlign(TextAlign.Center).width('80%')
           Text(this.isLive
             ? '直播源里的单个频道经常失效，可以在控制条上按「下一台」换一个；整源打不开就去设置页换一个源。'
             : '常见原因：站源已失效、播放地址需要专用解析器、或编码不被系统支持。')
-            .fontSize(16).fontColor(T.DIM).margin({ top: 16 })
+            .fontSize(16).fontColor(T.PANEL_DIM).margin({ top: 16 })
             .textAlign(TextAlign.Center).width('80%')
           // 播不出来别让用户只能退出：就地重试一次，站源抽风时往往第二次就好了
           Row() {
             Text('重试')
               .fontSize(19).fontColor('#FFFFFF')
               .height(52).padding({ left: 38, right: 38 })
-              .backgroundColor(this.hi('rt') ? T.PRIMARY : T.WHITE_15)
+              .backgroundColor(this.hi('rt') ? T.PANEL_TXT : T.WHITE_15)
               .borderRadius(26).textAlign(TextAlign.Center)
               .animation({ duration: 120, curve: Curve.EaseOut })
               .onHover((hv: boolean) => this.hoverTo('rt', hv))
@@ -2884,7 +2887,7 @@ struct Player {
             Text(this.isLive ? '返回频道列表' : '返回选集')
               .fontSize(19).fontColor('#FFFFFF')
               .height(52).padding({ left: 38, right: 38 })
-              .backgroundColor(this.hi('bk') ? T.CARD_HI : T.WHITE_15)
+              .backgroundColor(this.hi('bk') ? T.PANEL_BTN_HI : T.WHITE_15)
               .borderRadius(26).textAlign(TextAlign.Center)
               .margin({ left: 18 })
               .animation({ duration: 120, curve: Curve.EaseOut })
@@ -2944,7 +2947,7 @@ struct Player {
         Column() {
           Column() {
             Row() {
-              Text(this.muted ? '静音' : '音量').fontSize(18).fontColor(T.SUB).width(48).margin({ right: 8 })
+              Text(this.muted ? '静音' : '音量').fontSize(18).fontColor(T.PANEL_SUB).width(48).margin({ right: 8 })
               Text(this.volPct()).fontSize(20).fontColor('#FFFFFF').width(64)
             }
             Stack({ alignContent: Alignment.Start }) {
@@ -2952,7 +2955,7 @@ struct Player {
               .width('100%').height(8).backgroundColor(T.WHITE_30).borderRadius(4)
               Row() {}
               .width(((this.muted ? 0 : this.volume) * 100) + '%')
-              .height(8).backgroundColor(this.muted ? T.DIM : T.PRIMARY).borderRadius(4)
+              .height(8).backgroundColor(this.muted ? T.PANEL_DIM : T.PANEL_TXT).borderRadius(4)
             }
             .width(210).height(8).margin({ top: 10 })
           }
@@ -2992,11 +2995,11 @@ struct Player {
           Column() {
             Row() {
               Text(this.title)
-                .fontSize(20).fontColor(T.TXT)
+                .fontSize(20).fontColor(T.PANEL_TXT)
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 .layoutWeight(1)
               if (this.epLabel.length > 0) {
-                Text(this.epLabel).fontSize(16).fontColor(T.SUB)
+                Text(this.epLabel).fontSize(16).fontColor(T.PANEL_SUB)
               }
             }
             .width('100%')
@@ -3011,10 +3014,10 @@ struct Player {
                 Row() {
                   Row() {}
                   .width(8).height(8).backgroundColor(T.LIVE).borderRadius(4)
-                  Text('直播').fontSize(15).fontColor(T.TXT).margin({ left: 8 })
+                  Text('直播').fontSize(15).fontColor(T.PANEL_TXT).margin({ left: 8 })
                 }
                 Blank()
-                Text('左右键换台 · 上下键音量').fontSize(14).fontColor(T.DIM)
+                Text('左右键换台 · 上下键音量').fontSize(14).fontColor(T.PANEL_DIM)
               }
               .width('100%')
               .height(28)
@@ -3022,7 +3025,7 @@ struct Player {
             } else {
             // 进度（进度条本身可点击定位，指针模式下很有用）
             Row() {
-              Text(this.fmt(this.displayMs())).fontSize(16).fontColor(T.SUB).width(96)
+              Text(this.fmt(this.displayMs())).fontSize(16).fontColor(T.PANEL_SUB).width(96)
               Row() {
                 Stack({ alignContent: Alignment.Start }) {
                   Row() {}
@@ -3031,7 +3034,7 @@ struct Player {
                   .width((this.durMs > 0 ? (this.displayMs() / this.durMs * 100) : 0) + '%')
                   .height(6)
                   // FongMi 的 seek 进度就是 colorPrimary（白），拖动预览时用 yellow_500
-                  .backgroundColor(this.seekPreview >= 0 ? T.SELECTED : T.PRIMARY)
+                  .backgroundColor(this.seekPreview >= 0 ? T.SELECTED : T.PANEL_TXT)
                   .borderRadius(3)
                 }
                 .width('100%')
@@ -3135,7 +3138,7 @@ struct Player {
               )
               Text(this.hoverMs >= 0 ? this.fmt(this.hoverMs) : this.fmt(this.durMs))
                 .fontSize(16)
-                .fontColor(this.hoverMs >= 0 ? T.SELECTED : T.SUB)
+                .fontColor(this.hoverMs >= 0 ? T.SELECTED : T.PANEL_SUB)
                 .width(96)
                 .textAlign(TextAlign.End)
             }
@@ -3170,19 +3173,19 @@ struct Player {
 
             Row() {
               Text(this.isLive ? '频道地址直连播放，不经过解析' : ('解析：' + this.via))
-                .fontSize(14).fontColor(T.DIM)
+                .fontSize(14).fontColor(T.PANEL_DIM)
               if (this.netTxt.length > 0) {
-                Text('· 网速 ' + this.netTxt).fontSize(14).fontColor(T.DIM).margin({ left: 10 })
+                Text('· 网速 ' + this.netTxt).fontSize(14).fontColor(T.PANEL_DIM).margin({ left: 10 })
               }
               Text(this.isLive ? '点画面唤出控制条 · 左右键或按钮换台' : '点画面唤出控制条 · 再点画面播放/暂停 · 进度条可点可拖')
-                .fontSize(14).fontColor(T.DIM).margin({ left: 24 })
+                .fontSize(14).fontColor(T.PANEL_DIM).margin({ left: 24 })
             }
             .width('100%')
             .margin({ top: 8 })
           }
           .width('100%')
           .padding({ left: 24, right: 24, top: 24, bottom: 16 })
-          .backgroundColor(T.SURFACE)
+          .backgroundColor(T.PANEL_SURFACE)
           .borderRadius({ topLeft: T.RADIUS_PILL, topRight: T.RADIUS_PILL })
           // 指针停在控制条上就别自动收：遥控器要把指针从画面中间挪到
           // 底部按钮上，8 秒经常不够，条子一走用户得重新点一次

@@ -420,13 +420,18 @@ struct SettingPage {
   /**
    * 切换界面主题。
    *
-   * 顺序不能反：Theme.toggle() 会先改 `T` 上的色板、再广播 KEY_THEME，
-   * 页面收到广播重绘时读到的才是新色；先落盘再切会让重绘拿旧色闪一下。
+   * 切完必须重建界面，原因：ArkUI 的状态刷新是**属性级最小更新** —— 改了 `T`
+   * 上的色板之后，只有 build 里显式读到 themeMode 的那几个属性会重算，
+   * 页面里成百上千处 `T.TXT` / `T.CARD` 不会重跑。实测现象是「背景变色了，
+   * 文字还是旧配色」，在浅色主题上就是白字压暖白底，整页看不清。
+   * 清空路由栈再回首页，等于给全部页面一次从头 build 的机会。
    */
   async toggleTheme(): Promise<void> {
     const next: string = Theme.toggle();
     await Store.setThemeMode(next);
     this.toast(next === 'light' ? '已切到浅色主题' : '已切到深色主题', T.SELECTED);
+    router.clear();
+    router.pushUrl({ url: 'pages/Home' });
   }
 
   /** 点击反馈：声音开关切换 */
