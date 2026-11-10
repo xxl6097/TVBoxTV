@@ -7,6 +7,7 @@ import { Store } from '../common/Store';
 import { Device } from '../common/Device';
 import { Feedback } from '../common/Feedback';
 import { PlayGuard } from '../common/PlayGuard';
+import { Net } from '../common/Net';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -15,6 +16,8 @@ export default class EntryAbility extends UIAbility {
     Store.init(this.context);
     // 加载点击反馈的音效（rawfile click.wav）
     Feedback.init(this.context);
+    // 网络状态：断网/恢复各提示一次，避免多个页面同时报「网络错误」
+    Net.init();
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

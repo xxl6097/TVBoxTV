@@ -1,4 +1,5 @@
 import http from '@ohos.net.http';
+import { Net } from './Net';
 
 const UA: string = 'Mozilla/5.0 (Linux; HarmonyOS; SmartScreen) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -286,6 +287,12 @@ export class Http {
 
   /** 把底层网络库的英文错误翻译成用户能看懂的中文 */
   private static humanize(msg: string): string {
+    // 先看系统层面到底有没有网：断网时底层报的是「connect fail / unreachable」
+    // 之类的笼统错误，照翻成「无法连接服务器」会让人以为是对方站点挂了，
+    // 跑去换源、清缓存，其实只是没连上 WiFi。
+    if (!Net.online()) {
+      return '当前没有网络连接，请检查 WiFi 或网线';
+    }
     const m: string = msg.toLowerCase();
     // 超时类
     if (m.indexOf('timeout') >= 0 || m.indexOf('timed out') >= 0) {
