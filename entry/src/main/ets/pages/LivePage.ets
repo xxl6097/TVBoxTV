@@ -54,6 +54,8 @@ struct LivePage {
   @State showSearch: boolean = false;
   /** 长按收藏时用来避免同一次长按又触发点击进播放 */
   private lastFavMs: number = 0;
+  /** 下拉刷新的转圈状态（Refresh 组件要求双向绑定） */
+  @State refreshing: boolean = false;
 
   // ---------- 测速排行 / 可用性检测 ----------
   /** 测速面板是否打开 */
@@ -1196,7 +1198,11 @@ struct LivePage {
               .justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
             } else {
-              Grid() {
+              // 下拉刷新：手机顶栏位置被收藏/搜索占了，往下拉一把重新拉源更顺手。
+              // Refresh 必须直接套在可滚动组件上——中间夹一层 Column 时它拿不到
+              // 滚动位置，手势不会被识别（实测怎么拉都不刷新）
+              Refresh({ refreshing: $$this.refreshing }) {
+                Grid() {
                 ForEach(this.channels(), (ch: Channel) => {
                   GridItem() {
                     // Stack 的尺寸由里面那个 Text 撑出来（**不能写 height('100%')**：
@@ -1291,17 +1297,30 @@ struct LivePage {
               .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
               .columnsGap(10)
               .rowsGap(10)
-              // 这里只能留 layoutWeight(1)，**不能再加 height('100%')**：
-              // 两者同时存在时 Grid 的高度被钉成父容器高度，内部行数超出后不会滚动，
-              // 底下的频道直接看不见也够不到。layoutWeight 会分配「剩余空间」，
-              // 内容超出时 Grid 才会自己滚。
-              .layoutWeight(1)
+              // 在 Refresh 里只能给 height('100%')：拿到父容器的完整高度它才会
+              // 自己滚；给 layoutWeight 时高度由 Refresh 的测量结果决定，行数一多
+              // 就撑到屏幕外，底下的频道够不到
+              .height('100%')
               .padding({ left: 12, right: 24, bottom: 24 })
               .scrollBar(BarState.Off)
               .cachedCount(20)
-              .edgeEffect(EdgeEffect.Spring)
+              // 交给外层 Refresh：Spring 的「回弹」会把已到顶时的那段下拉吃掉，
+              // 下拉手势就传不到 Refresh 上，表现是「怎么拉都不刷新」
+              .edgeEffect(EdgeEffect.None)
+              }
+              .width('100%')
+              .layoutWeight(1)
+              .onRefreshing(() => {
+                // 手动下拉 = 换一轮新数据：顺带清掉上一轮的失效标记，
+                // 否则刚测出来的「台挂了」会一直贴着旧结论显示
+                this.refreshing = true;
+                this.deadUrls = [];
+                this.reload().then(() => {
+                  this.refreshing = false;
+                });
+              })
+              }
             }
-          }
           .width('100%')
           .layoutWeight(1)
           .padding({ left: 24 })
