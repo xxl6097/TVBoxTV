@@ -18,6 +18,7 @@ import { PlayParam, WebdavSource, WebdavEntry, WebdavVod, WebdavEp, Episode, WdH
 import { Webdav } from '../common/Webdav';
 import { Playlist } from '../common/Playlist';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { Theme, KEY_THEME } from '../common/Theme';
 import { WdQrPanel } from '../common/WdQr';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 
@@ -45,6 +46,8 @@ struct WebdavPage {
   @State selVod: WebdavVod = new WebdavVod();
 
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。build 里必须用到（见 .id），否则换了色板不会重绘 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
   @StorageLink(TIP_MSG) tipMsg: string = '';
   /** 电视端扫码添加网盘面板 */
   @State wdQrOpen: boolean = false;
@@ -470,7 +473,7 @@ struct WebdavPage {
       }
       .width('100%')
       .height('100%')
-      .backgroundColor(T.BG)
+      .backgroundColor(T.pageBg(this.themeMode))
 
       if (this.epOpen) {
         this.epPanel()
@@ -492,6 +495,9 @@ struct WebdavPage {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(T.pageBg(this.themeMode))
+    // id 带主题名：让 build 真正依赖 themeMode（否则换色板不重绘）
+    .id('webdav_' + this.themeMode)
   }
 
   @Builder

@@ -8,12 +8,16 @@ import { Device } from '../common/Device';
 import { Feedback } from '../common/Feedback';
 import { PlayGuard } from '../common/PlayGuard';
 import { Net } from '../common/Net';
+import { Theme } from '../common/Theme';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     // 必须先于 loadContent 判定设备形态，否则首页第一帧会按错误的布局渲染
     Device.init();
     Store.init(this.context);
+    // 主题必须在 loadContent 之前定好：首帧是按 `T` 上的色板画的，
+    // 放到页面的 aboutToAppear 里就晚了（异步返回时首帧已经画完）
+    Theme.loadSync(this.context);
     // 加载点击反馈的音效（rawfile click.wav）
     Feedback.init(this.context);
     // 网络状态：断网/恢复各提示一次，避免多个页面同时报「网络错误」

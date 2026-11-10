@@ -25,6 +25,7 @@ import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
 import { Poster } from '../common/Poster';
 import { isBackCode } from '../common/TvFocus';
+import { Theme, KEY_THEME } from '../common/Theme';
 
 /** 功能块列模板：必须是 1fr × N，用固定宽度会让最后一格溢出屏幕 */
 const FUNC_COLS: string = '1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr';
@@ -286,6 +287,8 @@ struct FeedCard {
 struct Home {
   /** 设备形态：true=手机（底部 Tab + 网格 + 触摸），false=电视（顶部功能行 + 横向轨道 + 焦点） */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。build 里必须用到（见 .id(...)），否则换了色板不会重绘 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
   @State hist: HistItem[] = [];
   /** 「清空全部」的二次确认窗口：6 秒内再点一次才真清 */
   @State confirmClearHist: boolean = false;
@@ -319,6 +322,9 @@ struct Home {
   async aboutToAppear(): Promise<void> {
     this.items = funcs();
     await Store.init(getContext(this) as common.UIAbilityContext);
+    // 主题要在第一帧之前定下来，否则会先闪一下深色再变浅色。
+    // 只在这里放一次：其他页面都是压在 Home 之上打开的，色板已经是当前主题
+    Theme.apply(await Store.themeMode());
     const ok: boolean = await Store.privacyAgreed();
     this.consentReady = true;
     this.agreed = ok;
@@ -726,6 +732,8 @@ struct Home {
                     .width(34)
                     .height(34)
                     .objectFit(ImageFit.Contain)
+                    // 图标是白色单色 svg，浅色主题下必须染色，否则白图标压在白卡上
+                    .fillColor(T.TXT)
                   Text(f.label)
                     .fontSize(17)
                     .fontColor(T.TXT)
@@ -914,7 +922,7 @@ struct Home {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(T.BG)
+    .backgroundColor(T.pageBg(this.themeMode))
   }
 
   /** 手机首页：顶部标题栏 + 内容区（横滑继续观看 / 网格最近更新）+ 底部 Tab 导航 */
@@ -1110,7 +1118,7 @@ struct Home {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(T.BG)
+    .backgroundColor(T.pageBg(this.themeMode))
   }
 
   /** 底部 Tab 项：图标 + 文字，整块可点 */
@@ -1121,6 +1129,7 @@ struct Home {
         .width(20)
         .height(20)
         .objectFit(ImageFit.Contain)
+        .fillColor(T.SUB)
       Text(label)
         .fontSize(11)
         .fontColor(T.SUB)
@@ -1218,6 +1227,10 @@ struct Home {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(T.pageBg(this.themeMode))
+    // id 里带主题名：既让 build 真正依赖 themeMode（否则状态变了不重绘），
+    // 也方便自动化测试按主题定位根节点
+    .id('home_' + this.themeMode)
     // 遥控器返回键：根页面返回 = 退出；引导面板打开时先关引导。
     // 方向键焦点导航、OK 确认由 ArkUI 焦点系统自动处理，无需在此逐键写。
     .onKeyEvent((event: KeyEvent) => {
@@ -1253,7 +1266,7 @@ struct Home {
     Stack() {
       Column()
         .width('100%').height('100%')
-        .backgroundColor(T.BG)
+        .backgroundColor(T.pageBg(this.themeMode))
 
       Column() {
         Text('夜帧影视 隐私政策').fontSize(22).fontColor(T.TXT)

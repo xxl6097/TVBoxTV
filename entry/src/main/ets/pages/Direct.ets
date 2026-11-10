@@ -22,6 +22,7 @@ import { QrCode } from '../common/QrCode';
 import { QrServer } from '../common/QrServer';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { Theme, KEY_THEME } from '../common/Theme';
 
 @Entry
 @Component
@@ -40,6 +41,8 @@ struct Direct {
   @State qrHas: boolean = false;
   /** 设备形态：手机竖屏时扫码弹窗改上下排列（左右排列文字列太窄） */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。build 里必须用到（见 .id），否则换了色板不会重绘 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
 
   private qrMatrix: boolean[][] = [];
   private qrSettings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -363,7 +366,7 @@ struct Direct {
       }
       .width('100%')
       .height('100%')
-      .backgroundColor(T.BG)
+      .backgroundColor(T.pageBg(this.themeMode))
 
       if (this.qrOpen && !this.isPhone) {
         Stack() {
@@ -467,5 +470,8 @@ struct Direct {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(T.pageBg(this.themeMode))
+    // id 带主题名：让 build 真正依赖 themeMode（否则换色板不重绘）
+    .id('direct_' + this.themeMode)
   }
 }

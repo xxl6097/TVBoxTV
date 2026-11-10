@@ -822,6 +822,24 @@ export class Store {
     await Store.prefs.flush();
   }
 
+  // ---------- 界面主题 ----------
+
+  /** 当前主题：'dark'（默认）/ 'light' */
+  static async themeMode(): Promise<string> {
+    if (Store.prefs === null) {
+      return 'dark';
+    }
+    return await Store.prefs.get('theme', 'dark') as string;
+  }
+
+  static async setThemeMode(m: string): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('theme', m);
+    await Store.prefs.flush();
+  }
+
   // ---------- 直播频道收藏 ----------
 
   /** 读取所有收藏的直播频道，按收藏时间倒序 */

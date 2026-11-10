@@ -8,6 +8,7 @@ import { Site, PlayParam, DetailParam, Vod, T } from '../common/Model';
 import { Cms } from '../common/Cms';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { Theme, KEY_THEME } from '../common/Theme';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
 import { Poster } from '../common/Poster';
@@ -30,6 +31,8 @@ struct SearchPage {
   @State kw: string = '';
   /** 设备形态：手机竖屏显示底部 Tab */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。build 里必须用到（见 .id），否则换了色板不会重绘 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
   /** 全局轻提示（AppStorage 上的 TIP_MSG），Tip.show() 触发 */
   @StorageLink(TIP_MSG) tipMsg: string = '';
   @State groups: Group[] = [];
@@ -725,5 +728,8 @@ struct SearchPage {
   .width('100%')
   .height('100%')
   .alignContent(Alignment.Center)
+    .backgroundColor(T.pageBg(this.themeMode))
+    // id 带主题名：让 build 真正依赖 themeMode（否则换色板不重绘）
+    .id('search_' + this.themeMode)
   }
 }

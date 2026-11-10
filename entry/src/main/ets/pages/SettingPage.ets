@@ -21,6 +21,7 @@ import { WdQrPanel } from '../common/WdQr';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { LivePreset, fromLives } from '../common/LivePresets';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { Theme, KEY_THEME } from '../common/Theme';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
 
@@ -285,6 +286,8 @@ struct SettingPage {
   @State url: string = '';
   /** 设备形态：手机竖屏显示底部 Tab */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。build 里必须用到（见 .id），否则换了色板不会重绘 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
   /** 全局轻提示（AppStorage 上的 TIP_MSG），Tip.show() 触发 */
   @StorageLink(TIP_MSG) tipMsg: string = '';
   @State liveUrl: string = '';
@@ -414,6 +417,18 @@ struct SettingPage {
    * 三态：填了配置地址 →「已配置」；导入了站源但没填地址 →「已导入」；
    * 都没有 →「未配置」。
    */
+  /**
+   * 切换界面主题。
+   *
+   * 顺序不能反：Theme.toggle() 会先改 `T` 上的色板、再广播 KEY_THEME，
+   * 页面收到广播重绘时读到的才是新色；先落盘再切会让重绘拿旧色闪一下。
+   */
+  async toggleTheme(): Promise<void> {
+    const next: string = Theme.toggle();
+    await Store.setThemeMode(next);
+    this.toast(next === 'light' ? '已切到浅色主题' : '已切到深色主题', T.SELECTED);
+  }
+
   /** 点击反馈：声音开关切换 */
   async toggleTapSound(): Promise<void> {
     this.soundOn = !this.soundOn;
@@ -1731,6 +1746,12 @@ struct SettingPage {
   SectionAbout() {
     this.GroupLabel('关于', this.isPhone ? 16 : 0)
     Column() {
+      SRowView({ label: '界面主题', value: this.themeMode === 'light' ? '浅色' : '深色', arrow: false, focused: this.hi('r_thm'),
+        onTap: () => {
+          this.toggleTheme();
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_thm', on) })
+      this.SDiv()
       SRowView({ label: '点击声音', value: this.soundOn ? '开' : '关', arrow: false, focused: this.hi('r_snd'),
         onTap: () => {
           this.toggleTapSound();
@@ -2060,7 +2081,7 @@ struct SettingPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(T.BG)
+    .backgroundColor(T.pageBg(this.themeMode))
   }
 
   /** TV 端左侧导航项：高亮竖条 + 文字，hover / 点击即切换右侧内容 */
@@ -2171,7 +2192,7 @@ struct SettingPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(T.BG)
+    .backgroundColor(T.pageBg(this.themeMode))
   }
 
   build() {
@@ -2206,5 +2227,8 @@ struct SettingPage {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(T.pageBg(this.themeMode))
+    // id 带主题名：让 build 真正依赖 themeMode（否则换色板不重绘）
+    .id('setting_' + this.themeMode)
   }
 }

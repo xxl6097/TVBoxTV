@@ -15,6 +15,7 @@ import { Resolver, Resolved } from '../common/Resolve';
 import { QLevel, QSpeed, Quality } from '../common/Quality';
 import { Tip } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
+import { Theme, KEY_THEME } from '../common/Theme';
 import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
 import window from '@ohos.window';
@@ -124,6 +125,8 @@ struct Player {
   @State subSel: number = -1;
   /** 设备形态：手机竖屏默认等比适应，避免横屏视频被拉伸变形 */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。播放页底色恒为黑（视频画面），这个只用于让 OSD 文案跟着换色 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
   /** 长按倍速播放中 */
   @State holdSpeedOn: boolean = false;
   /** 按下前保存的原倍速，用于长按松开时恢复 */
@@ -3326,5 +3329,8 @@ struct Player {
     .onKeyEvent((e: KeyEvent) => {
       this.onKey(e);
     })
+    // 播放页不加 backgroundColor(T.BG)：底色必须是黑的（视频画面 + 控制面板叠在上面），
+    // 这里只把主题名挂到 id 上，保证切主题后 OSD 文案会重绘
+    .id('player_' + this.themeMode)
   }
 }

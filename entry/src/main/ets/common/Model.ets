@@ -332,6 +332,18 @@ export class T {
    *   app/src/leanback/res/drawable/shape_*.xml —— 圆角、描边、底色
    */
   static BG: string = '#141218';
+
+  /**
+   * 按主题取页面底色。
+   *
+   * 为什么不直接写 `T.BG`：`T` 是普通静态对象，`Theme` 改它的字段**不会**
+   * 触发任何刷新；ArkUI 只在 build 读到状态变量时才重绘。把主题名当参数传进来，
+   * 调用处就自然读到了 `@StorageProp themeMode`，换主题时整页才会重建。
+   * 参数本身不参与计算（真值在 T.BG 上，Theme 已经改好了）。
+   */
+  static pageBg(mode: string): string {
+    return T.BG;
+  }
   /** Theme.Material3.Dark 的 colorSurface（播放器控制面板 shape_controller 用的就是它） */
   static SURFACE: string = '#1C1B1F';
 
@@ -364,6 +376,11 @@ export class T {
   /** white_70 / white_50，对应 FongMi 的次级文字 */
   static SUB: string = '#B3FFFFFF';
   static DIM: string = '#80FFFFFF';
+  /**
+   * 「这个台连不上」的频道文字色。深色底上是白 35%，
+   * 浅色主题下必须反过来（由 Theme 覆盖），所以单独给个字段，别在页面里写死。
+   */
+  static DEAD: string = '#5AFFFFFF';
   static WARN: string = '#FFB4AB';
   static ERR: string = '#FFB4AB';
   /** 直播标记点。取 FongMi values/colors.xml 的 red_500 */

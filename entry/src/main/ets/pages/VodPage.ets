@@ -20,6 +20,7 @@ import { Cms } from '../common/Cms';
 import { Site, Category, Vod, FilterGroup, FilterValue, VodPage, DetailParam, T } from '../common/Model';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { KEY_IS_PHONE } from '../common/Device';
+import { Theme, KEY_THEME } from '../common/Theme';
 import { Poster } from '../common/Poster';
 import { Pointer } from '../common/Pointer';
 import { PhoneTabBar } from '../common/PhoneTabBar';
@@ -41,6 +42,8 @@ const SITE_GAP: number = 12;
 struct VodList {
   /** 设备形态：手机网格列数更少、触控目标更大 */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 当前主题。build 里必须用到（见 .id），否则换了色板不会重绘 */
+  @StorageProp(KEY_THEME) themeMode: string = 'dark';
   @State site: Site = new Site();
   /** 全局轻提示（AppStorage 上的 TIP_MSG），Tip.show() 触发 */
   @StorageLink(TIP_MSG) tipMsg: string = '';
@@ -430,7 +433,9 @@ struct VodList {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(T.BG)
+    .backgroundColor(T.pageBg(this.themeMode))
+    // id 带主题名：让 build 真正依赖 themeMode（否则换色板不重绘）
+    .id('vod_' + this.themeMode)
   }
 
   @Builder

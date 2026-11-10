@@ -35,6 +35,8 @@ function TabItem(label: string, page: string, active: string) {
       .width(20)
       .height(20)
       .objectFit(ImageFit.Contain)
+      // 白色单色 svg：浅色主题下要染色，否则图标消失（只剩文字）
+      .fillColor(page === active ? T.SELECTED : T.SUB)
     Text(label)
       .fontSize(11)
       .fontColor(page === active ? T.SELECTED : T.SUB)
