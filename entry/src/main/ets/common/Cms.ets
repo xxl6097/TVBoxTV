@@ -325,6 +325,10 @@ export class Cms {
     v.director = Cms.s(j.vod_director);
     v.content = Cms.plain(Cms.s(j.vod_content).length > 0 ? Cms.s(j.vod_content) : Cms.s(j.vod_blurb));
     v.typeName = Cms.s(j.type_name);
+    // 分类 id 两个名字都可能出现：JSON 接口多为 type_id，XML 转出来的走 tid。
+    // 站点返回数字或字符串都有，统一成字符串
+    const tidAny: number | undefined = j.type_id !== undefined ? j.type_id : j.tid;
+    v.typeId = tidAny === undefined ? '' : String(tidAny);
     v.from = Cms.s(j.vod_play_from);
     v.playUrl = Cms.s(j.vod_play_url);
     v.siteKey = this.site.key;

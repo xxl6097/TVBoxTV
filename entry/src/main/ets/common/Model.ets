@@ -71,7 +71,9 @@ export interface JVod {
   vod_play_url?: string;
   vod_time?: string;
   type_name?: string;
+  /** 分类 id：苹果 CMS 的 JSON 接口给 type_id，XML/部分站给 tid，两个名字都得认 */
   tid?: number;
+  type_id?: number;
 }
 
 export interface JClass {
@@ -133,6 +135,8 @@ export class Vod {
   director: string = '';
   content: string = '';
   typeName: string = '';
+  /** 分类 id（详情接口里的 type_id），「相关推荐」按它拉同分类影片 */
+  typeId: string = '';
   from: string = '';
   playUrl: string = '';
   siteKey: string = '';

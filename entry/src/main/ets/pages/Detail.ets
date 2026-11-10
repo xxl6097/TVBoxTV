@@ -3,7 +3,7 @@ import router from '@ohos.router';
 import hilog from '@ohos.hilog';
 import common from '@ohos.app.ability.common';
 import { Store, FavItem, HistItem } from '../common/Store';
-import { Site, DetailParam, PlayParam, Vod, Line, Episode, T } from '../common/Model';
+import { Site, DetailParam, PlayParam, Vod, VodPage, Line, Episode, T } from '../common/Model';
 import { Cms } from '../common/Cms';
 import { Playlist } from '../common/Playlist';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
@@ -26,6 +26,8 @@ struct Detail {
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
   /** 当前主题。build 里必须用到（见 .id），否则换了色板不会重绘 */
   @StorageProp(KEY_THEME) themeMode: string = 'dark';
+  /** 相关推荐：同分类第一页里除去当前这部 */
+  @State related: Vod[] = [];
   @State vod: Vod = new Vod();
   @State lines: Line[] = [];
   @State lineIdx: number = 0;
@@ -179,6 +181,43 @@ struct Detail {
     return 0;
   }
 
+  /**
+   * 拉同分类的其它片子做「相关推荐」。
+   *
+   * 只取第 1 页并在前端去掉自己：采集站的详情接口不返回「同类」，
+   * 用详情里的 type_id 反查列表是唯一稳妥的办法（不用猜标签、也不用额外接口）。
+   * 失败静默——推荐位空着不影响主内容。
+   */
+  /** 点推荐位：push 一个新的详情页（返回能逐层退，比 replace 符合直觉） */
+  openRelated(v: Vod): void {
+    const p = new DetailParam();
+    p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.siteKey;
+    p.siteName = v.siteName.length > 0 ? v.siteName : this.vod.siteName;
+    p.vodId = v.id;
+    router.pushUrl({ url: 'pages/Detail', params: p });
+  }
+
+  async loadRelated(s: Site, typeId: string): Promise<void> {
+    if (typeId.length === 0) {
+      return;
+    }
+    try {
+      const cms = new Cms(s);
+      const pg: VodPage = await cms.list(typeId, 1);
+      const out: Vod[] = [];
+      for (let i = 0; i < pg.items.length && out.length < 12; i++) {
+        const v: Vod = pg.items[i];
+        if (v.id === this.vodId) {
+          continue;
+        }
+        out.push(v);
+      }
+      this.related = out;
+    } catch (e) {
+      hilog.info(0x1000, 'BOXN', 'related load failed: %{public}s', (e as Error).message);
+    }
+  }
+
   async load(): Promise<void> {
     const s: Site | null = Store.site(this.siteKey);
     if (s === null) {
@@ -196,6 +235,8 @@ struct Detail {
       }
       this.vod = v;
       this.lines = Cms.splitLines(v.from, v.playUrl);
+      // 推荐是锦上添花，不 await：主内容先渲染，推荐晚一两秒出来没关系
+      this.loadRelated(s, v.typeId);
       // 默认落在「能直接播」的那条线路上：很多采集站第一组是网页地址，
       // 播放器拿到会播不出来，真流在后面的 /index.m3u8 那组
       this.lineIdx = 0;
@@ -548,6 +589,53 @@ struct Detail {
                   scrollBackward: NestedScrollMode.SELF_FIRST
                 })
                 .scrollBar(this.epsScrollable() ? BarState.Auto : BarState.Off)
+              }
+
+              // 相关推荐：同分类里除去自己的片子，横向一排。
+              // 放在剧集下面——「这部看完看什么」是看完剧集列表才会想到的问题
+              if (this.related.length > 0) {
+                Row() {
+                  Text('相关推荐').fontSize(18).fontColor(T.TXT)
+                  Text('· 同分类').fontSize(13).fontColor(T.DIM).margin({ left: 8 })
+                }
+                .width('100%')
+                .margin({ top: 18, bottom: 10 })
+
+                List({ space: 14 }) {
+                  ForEach(this.related, (v: Vod) => {
+                    ListItem() {
+                      Column() {
+                        Poster({ url: v.pic, w: 104, h: 146 })
+                        Text(v.name)
+                          .fontSize(14).fontColor(T.TXT)
+                          .width(104).maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .margin({ top: 5 })
+                      }
+                      .padding(6)
+                      .borderRadius(10)
+                      .backgroundColor(this.hi('rel' + v.id) ? T.CARD_HI : '#00000000')
+                      .border({ width: T.BORDER, color: this.hi('rel' + v.id) ? T.ACCENT : '#00000000' })
+                      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                      .focusable(true)
+                      .onFocus(() => this.hoverTo('rel' + v.id, true))
+                      .onBlur(() => this.hoverTo('rel' + v.id, false))
+                      .onHover((hv: boolean) => this.hoverTo('rel' + v.id, hv))
+                      .onClick(() => Pointer.fire('d_rel' + v.id, () => {
+                          Feedback.tap();
+                          this.openRelated(v);
+                      }))
+                      .onMouse(Pointer.on('d_rel' + v.id, () => {
+                          Feedback.tap();
+                          this.openRelated(v);
+                      }))
+                    }
+                  }, (v: Vod) => 'rel' + v.id)
+                }
+                .listDirection(Axis.Horizontal)
+                .width('100%')
+                .height(196)
+                .scrollBar(BarState.Off)
               }
             }
             .width('100%')
