@@ -1,5 +1,7 @@
 import dataPreferences from '@ohos.data.preferences';
 import common from '@ohos.app.ability.common';
+import fs from '@ohos.file.fs';
+import hilog from '@ohos.hilog';
 import { RawConfig, RawSite, RawParse, RawLive, Site, ParseRule, Vod, WebdavSource, WebdavVod, WdHistory } from './Model';
 import { Http } from './Http';
 import { Cms } from './Cms';
@@ -261,6 +263,111 @@ export class Store {
       return '';
     }
     return await Store.prefs.get('cfgText', '') as string;
+  }
+
+  // ---------- 本地缓存统计与清理 ----------
+
+  /**
+   * 递归统计一个目录占用的字节数。
+   *
+   * 用同步接口：设置页只是点开看一眼，目录项也就几十上百个，同步读完更简单，
+   * 也不用把「正在统计」做成一个状态。读不到的项直接跳过——缓存目录里有正在
+   * 被写的文件时 stat 会失败，那不该让整个统计中断。
+   */
+  private static dirBytes(dir: string): number {
+    let total: number = 0;
+    let names: string[] = [];
+    try {
+      names = fs.listFileSync(dir);
+    } catch (e) {
+      return 0;
+    }
+    for (let i = 0; i < names.length; i++) {
+      const p: string = dir + '/' + names[i];
+      try {
+        const st = fs.statSync(p);
+        if (st.isDirectory()) {
+          total += Store.dirBytes(p);
+        } else {
+          total += st.size;
+        }
+      } catch (e) {
+        // 正在被写/已删除，跳过
+      }
+    }
+    return total;
+  }
+
+  /**
+   * 需要统计/清理的缓存目录。
+   *
+   * 有两个：module 级 `haps/entry/cache` 和应用级 cache。图片框架的封面缓存落在
+   * 应用级那个（实测 `haps/entry/cache` 一直是 0，而 `.../com.hong.tv/cache` 有几百 KB），
+   * 只统计前者会显示「0 B」，用户以为没缓存。
+   */
+  private static cacheDirs(): string[] {
+    const out: string[] = [];
+    if (Store.ctx === null) {
+      return out;
+    }
+    out.push(Store.ctx.cacheDir);
+    try {
+      const app = Store.ctx.getApplicationContext();
+      if (app !== null && app.cacheDir !== Store.ctx.cacheDir) {
+        out.push(app.cacheDir);
+      }
+    } catch (e) {
+      // 取不到应用级上下文就只算 module 级
+    }
+    return out;
+  }
+
+  /** 应用私有缓存目录占多少字节（module 级 + 应用级） */
+  static cacheDirBytes(): number {
+    const dirs: string[] = Store.cacheDirs();
+    let total: number = 0;
+    for (let i = 0; i < dirs.length; i++) {
+      total += Store.dirBytes(dirs[i]);
+    }
+    hilog.info(0x1000, 'BOXN', 'cache dirs=%{public}d bytes=%{public}d', dirs.length, total);
+    return total;
+  }
+
+  /**
+   * 清空应用私有缓存目录。
+   *
+   * 只动 `cacheDir`：里面是系统图片框架缓存的封面、临时下载文件，删掉会被自动重建。
+   * 配置（preferences）、历史、收藏都不在这里，不会被碰到。
+   */
+  static clearCacheDir(): number {
+    const dirs: string[] = Store.cacheDirs();
+    if (dirs.length === 0) {
+      return 0;
+    }
+    const before: number = Store.cacheDirBytes();
+    for (let d = 0; d < dirs.length; d++) {
+      const dir: string = dirs[d];
+      let names: string[] = [];
+      try {
+        names = fs.listFileSync(dir);
+      } catch (e) {
+        continue;
+      }
+      for (let i = 0; i < names.length; i++) {
+        const p: string = dir + '/' + names[i];
+        try {
+          const st = fs.statSync(p);
+          if (st.isDirectory()) {
+            fs.rmdirSync(p);
+          } else {
+            fs.unlinkSync(p);
+          }
+        } catch (e) {
+          // 删不掉就留着，下次再说
+        }
+      }
+    }
+    return before - Store.cacheDirBytes();
   }
 
   /** 启动时用缓存恢复站点列表；没有缓存则返回 false */
@@ -787,6 +894,42 @@ export class Store {
     const out: string[] = [];
     for (let i = 0; i < arr.length; i++) {
       out.push(arr[i].kw);
+    }
+    return out;
+  }
+
+  /**
+   * 删掉一条搜索历史。
+   *
+   * 和 clearKeywords 的区别：这条只摘掉一个关键词，其余记录（含点击次数）原样保留。
+   * 返回排序后的剩余列表，调用方直接拿去刷新界面。
+   */
+  static async removeKeyword(kw: string): Promise<string[]> {
+    const k: string = kw.trim();
+    if (Store.prefs === null || k.length === 0) {
+      return Store.keywords();
+    }
+    const raw: string = await Store.prefs.get('kwHist', '') as string;
+    let arr: KwRecord[] = [];
+    if (raw.startsWith('[')) {
+      try {
+        arr = JSON.parse(raw) as KwRecord[];
+      } catch (_e) {
+        arr = [];
+      }
+    }
+    const keep: KwRecord[] = [];
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i].kw !== k) {
+        keep.push(arr[i]);
+      }
+    }
+    await Store.prefs.put('kwHist', JSON.stringify(keep));
+    await Store.prefs.flush();
+    keep.sort((a: KwRecord, b: KwRecord) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+    const out: string[] = [];
+    for (let i = 0; i < keep.length; i++) {
+      out.push(keep[i].kw);
     }
     return out;
   }

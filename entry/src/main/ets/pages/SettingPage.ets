@@ -333,6 +333,8 @@ struct SettingPage {
   @State vibrateOn: boolean = true;
   /** 播放历史 WebDAV 云同步开关 */
   @State histSyncOn: boolean = false;
+  /** 「数据」分组里显示的缓存占用文案 */
+  @State cacheText: string = '';
   /** TV 端左侧导航当前选中分组：source/update/webdav/sites/data/about */
   @State tvNav: string = 'source';
   /** WebDAV 网盘源列表 */
@@ -1024,6 +1026,8 @@ struct SettingPage {
   async refresh(): Promise<void> {
     this.total = Store.totalSites();
     this.usable = Store.usableSites().length;
+    // 缓存占用随浏览不断变化，进页面和每次刷新都重算一次
+    this.refreshCacheText();
     const keys: string[] = await Store.enabledKeys();
     const base: string[] = keys.length > 0 ? keys : this.keysOf(Store.usableSites());
     const out: Site[] = [];
@@ -1426,6 +1430,46 @@ struct SettingPage {
     Tip.show('已清除播放记录');
   }
 
+  /** 字节数转人话。缓存量级从几 KB 到几十 MB 都有，统一到两位有效数字就够看 */
+  private fmtBytes(n: number): string {
+    if (n <= 0) {
+      return '0 B';
+    }
+    if (n < 1024) {
+      return n + ' B';
+    }
+    if (n < 1024 * 1024) {
+      return (n / 1024).toFixed(1) + ' KB';
+    }
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  /** 缓存占用文案：磁盘（封面图等）+ 接口响应缓存条数 */
+  private refreshCacheText(): void {
+    const disk: number = Store.cacheDirBytes();
+    const n: number = Cms.cacheCount();
+    this.cacheText = this.fmtBytes(disk) + (n > 0 ? ' · 接口 ' + n + ' 项' : '');
+  }
+
+  /**
+   * 清理缓存。
+   *
+   * 只清两样：应用私有 cacheDir（系统图片框架缓存的封面、临时文件，删了会自动重建）
+   * 和内存里的接口响应缓存。配置、播放历史、收藏都不在这里，不会被误删。
+   */
+  clearCache(): void {
+    const freed: number = Store.clearCacheDir();
+    Cms.clearCache();
+    this.refreshCacheText();
+    this.toast(freed > 0 ? ('已清理 ' + this.fmtBytes(freed)) : '缓存已经是空的', '#B7F0BC');
+  }
+
+  /** 清空搜索历史（搜索页的「猜你想搜」也跟着空掉） */
+  async clearKws(): Promise<void> {
+    await Store.clearKeywords();
+    this.toast('已清空搜索历史', '#B7F0BC');
+  }
+
   hoverTo(key: string, isHover: boolean): void {
     if (isHover) {
       this.focusKey = key;
@@ -1735,6 +1779,18 @@ struct SettingPage {
   SectionData() {
     this.GroupLabel('数据', this.isPhone ? 16 : 0)
     Column() {
+      SRowView({ label: '清理缓存', value: this.cacheText, arrow: false, focused: this.hi('r_cch'),
+        onTap: () => {
+          this.clearCache();
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_cch', on) })
+      this.SDiv()
+      SRowView({ label: '清空搜索历史', warn: true, focused: this.hi('r_kw'),
+        onTap: () => {
+          this.clearKws();
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_kw', on) })
+      this.SDiv()
       SRowView({ label: '清除播放记录', warn: true, focused: this.hi('r_clr'),
         onTap: () => {
           this.clearHist();
@@ -2123,10 +2179,19 @@ struct SettingPage {
     .onClick(() => Pointer.fire('st_nav' + key, () => {
         Feedback.tap();
         this.tvNav = key;
+        // 缓存占用会随浏览变化，进「数据」分组时现算一次。
+        // 不在 onFocus/onHover 里算：焦点划过每一项都会 stat 整个缓存目录（上千个封面文件），
+        // 每次几百毫秒，切分组会发滞
+        if (key === 'data') {
+          this.refreshCacheText();
+        }
     }))
     .onMouse(Pointer.on('st_nav' + key, () => {
         Feedback.tap();
         this.tvNav = key;
+        if (key === 'data') {
+          this.refreshCacheText();
+        }
     }))
   }
 

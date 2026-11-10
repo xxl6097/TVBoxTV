@@ -47,6 +47,8 @@ struct SearchPage {
   @State hotVods: Vod[] = [];
   /** 下拉重搜的转圈状态（Refresh 组件要求双向绑定） */
   @State refreshing: boolean = false;
+  /** 长按删除搜索记录的时刻：用来跳过紧随其后的点击 */
+  private lastKwDelMs: number = 0;
   /** 联想候选池：搜索历史 + 首页最近更新片名，进页面收集一次 */
   private pool: Sug[] = [];
   /** 搜索序号：连续搜索时用来丢弃上一轮的延迟结果 */
@@ -194,7 +196,26 @@ struct SearchPage {
     const n: number = this.kws.length;
     await Store.clearKeywords();
     this.kws = [];
+    // 清空后联想池里还有旧关键词，一并重建，否则右侧建议仍显示已清掉的词
+    await this.buildPool();
+    this.doRefreshSugg();
     Tip.show(n > 0 ? ('已清空 ' + n + ' 条搜索记录') : '没有搜索记录');
+  }
+
+  /**
+   * 长按删掉一条搜索记录。
+   *
+   * 只摘这一个词，其余记录连点击次数都保留（次数决定「猜你想搜」的排序，
+   * 整体清空会把这些偏好一起丢掉）。
+   */
+  async removeKw(kw: string): Promise<void> {
+    // 记下时间，onClick 里据此跳过「长按抬起后紧跟的那次点击」
+    this.lastKwDelMs = Date.now();
+    this.kws = await Store.removeKeyword(kw);
+    // 联想池里也存着这个关键词，不重建的话右侧「猜你想搜」还挂着刚删掉的那条
+    await this.buildPool();
+    this.doRefreshSugg();
+    Tip.show('已删除「' + kw + '」');
   }
 
   /**
@@ -450,6 +471,7 @@ struct SearchPage {
           if (this.kws.length > 0) {
             Row() {
               Text('最近搜过').fontSize(19).fontColor(T.SUB)
+              Text('· 长按可删除').fontSize(13).fontColor(T.DIM).margin({ left: 8 })
               Blank()
               Text('清空记录')
                 .fontSize(15)
@@ -483,15 +505,29 @@ struct SearchPage {
                   .onBlur(() => this.hoverTo('kw' + i, false))
                   .onHover((hv: boolean) => this.hoverTo('kw' + i, hv))
                   .onClick(() => Pointer.fire('sr_kw' + k, () => {
+                      // 长按删除后的抬手会再补一次 click，吞掉，否则「删一条」变成「删完又搜一次」
+                      if (Date.now() - this.lastKwDelMs < 900) {
+                        return;
+                      }
                       Feedback.tap();
                       this.kw = k;
                       this.doSearch();
                   }))
                   .onMouse(Pointer.on('sr_kw' + k, () => {
+                      if (Date.now() - this.lastKwDelMs < 900) {
+                        return;
+                      }
                       Feedback.tap();
                       this.kw = k;
                       this.doSearch();
                   }))
+                  // 长按删除这一条（触屏长按、遥控按住确定键都走这里）
+                  .gesture(
+                    LongPressGesture({ repeat: false, duration: 600 })
+                      .onAction(() => {
+                        this.removeKw(k);
+                      })
+                  )
               }, (k: string, i: number) => 'kw' + i + k)
             }
             .width('100%')

@@ -112,6 +112,20 @@ export class Cms {
     Cms.hits = [];
   }
 
+  /** 接口缓存里有几条（设置页「清理缓存」展示用） */
+  static cacheCount(): number {
+    return Cms.hits.length;
+  }
+
+  /** 接口缓存占用的字符数，1 个中文字符约 3 字节，显示时按 3 倍折算 */
+  static cacheChars(): number {
+    let n: number = 0;
+    for (let i = 0; i < Cms.hits.length; i++) {
+      n += Cms.hits[i].body.length;
+    }
+    return n;
+  }
+
   private site: Site;
   /** 筛选条件尾巴，形如 &area=大陆&year=2025。由点播页切换筛选时塞进来 */
   private extra: string = '';
