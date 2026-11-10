@@ -39,6 +39,8 @@ struct CollectPage {
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
+    // 开收藏同步时，先拉一次云端合并，再读本地——否则刚从别的设备收藏的还没进来
+    await Store.pullFavFromWebDAV().catch(() => {});
     await this.reload();
     this.ready = true;
   }

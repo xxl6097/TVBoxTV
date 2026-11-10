@@ -333,6 +333,8 @@ struct SettingPage {
   @State vibrateOn: boolean = true;
   /** 播放历史 WebDAV 云同步开关 */
   @State histSyncOn: boolean = false;
+  /** 收藏 WebDAV 云同步开关 */
+  @State favSyncOn: boolean = false;
   /** 「数据」分组里显示的缓存占用文案 */
   @State cacheText: string = '';
   /** TV 端左侧导航当前选中分组：source/update/webdav/sites/data/about */
@@ -389,8 +391,10 @@ struct SettingPage {
     this.soundOn = (await Store.tapSound()) !== 0;
     this.vibrateOn = (await Store.tapVibrate()) !== 0;
     this.histSyncOn = await Store.histSyncEnabled();
+    this.favSyncOn = await Store.favSyncEnabled();
     // 进入设置页时静默拉取一次云历史（不阻塞 UI）
     Store.pullHistFromWebDAV().catch(() => {});
+    Store.pullFavFromWebDAV().catch(() => {});
     await this.refresh();
   }
 
@@ -460,6 +464,21 @@ struct SettingPage {
       this.toast('历史同步已开启，将同步到第一个网盘', '#4CAF50');
     } else {
       this.toast('历史同步已关闭', '#FF9800');
+    }
+  }
+
+  /** 收藏云同步开关切换 */
+  async toggleFavSync(): Promise<void> {
+    this.favSyncOn = !this.favSyncOn;
+    await Store.setFavSyncEnabled(this.favSyncOn);
+    if (this.favSyncOn) {
+      // 开启后先拉一次（合并云端），再推一次（把合并结果写回）
+      Store.pullFavFromWebDAV().then(() => {
+        Store.syncFavToWebDAV().catch(() => {});
+      }).catch(() => {});
+      this.toast('收藏同步已开启，将同步到第一个网盘', '#4CAF50');
+    } else {
+      this.toast('收藏同步已关闭', '#FF9800');
     }
   }
 
@@ -1830,6 +1849,12 @@ struct SettingPage {
           this.toggleHistSync();
         },
         onHoverIn: (on: boolean) => this.hoverTo('r_hsy', on) })
+      this.SDiv()
+      SRowView({ label: '收藏同步', value: this.favSyncOn ? '开' : '关', arrow: false, focused: this.hi('r_fsy'),
+        onTap: () => {
+          this.toggleFavSync();
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_fsy', on) })
       this.SDiv()
       SRowView({ label: '版本', value: 'v' + this.verName, arrow: false, focused: this.hi('r_ver'),
         onTap: () => {

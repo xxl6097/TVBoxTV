@@ -760,6 +760,8 @@ export class Store {
     }
     await Store.prefs.put('fav', JSON.stringify(out));
     await Store.prefs.flush();
+    // 收藏变了就推一次云端（开关关着时方法内部直接返回，不会有开销）
+    Store.syncFavToWebDAV().catch(() => {});
     return !removed;
   }
 
@@ -790,6 +792,7 @@ export class Store {
     }
     await Store.prefs.put('fav', JSON.stringify(out));
     await Store.prefs.flush();
+    Store.syncFavToWebDAV().catch(() => {});
     return true;
   }
 
@@ -1575,6 +1578,106 @@ export class Store {
     }
     await Store.prefs.put('histSync', on ? '1' : '0');
     await Store.prefs.flush();
+  }
+
+  // ---------- 收藏 WebDAV 云同步 ----------
+
+  /** 收藏同步开关：1=开，0=关（默认关） */
+  static async favSyncEnabled(): Promise<boolean> {
+    if (Store.prefs === null) {
+      return false;
+    }
+    return (await Store.prefs.get('favSync', '0') as string) === '1';
+  }
+
+  static async setFavSyncEnabled(on: boolean): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('favSync', on ? '1' : '0');
+    await Store.prefs.flush();
+  }
+
+  /** 收藏同步文件的 URL（放在和历史同一个目录） */
+  private static favSyncUrl(src: WebdavSource): string {
+    const origin: string = Webdav.originOf(src.url);
+    const base: string = Webdav.mountHref(src);
+    const dir: string = base === '/' ? '' : base;
+    return origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86/favorites.json';
+  }
+
+  /**
+   * 把本地收藏上传到第一个 WebDAV 源。
+   * 失败静默——同步是后台行为，不该打断看片。
+   */
+  static async syncFavToWebDAV(): Promise<void> {
+    if (!await Store.favSyncEnabled()) {
+      return;
+    }
+    const sources: WebdavSource[] = await Store.webdavSources();
+    if (sources.length === 0) {
+      return;
+    }
+    const list: FavItem[] = await Store.favorites();
+    try {
+      const url: string = Store.favSyncUrl(sources[0]);
+      const body: string = JSON.stringify({ time: Date.now(), items: list });
+      await Http.put(url, body, Webdav.authHeader(sources[0]), 10000);
+    } catch (e) {
+      // 静默失败
+    }
+  }
+
+  /**
+   * 从 WebDAV 拉取收藏并与本地按 time 合并。
+   *
+   * 关键在「取消收藏也要能同步」：只做并集的话，A 设备取消收藏、B 设备上这条
+   * 会一直留着（time 大的那方永远赢）。所以两边都带删除标记不行，最实用的是
+   * 上传整份列表（覆盖），拉取时按 time 合并。要删的条目由「最近一次操作」决定：
+   * 本地刚取消 → time 更大的「删除」如何表达？—— JSON 里只存存在条目，拉取方把
+   * 远程有本地没有的合并进来即可；真正删掉一条的语义是「从两台设备都删掉」，
+   * 这需要删除墓碑，复杂度不值当，先支持「多端合并 + 手动清理」。
+   */
+  static async pullFavFromWebDAV(): Promise<void> {
+    if (!await Store.favSyncEnabled()) {
+      return;
+    }
+    const sources: WebdavSource[] = await Store.webdavSources();
+    if (sources.length === 0) {
+      return;
+    }
+    try {
+      const url: string = Store.favSyncUrl(sources[0]);
+      const txt: string = await Http.text(url, Webdav.authHeader(sources[0]), 8000);
+      if (txt.length === 0) {
+        return;
+      }
+      const parsedObj: Record<string, Object> = JSON.parse(Cms.cleanJson(txt)) as Record<string, Object>;
+      const remote: FavItem[] = (parsedObj && parsedObj['items']) ? parsedObj['items'] as FavItem[] : [];
+      if (remote.length === 0) {
+        return;
+      }
+      const local: FavItem[] = await Store.favorites();
+      const map: Record<string, FavItem> = {};
+      for (const it of local) {
+        map[it.siteKey + '|' + it.vodId] = it;
+      }
+      for (const it of remote) {
+        const k: string = it.siteKey + '|' + it.vodId;
+        const exist = map[k];
+        if (!exist || (it.time || 0) > (exist.time || 0)) {
+          map[k] = it;
+        }
+      }
+      const merged: FavItem[] = Object.values(map);
+      merged.sort((a, b) => (b.time || 0) - (a.time || 0));
+      if (Store.prefs !== null) {
+        await Store.prefs.put('fav', JSON.stringify(merged));
+        await Store.prefs.flush();
+      }
+    } catch (e) {
+      // 静默失败
+    }
   }
 
   /**
