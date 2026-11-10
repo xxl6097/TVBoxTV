@@ -12,6 +12,7 @@ import router from '@ohos.router';
 import hilog from '@ohos.hilog';
 import common from '@ohos.app.ability.common';
 import { Store, FavChannel } from '../common/Store';
+import { ArraySource } from '../common/DataSource';
 import { Live } from '../common/Live';
 import { Playlist } from '../common/Playlist';
 import { Channel, LiveDir, Episode, PlayParam, T, RawLive } from '../common/Model';
@@ -59,6 +60,16 @@ struct LivePage {
   private lastFavMs: number = 0;
   /** 下拉刷新的转圈状态（Refresh 组件要求双向绑定） */
   @State refreshing: boolean = false;
+  /**
+   * 频道网格的数据源（LazyForEach）。
+   *
+   * 几百台的源用 ForEach 会一次性建出几百个 GridItem，首屏又慢又占内存；
+   * LazyForEach 只建可视区附近的（配合 Grid 的 cachedCount）。
+   * `chCount` 是同一份数据的长度，只用来驱动空态判断——数据源本身不是状态变量，
+   * 改了它 ArkUI 不会重绘，所以长度得单独存一份。
+   */
+  private chSrc: ArraySource<Channel> = new ArraySource<Channel>();
+  @State chCount: number = 0;
 
   // ---------- 测速排行 / 可用性检测 ----------
   /** 测速面板是否打开 */
@@ -102,6 +113,7 @@ struct LivePage {
     const curEp: Episode | null = Playlist.current();
     if (curEp !== null && curEp.url.length > 0) {
       this.curUrl = curEp.url;
+      this.sync();
     }
     const cur: string = this.url;
     Store.liveUrl().then((u: string) => {
@@ -174,6 +186,7 @@ struct LivePage {
       this.err = '直播源加载失败：' + (e as Error).message;
     } finally {
       this.loading = false;
+      this.sync();
     }
   }
 
@@ -288,6 +301,19 @@ struct LivePage {
     return out;
   }
 
+  /**
+   * 把「当前该显示的频道」推给 LazyForEach 的数据源。
+   *
+   * 所有会改变这份列表的地方都要调一次：换分组、搜索词变化、收藏/取消、
+   * 失效标记更新、换源刷新、从播放页返回（当前台高亮变了）。
+   * 漏掉的直接现象就是「点了没反应」——列表还停在旧数据上。
+   */
+  private sync(): void {
+    const list: Channel[] = this.channels();
+    this.chCount = list.length;
+    this.chSrc.set(list);
+  }
+
   /** 读取收藏列表 */
   async loadFav(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -321,6 +347,8 @@ struct LivePage {
     f.group = ch.group;
     const added: boolean = await Store.toggleFavChannel(f);
     await this.loadFav();
+    // 星标/收藏视图内容都变了，整表重推一次（LazyForEach 不会自己发现 isFav 变了）
+    this.sync();
     hilog.info(0x1000, 'BOXN', 'fav toggle %{public}s -> %{public}s', ch.name, '' + added);
     Tip.show(added ? ('已收藏「' + ch.name + '」') : ('已取消收藏「' + ch.name + '」'));
   }
@@ -337,6 +365,7 @@ struct LivePage {
       this.sel2 = -1;
       this.sel3 = -1;
     }
+    this.sync();
   }
 
   pick1(i: number): void {
@@ -344,17 +373,20 @@ struct LivePage {
     this.sel1 = i;
     this.sel2 = -1;
     this.sel3 = -1;
+    this.sync();
   }
 
   pick2(i: number): void {
     this.selFav = false;
     this.sel2 = i;
     this.sel3 = -1;
+    this.sync();
   }
 
   pick3(i: number): void {
     this.selFav = false;
     this.sel3 = i;
+    this.sync();
   }
 
   /** 面包屑：央视频道 › 央视 › 高清，任一级没选就显示「全部」 */
@@ -641,6 +673,8 @@ struct LivePage {
 
     this.checking = false;
     this.checkProgress = '';
+    // 失效台要在列表上标灰+删除线，标记是一次性成片更新的，测完整表重推一次
+    this.sync();
     hilog.info(0x1000, 'BOXN', 'chk done dead=%{public}d of %{public}d', deadCount, use.length);
     if (deadCount === 0) {
       Tip.show('这 ' + use.length + ' 台全部可连');
@@ -953,6 +987,7 @@ struct LivePage {
                   // 而搜索框已经看不见了，用户会以为频道没了
                   if (!this.showSearch) {
                     this.kw = '';
+                    this.sync();
                   }
                 });
               })
@@ -1058,6 +1093,7 @@ struct LivePage {
               .onBlur(() => this.hover('kwin', false))
               .onChange((v: string) => {
                 this.kw = v;
+                this.sync();
               })
             if (this.kw.length > 0) {
               Text('清除')
@@ -1076,6 +1112,7 @@ struct LivePage {
                 .onClick(() => {
                   Feedback.tap();
                   this.kw = '';
+                  this.sync();
                 })
             }
           }
@@ -1138,13 +1175,22 @@ struct LivePage {
             Scroll() {
               Column() {
                 // 「我的收藏」置顶：直播动辄几百台，常看的就那几台，
-                // 放在分组树最上面比翻目录快得多
-                this.TreeItem('★ 我的收藏', this.favChans.length, 0, this.selFav, 'fav', () => {
-                  this.pickFav();
-                })
-                this.TreeItem('全部频道', this.root.count, 0, !this.selFav && this.sel1 < 0, 'all', () => {
-                  this.pick1(-1);
-                })
+                // 放在分组树最上面比翻目录快得多。
+                //
+                // 外面套一层 ForEach 是为了「让计数和高亮能刷新」：@Builder 的参数是
+                // 按值传的，收藏数从 0 变 1 时 TreeItem 不会重建（实测数字一直停在旧值）。
+                // 把数字编进 key，key 一变整项重建。
+                ForEach([this.favChans.length + (this.selFav ? 'y' : 'n')], (fk: string) => {
+                  this.TreeItem('★ 我的收藏', this.favChans.length, 0, this.selFav, 'fav', () => {
+                    this.pickFav();
+                  })
+                }, (fk: string) => 'fav_' + fk)
+                // 「全部频道」的选中态同时取决于 selFav，key 里得带上它，
+                // 否则点了收藏再点回来，这一项的高亮不会恢复
+                this.TreeItem('全部频道', this.root.count, 0, !this.selFav && this.sel1 < 0,
+                  'all_' + (this.selFav ? 'f' : 'a'), () => {
+                    this.pick1(-1);
+                  })
                 ForEach(this.l1(), (d1: LiveDir, i1: number) => {
                   this.TreeItem(d1.name, d1.count, 0, this.sel1 === i1 && this.sel2 < 0, 'a' + d1.name, () => {
                     this.pick1(i1);
@@ -1180,7 +1226,7 @@ struct LivePage {
             .height('100%')
             .scrollBar(BarState.Off)
 
-            if (this.channels().length === 0) {
+            if (this.chCount === 0) {
               // 空态分三种：收藏为空、搜不到、分组本身没台——给不同的话，
               // 用户才知道下一步该干什么（去收藏 / 换关键词 / 换分组）
               Column() {
@@ -1206,7 +1252,7 @@ struct LivePage {
               // 滚动位置，手势不会被识别（实测怎么拉都不刷新）
               Refresh({ refreshing: $$this.refreshing }) {
                 Grid() {
-                ForEach(this.channels(), (ch: Channel) => {
+                LazyForEach(this.chSrc, (ch: Channel, idx: number) => {
                   GridItem() {
                     // Stack 的尺寸由里面那个 Text 撑出来（**不能写 height('100%')**：
                     // GridItem 里 100% 会被解析成整个网格的高度，星标就飘到网格顶上去，
@@ -1287,15 +1333,16 @@ struct LivePage {
                   )
                 },
                 // key 里只放「数据态」（是否失效 / 是否当前台 / 是否已收藏），**绝不能放悬停态**：
-                // ForEach 只按 key 判断要不要重建，把悬停编进 key 会变成
+                // 列表只按 key 判断要不要重建，把悬停编进 key 会变成
                 // 「指针悬停 → key 变 → 格子重建 → 新节点又触发悬停 → 再重建」的活循环，
                 // 格子每秒被销毁重建好几次，按下去的那一下永远落在已销毁的节点上——
                 // 用灵犀指向遥控就表现为「指着某个台点下去毫无反应」。
                 // 悬停高亮本来就走状态绑定，不需要重建也能刷新。
-                (ch: Channel) => 'ch' + ch.name + ch.url +
+                // 末尾带下标：同名同地址的台（多线路）在不同分组里会重复，光靠 name+url 会撞 key
+                (ch: Channel, idx: number) => 'ch' + ch.name + ch.url +
                   (this.isDead(ch.url) ? 'd' : 'a') +
                   (this.isCur(ch) ? 'c' : '') +
-                  (this.isFav(ch) ? 'f' : ''))
+                  (this.isFav(ch) ? 'f' : '') + '_' + idx)
               }
               .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
               .columnsGap(10)
