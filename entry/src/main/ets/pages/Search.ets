@@ -42,6 +42,8 @@ struct SearchPage {
   @State sugg: Sug[] = [];
   /** 热门推荐：来自首页 feed，最多 12 张，空态时展示 */
   @State hotVods: Vod[] = [];
+  /** 下拉重搜的转圈状态（Refresh 组件要求双向绑定） */
+  @State refreshing: boolean = false;
   /** 联想候选池：搜索历史 + 首页最近更新片名，进页面收集一次 */
   private pool: Sug[] = [];
   /** 搜索序号：连续搜索时用来丢弃上一轮的延迟结果 */
@@ -550,6 +552,9 @@ struct SearchPage {
       .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring)
     } else {
+      // 下拉重搜：换个站源顺序或站源刚恢复时，用户的第一反应都是往下拉一把。
+      // Refresh 必须**直接**套在 List 上，中间夹容器就识别不到滚动位置
+      Refresh({ refreshing: $$this.refreshing }) {
       List({ space: 6 }) {
         ForEach(this.groups, (g: Group) => {
           ListItem() {
@@ -598,9 +603,19 @@ struct SearchPage {
         }, (g: Group) => 'g' + g.key)
       }
       .width('100%')
-      .layoutWeight(1)
+      .height('100%')
       .padding({ left: 24, right: 24, bottom: 24 })
       .scrollBar(BarState.Auto)
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .onRefreshing(() => {
+        this.refreshing = true;
+        // 搜索本身不缓存，重跑一遍就是最新结果
+        this.doSearch().then(() => {
+          this.refreshing = false;
+        });
+      })
     }
   }
 

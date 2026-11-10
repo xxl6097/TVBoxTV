@@ -13,6 +13,7 @@
 
 import { Feedback } from '../common/Feedback';
 import router from '@ohos.router';
+import hilog from '@ohos.hilog';
 import common from '@ohos.app.ability.common';
 import { Store } from '../common/Store';
 import { Cms } from '../common/Cms';
@@ -65,6 +66,8 @@ struct VodList {
   /** 分类表拉取失败。重试按钮据此决定是「重拉分类」还是「重拉列表」 */
   @State catFailed: boolean = false;
   @State hoverKey: string = '';
+  /** 下拉刷新的转圈状态（Refresh 组件要求双向绑定） */
+  @State refreshing: boolean = false;
   @State showSites: boolean = false;
   @State showFilter: boolean = false;
   /** 换站弹窗搜索框内容，实时过滤站源列表 */
@@ -589,6 +592,11 @@ struct VodList {
         .width('100%')
         .padding({ left: 24, right: 24, bottom: 6 })
       }
+      // 下拉刷新：重新拉当前分类的第一页。顶栏那个「刷新」在电视上更顺手，
+      // 但手机用户的下意识动作是往下拉，两条路都留着成本很低。
+      // Refresh 必须**直接**套在可滚动组件上——中间夹一层容器时它拿不到滚动位置，
+      // 手势根本不会被识别（直播页踩过同一个坑）
+      Refresh({ refreshing: $$this.refreshing }) {
       Grid() {
         ForEach(this.items, (v: Vod) => {
           GridItem() {
@@ -619,12 +627,28 @@ struct VodList {
       .columnsGap(12)
       .rowsGap(20)
       .width('100%')
-      .layoutWeight(1)
+      // 在 Refresh 里只能给 height('100%')：拿到父容器完整高度它才会自己滚，
+      // 给 layoutWeight 时高度由 Refresh 的测量结果决定，行数一多就撑到屏幕外
+      .height('100%')
       .padding({ left: 24, right: 24, top: 8, bottom: 24 })
       .scrollBar(BarState.Off)
       .cachedCount(12)
+      // Spring 的回弹会把「已到顶后的那段下拉」吃掉，手势传不到 Refresh
+      .edgeEffect(EdgeEffect.None)
       .onReachEnd(() => {
         this.onEnd();
+      })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .onRefreshing(() => {
+        this.refreshing = true;
+        hilog.info(0x1000, 'BOXN', 'vod pull-refresh cat=%{public}s', this.curCat.name);
+        // 走 reloadNow：它会清接口缓存。不清缓存的话下拉拿到的还是 90 秒内的
+        // 旧响应，用户拉一把看不到任何变化，会当成「没反应」
+        this.reloadNow().then(() => {
+          this.refreshing = false;
+        });
       })
       // 翻页失败时在底部给一条可点的重试行。以前这里什么都没有，
       // onEnd 又被 err 永久挡住 —— 用户只能换分类才能继续看。
