@@ -11,7 +11,7 @@ import { Feedback } from '../common/Feedback';
 import router from '@ohos.router';
 import hilog from '@ohos.hilog';
 import common from '@ohos.app.ability.common';
-import { Store } from '../common/Store';
+import { Store, FavChannel } from '../common/Store';
 import { Live } from '../common/Live';
 import { Playlist } from '../common/Playlist';
 import { Channel, LiveDir, Episode, PlayParam, T, RawLive } from '../common/Model';
@@ -43,6 +43,18 @@ struct LivePage {
   @State curUrl: string = '';
   @State hoverKey: string = '';
 
+  // ---------- 收藏 / 搜索 ----------
+  /** 收藏的直播频道，按收藏时间倒序 */
+  @State favChans: FavChannel[] = [];
+  /** 左侧目录停在「我的收藏」而不是某个源分组 */
+  @State selFav: boolean = false;
+  /** 频道名关键词，空串 = 不过滤 */
+  @State kw: string = '';
+  /** 搜索框是否展开。电视端默认收起（遥控打字麻烦），手机端默认展开 */
+  @State showSearch: boolean = false;
+  /** 长按收藏时用来避免同一次长按又触发点击进播放 */
+  private lastFavMs: number = 0;
+
   // ---------- 测速排行 / 可用性检测 ----------
   /** 测速面板是否打开 */
   @State showSpeed: boolean = false;
@@ -65,6 +77,9 @@ struct LivePage {
   private openAt: number = 0;
 
   aboutToAppear(): void {
+    // 手机竖屏横向空间够，搜索框直接展开；电视端收起，点「搜索」再出
+    this.showSearch = this.isPhone;
+    this.loadFav();
     this.boot();
   }
 
@@ -78,6 +93,7 @@ struct LivePage {
   onPageShow(): void {
     // 从播放页返回：同步「当前频道」高亮。播放页里可能换了台（Playlist 游标变了），
     // 这里把 current 的地址记下来，频道网格据此标出正在看的台。
+    this.loadFav();
     const curEp: Episode | null = Playlist.current();
     if (curEp !== null && curEp.url.length > 0) {
       this.curUrl = curEp.url;
@@ -199,8 +215,8 @@ struct LivePage {
     return out;
   }
 
-  /** 当前选中的那一层往下递归收全部频道 */
-  channels(): Channel[] {
+  /** 当前选中的那一层往下递归收全部频道（不含搜索过滤） */
+  private rawChannels(): Channel[] {
     const out: Channel[] = [];
     const a: LiveDir[] = this.l3();
     if (this.sel3 >= 0 && this.sel3 < a.length) {
@@ -221,23 +237,126 @@ struct LivePage {
     return out;
   }
 
+  /** 收藏项转成频道对象，好让网格和播放列表复用同一套逻辑 */
+  private favAsChannels(): Channel[] {
+    const out: Channel[] = [];
+    for (let i = 0; i < this.favChans.length; i++) {
+      const f: FavChannel = this.favChans[i];
+      const c = new Channel();
+      c.name = f.name;
+      c.url = f.url;
+      c.group = f.group;
+      c.urls.push(f.url);
+      out.push(c);
+    }
+    return out;
+  }
+
+  /** 关键词匹配：不区分大小写，空关键词一律通过 */
+  private hit(ch: Channel): boolean {
+    const k: string = this.kw.trim().toLowerCase();
+    if (k.length === 0) {
+      return true;
+    }
+    return ch.name.toLowerCase().indexOf(k) >= 0;
+  }
+
+  /**
+   * 网格要显示的频道。
+   *
+   * 「我的收藏」和搜索是两条互相独立的过滤轴：
+   *   - 停在我的收藏 → 只显示收藏台；
+   *   - 有关键词 → 在「当前所在集合」里再筛一遍。
+   * 两者叠加是符合直觉的（在收藏里再搜某个台），而不是互相覆盖。
+   */
+  channels(): Channel[] {
+    const base: Channel[] = this.selFav ? this.favAsChannels() : this.rawChannels();
+    if (this.kw.trim().length === 0) {
+      return base;
+    }
+    const out: Channel[] = [];
+    for (let i = 0; i < base.length; i++) {
+      if (this.hit(base[i])) {
+        out.push(base[i]);
+      }
+    }
+    return out;
+  }
+
+  /** 读取收藏列表 */
+  async loadFav(): Promise<void> {
+    await Store.init(getContext(this) as common.UIAbilityContext);
+    this.favChans = await Store.favChannels();
+  }
+
+  /** 某个频道是否已收藏 */
+  isFav(ch: Channel): boolean {
+    for (let i = 0; i < this.favChans.length; i++) {
+      if (this.favChans[i].url === ch.url) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 长按频道格子收藏 / 取消收藏。
+   *
+   * 为什么用长按而不是格子角上的星标：这块 Grid 的点击是挂在 GridItem 上的
+   * （见下方注释，格子比文字大一圈，只挂文字会点不到），角上加小按钮会和
+   * 整格点击抢事件，指针遥控对不准还会误触进播放页。长按不占视觉空间，
+   * 触屏和遥控（按住确定键）都能用。
+   */
+  async toggleFav(ch: Channel): Promise<void> {
+    // 记下时间，onClick 里据此跳过「长按抬起后紧跟的那次点击」
+    this.lastFavMs = Date.now();
+    const f = new FavChannel();
+    f.name = ch.name;
+    f.url = ch.url;
+    f.group = ch.group;
+    const added: boolean = await Store.toggleFavChannel(f);
+    await this.loadFav();
+    hilog.info(0x1000, 'BOXN', 'fav toggle %{public}s -> %{public}s', ch.name, '' + added);
+    Tip.show(added ? ('已收藏「' + ch.name + '」') : ('已取消收藏「' + ch.name + '」'));
+  }
+
+  /** 进入 / 离开「我的收藏」 */
+  pickFav(): void {
+    this.selFav = !this.selFav;
+    if (this.selFav) {
+      this.sel1 = -1;
+      this.sel2 = -1;
+      this.sel3 = -1;
+    } else {
+      this.sel1 = this.root.children.length > 0 ? 0 : -1;
+      this.sel2 = -1;
+      this.sel3 = -1;
+    }
+  }
+
   pick1(i: number): void {
+    this.selFav = false;
     this.sel1 = i;
     this.sel2 = -1;
     this.sel3 = -1;
   }
 
   pick2(i: number): void {
+    this.selFav = false;
     this.sel2 = i;
     this.sel3 = -1;
   }
 
   pick3(i: number): void {
+    this.selFav = false;
     this.sel3 = i;
   }
 
   /** 面包屑：央视频道 › 央视 › 高清，任一级没选就显示「全部」 */
   crumb(): string {
+    if (this.selFav) {
+      return '我的收藏';
+    }
     let s: string = '';
     const a: LiveDir[] = this.l1();
     s = (this.sel1 >= 0 && this.sel1 < a.length) ? a[this.sel1].name : '全部';
@@ -246,6 +365,11 @@ struct LivePage {
     const c: LiveDir[] = this.l3();
     if (c.length > 0) {
       s = s + ' › ' + ((this.sel3 >= 0 && this.sel3 < c.length) ? c[this.sel3].name : '全部');
+    }
+    if (this.kw.trim().length > 0) {
+      // 搜索时补一个命中数：用户得知道自己筛出来了几台，
+      // 否则「列表变短了」和「源挂了」看起来是一样的
+      s = s + ' · 搜到 ' + this.channels().length + ' 台';
     }
     return s;
   }
@@ -799,6 +923,35 @@ struct LivePage {
             }
           }
           Blank()
+          // 电视端搜索框默认收起：遥控器打字慢，常驻一排输入框只是占地方。
+          // 手机端横竖都有位置，搜索框直接常显（见下方 showSearch 初始值）
+          if (!this.isPhone) {
+            Text('搜索')
+              .fontSize(15)
+              .fontColor(this.showSearch ? T.TXT : T.SUB)
+              .height(40)
+              .padding({ left: 14, right: 14 })
+              .margin({ right: 4 })
+              .borderRadius(T.RADIUS)
+              .textAlign(TextAlign.Center)
+              .backgroundColor(this.showSearch ? T.CARD : (this.hi('srch') ? T.CARD_HI : '#00000000'))
+              .border({ width: T.BORDER, color: this.hi('srch') ? T.TXT : '#00000000' })
+              .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+              .focusable(true)
+              .onFocus(() => this.hover('srch', true))
+              .onBlur(() => this.hover('srch', false))
+              .onHover((hv: boolean) => this.hover('srch', hv))
+              .onClick(() => {
+                this.fire('srch', () => {
+                  this.showSearch = !this.showSearch;
+                  // 收起时清空关键词，否则列表会一直停在上次的过滤结果里，
+                  // 而搜索框已经看不见了，用户会以为频道没了
+                  if (!this.showSearch) {
+                    this.kw = '';
+                  }
+                });
+              })
+          }
           // 三个按钮的顺序按「越常用越靠右」排：刷新最常用，换源其次。
           // 「换源」打开源列表面板：点一下就能换源，测速只是面板里的可选动作。
           Text(this.testing ? ('测速 ' + this.testProgress) : '换源')
@@ -882,6 +1035,50 @@ struct LivePage {
         .width('100%')
         .padding({ left: 24, right: 24, top: 24, bottom: 8 })
 
+        // 频道搜索框。只按台名过滤（几百台里按名字找是最常见的诉求，
+        // 分组切换已经由左侧目录承担，两套过滤放进一个框反而会互相打架）
+        if (this.showSearch && !this.loading && this.err.length === 0) {
+          Row() {
+            TextInput({ text: this.kw, placeholder: '搜索频道名，如 CCTV5、湖南卫视' })
+              .placeholderColor(T.DIM)
+              .fontSize(14)
+              .fontColor(T.TXT)
+              .placeholderFont({ size: 14 })
+              .backgroundColor(T.CARD)
+              .borderRadius(T.RADIUS_SM)
+              .border({ width: T.BORDER, color: this.hi('kwin') ? T.TXT : '#00000000' })
+              .height(38)
+              .layoutWeight(1)
+              .onFocus(() => this.hover('kwin', true))
+              .onBlur(() => this.hover('kwin', false))
+              .onChange((v: string) => {
+                this.kw = v;
+              })
+            if (this.kw.length > 0) {
+              Text('清除')
+                .fontSize(13)
+                .fontColor(this.hi('kwclr') ? T.TXT : T.SUB)
+                .height(38)
+                .padding({ left: 14, right: 14 })
+                .margin({ left: 8 })
+                .borderRadius(T.RADIUS_SM)
+                .textAlign(TextAlign.Center)
+                .backgroundColor(this.hi('kwclr') ? T.CARD_HI : '#00000000')
+                .focusable(true)
+                .onFocus(() => this.hover('kwclr', true))
+                .onBlur(() => this.hover('kwclr', false))
+                .onHover((hv: boolean) => this.hover('kwclr', hv))
+                .onClick(() => {
+                  Feedback.tap();
+                  this.kw = '';
+                })
+            }
+          }
+          .width('100%')
+          .padding({ left: 24, right: 24 })
+          .margin({ top: 0, bottom: 6 })
+        }
+
         // 手机竖屏：台数/面包屑放到顶栏第二行，避免和右侧按钮挤在一起把「刷新」顶出屏幕
         if (this.isPhone && this.root.count > 0) {
           Row() {
@@ -935,7 +1132,12 @@ struct LivePage {
           Row() {
             Scroll() {
               Column() {
-                this.TreeItem('全部频道', this.root.count, 0, this.sel1 < 0, 'all', () => {
+                // 「我的收藏」置顶：直播动辄几百台，常看的就那几台，
+                // 放在分组树最上面比翻目录快得多
+                this.TreeItem('★ 我的收藏', this.favChans.length, 0, this.selFav, 'fav', () => {
+                  this.pickFav();
+                })
+                this.TreeItem('全部频道', this.root.count, 0, !this.selFav && this.sel1 < 0, 'all', () => {
                   this.pick1(-1);
                 })
                 ForEach(this.l1(), (d1: LiveDir, i1: number) => {
@@ -973,79 +1175,132 @@ struct LivePage {
             .height('100%')
             .scrollBar(BarState.Off)
 
-            Grid() {
-              ForEach(this.channels(), (ch: Channel) => {
-                GridItem() {
-                  Text(ch.name)
-                    // 手机两列时格子只有 ~85vp 宽，"CCTV5体育"按 14fp 排需要 ~75vp，
-                    // 减去左右 padding 后正好差几个像素，于是被硬断成「CCTV5体 / 育」。
-                    // 手机端降一档字号：整串能进一行，长一点的也断在中英交界
-                    // （"CCTV5+" / "体育赛事"），而不是拦腰切一个汉字。
-                    .fontSize(this.isPhone ? 13 : 14)
-                    // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
-                    // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
-                    .fontColor(this.isDead(ch.url) ? '#5AFFFFFF' : (this.isCur(ch) ? T.SELECTED : T.TXT))
-                    .decoration({
-                      type: this.isDead(ch.url) ? TextDecorationType.LineThrough : TextDecorationType.None,
-                      color: '#4DFFFFFF'
-                    })
+            if (this.channels().length === 0) {
+              // 空态分三种：收藏为空、搜不到、分组本身没台——给不同的话，
+              // 用户才知道下一步该干什么（去收藏 / 换关键词 / 换分组）
+              Column() {
+                Text(this.selFav && this.kw.trim().length === 0 ? '还没有收藏频道' :
+                  (this.kw.trim().length > 0 ? ('没有匹配「' + this.kw.trim() + '」的频道') : '这个分组没有频道'))
+                  .fontSize(16)
+                  .fontColor(T.SUB)
+                  .textAlign(TextAlign.Center)
+                Text(this.selFav && this.kw.trim().length === 0 ? '长按任意频道卡片即可收藏' :
+                  (this.kw.trim().length > 0 ? '换个关键词试试' : '换左边别的分组看看'))
+                  .fontSize(13)
+                  .fontColor(T.DIM)
+                  .margin({ top: 8 })
+                  .textAlign(TextAlign.Center)
+              }
+              .width('100%')
+              .layoutWeight(1)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+            } else {
+              Grid() {
+                ForEach(this.channels(), (ch: Channel) => {
+                  GridItem() {
+                    // Stack 的尺寸由里面那个 Text 撑出来（**不能写 height('100%')**：
+                    // GridItem 里 100% 会被解析成整个网格的高度，星标就飘到网格顶上去，
+                    // 实测「★」跑到屏幕最上面而不是格子右上角）
+                    Stack({ alignContent: Alignment.TopEnd }) {
+                      Text(ch.name)
+                        // 手机两列时格子只有 ~85vp 宽，"CCTV5体育"按 14fp 排需要 ~75vp，
+                        // 减去左右 padding 后正好差几个像素，于是被硬断成「CCTV5体 / 育」。
+                        // 手机端降一档字号：整串能进一行，长一点的也断在中英交界
+                        // （"CCTV5+" / "体育赛事"），而不是拦腰切一个汉字。
+                        .fontSize(this.isPhone ? 13 : 14)
+                        // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
+                        // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
+                        .fontColor(this.isDead(ch.url) ? '#5AFFFFFF' : (this.isCur(ch) ? T.SELECTED : T.TXT))
+                        .decoration({
+                          type: this.isDead(ch.url) ? TextDecorationType.LineThrough : TextDecorationType.None,
+                          color: '#4DFFFFFF'
+                        })
+                        .width('100%')
+                        .height(58)
+                        .borderRadius(T.RADIUS_SM)
+                        .textAlign(TextAlign.Center)
+                        .maxLines(2)
+                        // 保留西文单词完整，配合上面的字号让断点落在中英文交界处。
+                        .wordBreak(WordBreak.BREAK_WORD)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .padding({ left: 6, right: 6 })
+                        .backgroundColor(this.isCur(ch) ? T.CARD_HI :
+                          (this.hi('ch_' + ch.name + ch.url) ? T.CARD_HI : '#00000000'))
+                        .border({
+                          width: T.BORDER,
+                          color: this.isCur(ch) ? T.SELECTED :
+                            (this.hi('ch_' + ch.name + ch.url) ? T.TXT : '#00000000')
+                        })
+                        .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                        .focusable(true)
+                        .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
+                        .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
+                        .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
+
+                      if (this.isFav(ch)) {
+                        Text('★')
+                          .fontSize(11)
+                          .fontColor(T.SELECTED)
+                          .margin({ top: 3, right: 5 })
+                          // 星标不参与事件，否则点在星星上会吞掉整格的点击
+                          .hitTestBehavior(HitTestMode.None)
+                      }
+                    }
                     .width('100%')
-                    .height(58)
-                    .borderRadius(T.RADIUS_SM)
-                    .textAlign(TextAlign.Center)
-                    .maxLines(2)
-                    // 保留西文单词完整，配合上面的字号让断点落在中英文交界处。
-                    .wordBreak(WordBreak.BREAK_WORD)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .padding({ left: 6, right: 6 })
-                    .backgroundColor(this.isCur(ch) ? T.CARD_HI :
-                      (this.hi('ch_' + ch.name + ch.url) ? T.CARD_HI : '#00000000'))
-                    .border({
-                      width: T.BORDER,
-                      color: this.isCur(ch) ? T.SELECTED :
-                        (this.hi('ch_' + ch.name + ch.url) ? T.TXT : '#00000000')
-                    })
-                    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-                    .focusable(true)
-                    .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
-                    .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
-                    .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
-                }
-                // 点击挂在 GridItem 上而不是里面那个 Text 上：
-                // Grid 的行高是按可用高度均分的，格子（约 110vp）比 Text(58vp) 高不少，
-                // 只把 onClick 挂在 Text 上时，点格子上下那圈空白完全没反应——
-                // 电视上用指针遥控器对不准文字就表现为「点了没反应」。
-                .onClick(() => {
-                  this.tapChannel(ch);
-                })
-                // 灵犀指向遥控发的是鼠标事件：指针悬停就把焦点抢走，onClick 常常被吃掉，
-                // 所以这里再挂一份 onMouse，按「按下+抬起都在本格」算一次点击。
-                .onMouse(Pointer.pressRelease('ch:' + ch.name, () => {
-                  this.tapChannel(ch);
-                }))
-              },
-              // key 里只放「数据态」（是否失效 / 是否当前台），**绝不能放悬停态**：
-              // ForEach 只按 key 判断要不要重建，把悬停编进 key 会变成
-              // 「指针悬停 → key 变 → 格子重建 → 新节点又触发悬停 → 再重建」的活循环，
-              // 格子每秒被销毁重建好几次，按下去的那一下永远落在已销毁的节点上——
-              // 用灵犀指向遥控就表现为「指着某个台点下去毫无反应」。
-              // 悬停高亮本来就走状态绑定，不需要重建也能刷新。
-              (ch: Channel) => 'ch' + ch.name + ch.url +
-                (this.isDead(ch.url) ? 'd' : 'a') +
-                (this.isCur(ch) ? 'c' : ''))
+                  }
+                  // 点击挂在 GridItem 上而不是里面那个 Text 上：
+                  // Grid 的行高是按可用高度均分的，格子（约 110vp）比 Text(58vp) 高不少，
+                  // 只把 onClick 挂在 Text 上时，点格子上下那圈空白完全没反应——
+                  // 电视上用指针遥控器对不准文字就表现为「点了没反应」。
+                  .onClick(() => {
+                    // 长按收藏后的抬手会再补一次 click，这里 900ms 内直接吞掉，
+                    // 否则「想收藏」会变成「收藏 + 进播放页」
+                    if (Date.now() - this.lastFavMs < 900) {
+                      return;
+                    }
+                    this.tapChannel(ch);
+                  })
+                  // 灵犀指向遥控发的是鼠标事件：指针悬停就把焦点抢走，onClick 常常被吃掉，
+                  // 所以这里再挂一份 onMouse，按「按下+抬起都在本格」算一次点击。
+                  .onMouse(Pointer.pressRelease('ch:' + ch.name, () => {
+                    if (Date.now() - this.lastFavMs < 900) {
+                      return;
+                    }
+                    this.tapChannel(ch);
+                  }))
+                  // 长按收藏 / 取消收藏（触屏长按、遥控按住确定键都走这里）
+                  .gesture(
+                    LongPressGesture({ repeat: false, duration: 600 })
+                      .onAction(() => {
+                        this.toggleFav(ch);
+                      })
+                  )
+                },
+                // key 里只放「数据态」（是否失效 / 是否当前台 / 是否已收藏），**绝不能放悬停态**：
+                // ForEach 只按 key 判断要不要重建，把悬停编进 key 会变成
+                // 「指针悬停 → key 变 → 格子重建 → 新节点又触发悬停 → 再重建」的活循环，
+                // 格子每秒被销毁重建好几次，按下去的那一下永远落在已销毁的节点上——
+                // 用灵犀指向遥控就表现为「指着某个台点下去毫无反应」。
+                // 悬停高亮本来就走状态绑定，不需要重建也能刷新。
+                (ch: Channel) => 'ch' + ch.name + ch.url +
+                  (this.isDead(ch.url) ? 'd' : 'a') +
+                  (this.isCur(ch) ? 'c' : '') +
+                  (this.isFav(ch) ? 'f' : ''))
+              }
+              .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
+              .columnsGap(10)
+              .rowsGap(10)
+              // 这里只能留 layoutWeight(1)，**不能再加 height('100%')**：
+              // 两者同时存在时 Grid 的高度被钉成父容器高度，内部行数超出后不会滚动，
+              // 底下的频道直接看不见也够不到。layoutWeight 会分配「剩余空间」，
+              // 内容超出时 Grid 才会自己滚。
+              .layoutWeight(1)
+              .padding({ left: 12, right: 24, bottom: 24 })
+              .scrollBar(BarState.Off)
+              .cachedCount(20)
+              .edgeEffect(EdgeEffect.Spring)
             }
-            .columnsTemplate(this.isPhone ? '1fr 1fr' : '1fr 1fr 1fr 1fr')
-            .columnsGap(10)
-            .rowsGap(10)
-            // 这里只能留 layoutWeight(1)，**不能再加 height('100%')**：
-            // 两者同时存在时 Grid 的高度被钉成父容器高度，内部行数超出后不会滚动，
-            // 底下的频道直接看不见也够不到。layoutWeight 会分配「剩余空间」，
-            // 内容超出时 Grid 才会自己滚。
-            .layoutWeight(1)
-            .padding({ left: 12, right: 24, bottom: 24 })
-            .scrollBar(BarState.Off)
-            .cachedCount(20)
-            .edgeEffect(EdgeEffect.Spring)
           }
           .width('100%')
           .layoutWeight(1)

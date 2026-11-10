@@ -39,6 +39,15 @@ export class FavItem {
   time: number = 0;
 }
 
+/** 直播频道收藏项：频道名 + URL + 分组 + 时间 */
+export class FavChannel {
+  name: string = '';
+  url: string = '';
+  group: string = '';
+  /** 收藏时间戳，用于多设备同步与排序 */
+  time: number = 0;
+}
+
 /** 搜索历史记录项：关键词 + 使用次数 + 最近使用时间 */
 export class KwRecord {
   kw: string = '';
@@ -815,7 +824,8 @@ export class Store {
 
   // ---------- 直播频道收藏 ----------
 
-  static async favChannels(): Promise<string[]> {
+  /** 读取所有收藏的直播频道，按收藏时间倒序 */
+  static async favChannels(): Promise<FavChannel[]> {
     if (Store.prefs === null) {
       return [];
     }
@@ -824,33 +834,42 @@ export class Store {
       return [];
     }
     try {
-      return JSON.parse(s) as string[];
+      const list: FavChannel[] = JSON.parse(s) as FavChannel[];
+      // 按收藏时间倒序（最新收藏的在最前）
+      return list.sort((a, b) => b.time - a.time);
     } catch (_e) {
       return [];
     }
   }
 
-  static async toggleFavChannel(url: string): Promise<boolean> {
+  /** 添加或移除频道收藏，返回 true=添加成功，false=移除成功 */
+  static async toggleFavChannel(ch: FavChannel): Promise<boolean> {
     if (Store.prefs === null) {
       return false;
     }
-    const list: string[] = await Store.favChannels();
-    const idx: number = list.indexOf(url);
+    const list: FavChannel[] = await Store.favChannels();
+    const idx: number = list.findIndex(item => item.url === ch.url);
     if (idx >= 0) {
+      // 已收藏，移除
       list.splice(idx, 1);
       await Store.prefs.put('favChan', JSON.stringify(list));
       await Store.prefs.flush();
       return false;
     }
-    list.push(url);
+    // 未收藏，添加
+    ch.time = Date.now();
+    list.push(ch);
+    // 重新排序
+    list.sort((a, b) => b.time - a.time);
     await Store.prefs.put('favChan', JSON.stringify(list));
     await Store.prefs.flush();
     return true;
   }
 
+  /** 判断频道是否已收藏 */
   static async isFavChannel(url: string): Promise<boolean> {
-    const list: string[] = await Store.favChannels();
-    return list.indexOf(url) >= 0;
+    const list: FavChannel[] = await Store.favChannels();
+    return list.some(item => item.url === url);
   }
 
   // ---------- 直播源 ----------

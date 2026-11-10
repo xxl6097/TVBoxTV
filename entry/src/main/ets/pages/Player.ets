@@ -1063,7 +1063,8 @@ struct Player {
 
       p.on('error', (err: BusinessError) => {
         this.errMsg = '播放失败（code ' + err.code + '）：' + err.message;
-        hilog.error(0x1000, 'BOXN', 'player error code=%{public}d msg=%{public}s', err.code, err.message);
+        hilog.error(0x1000, 'BOXN', 'player error code=%{public}d msg=%{public}s isLive=%{public}s', 
+          err.code, err.message, this.isLive ? 'YES' : 'NO');
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
@@ -1071,11 +1072,13 @@ struct Player {
           // 8秒内的重复错误不换台：网络抖动、缓冲超时等临时问题，不代表频道失效
           // 若频繁报错，放行后 liveFail 计数也有上限（<3），不会无限换
           if (now - this.lastLiveErrMs < LIVE_ERR_WINDOW) {
-            hilog.info(0x1000, 'BOXN', 'live error suppressed (within %{public}dms window)', LIVE_ERR_WINDOW);
+            hilog.info(0x1000, 'BOXN', 'live error suppressed (within %{public}dms window, lastErr=%{public}d now=%{public}d)', 
+              LIVE_ERR_WINDOW, this.lastLiveErrMs, now);
             return;
           }
           this.lastLiveErrMs = now;
           this.liveFail++;
+          hilog.warn(0x1000, 'BOXN', 'live auto-switch: liveFail=%{public}d/3', this.liveFail);
           this.showTip('该频道无法播放，自动换下一个');
           this.switchEpisode(1);
           return;
@@ -1190,12 +1193,15 @@ struct Player {
           this.playing = false;
         } else if (state === 'completed') {
           this.playing = false;
+          hilog.info(0x1000, 'BOXN', 'state=completed, isLive=%{public}s, hasNext=%{public}s', 
+            this.isLive ? 'YES' : 'NO', Playlist.hasNext() ? 'yes' : 'no');
           // 直播不走 completed 自动换台：直播流的 completed 通常是短暂断流
           // 或 HLS 分片结束，不代表频道播完，自动换台会造成正常收看时乱跳
           if (this.isLive) {
             hilog.info(0x1000, 'BOXN', 'live completed, ignore auto-switch');
           } else if (Playlist.hasNext()) {
             // 点播追剧：一集播完自动接下一集
+            hilog.info(0x1000, 'BOXN', 'vod completed, auto next episode');
             this.switchEpisode(1);
           } else {
             this.showOsd = true;
@@ -1522,6 +1528,10 @@ struct Player {
 
   /** 切集 / 换台。delta 为 +1 / -1 */
   async switchEpisode(delta: number): Promise<void> {
+    // 留一行调用记录：直播自动换台这类问题全靠它回溯「谁触发的」。
+    // 不打印调用栈——每次切集都抓 Error().stack 开销明显，而且日志一屏就刷过去了
+    hilog.info(0x1000, 'BOXN', 'switchEpisode delta=%{public}d isLive=%{public}s',
+      delta, this.isLive ? 'YES' : 'NO');
     // 页面已销毁（用户已返回）时不要再换台/换集——那会重新拉起一个播放器
     if (this.closed) {
       return;
