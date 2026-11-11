@@ -804,7 +804,7 @@ struct SearchPage {
     // 上一条 .width/.height 是 Column 的修饰符，写到 if 之后就会被解析到
     // Stack 上，改成 Column 的修饰符链就断了。
     if (this.tipMsg.length > 0) {
-      TipLayer(this.tipMsg)
+      TipLayer({ msg: this.tipMsg })
     }
   }
   .width('100%')

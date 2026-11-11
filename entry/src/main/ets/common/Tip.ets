@@ -9,8 +9,13 @@
  *
  * 用法（任何页面）：
  *   @StorageLink(TIP_MSG) tipMsg: string = '';
- *   build() 最外层 Stack 里加： if (this.tipMsg.length > 0) { TipLayer(this.tipMsg) }
+ *   build() 最外层 Stack 里加： TipLayer({ msg: this.tipMsg })
  *   触发：Tip.show('已收藏')
+ *
+ * 注意：TipLayer 必须是 @Component + @Prop，不能写成 @Builder 函数。
+ * @Builder 的参数是**按值传递**，状态变了不会重建 —— 表现就是「气泡壳子出来了、
+ * 文字却是空的」或「连着两条提示时文字停在上一条」。直播页用 visibility 控制显隐
+ * （不是 if 重建），首帧 tipMsg 是空串，于是气泡可见但一个字都没有。
  *
  * 只用一个 AppStorage 键，所以同一时刻全应用只会有一条提示，
  * 后一条直接覆盖前一条 —— 这正是遥控器快速连按时期望的行为。
@@ -57,28 +62,35 @@ export class Tip {
 /**
  * 提示层。放在页面最外层 Stack 的最后，盖在内容之上、不挡点击。
  * hitTestBehavior 用 Transparent：能看见但不吃事件，底下的按钮照常可点。
+ *
+ * 用 @Component + @Prop 而不是 @Builder：@Prop 会跟着页面上的 tipMsg 一起刷新，
+ * 从「空 → 有字」「A → B」都能正确更新（@Builder 的按值参数两者都做不到）。
  */
-@Builder
-export function TipLayer(msg: string) {
-  Column() {
-    Row() {
-      Text(msg)
-        .fontSize(20)
-        .fontColor(T.TXT)
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.Center)
+@Component
+export struct TipLayer {
+  @Prop msg: string = '';
+
+  build() {
+    Column() {
+      Row() {
+        Text(this.msg)
+          .fontSize(20)
+          .fontColor(T.TXT)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.Center)
+      }
+      .constraintSize({ maxWidth: Device.isPhone() ? '90%' : 720 })
+      .padding({ left: 28, right: 28, top: 14, bottom: 14 })
+      .borderRadius(T.RADIUS_PILL)
+      .backgroundColor(T.BLACK_80)
+      .border({ width: T.BORDER, color: T.WHITE_30 })
     }
-    .constraintSize({ maxWidth: Device.isPhone() ? '90%' : 720 })
-    .padding({ left: 28, right: 28, top: 14, bottom: 14 })
-    .borderRadius(T.RADIUS_PILL)
-    .backgroundColor(T.BLACK_80)
-    .border({ width: T.BORDER, color: T.WHITE_30 })
+    .width('100%')
+    .height('100%')
+    .padding({ bottom: 120 })
+    .justifyContent(FlexAlign.End)
+    .alignItems(HorizontalAlign.Center)
+    .hitTestBehavior(HitTestMode.Transparent)
   }
-  .width('100%')
-  .height('100%')
-  .padding({ bottom: 120 })
-  .justifyContent(FlexAlign.End)
-  .alignItems(HorizontalAlign.Center)
-  .hitTestBehavior(HitTestMode.Transparent)
 }

@@ -1393,7 +1393,7 @@ struct LivePage {
       .hitTestBehavior(this.showSpeed ? HitTestMode.Default : HitTestMode.None)
 
       Stack() {
-        TipLayer(this.tipMsg)
+        TipLayer({ msg: this.tipMsg })
       }
       .width('100%')
       .height('100%')

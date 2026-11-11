@@ -410,7 +410,7 @@ struct HistoryPage {
     .width('100%')
     .height('100%')
       if (this.tipMsg.length > 0) {
-        TipLayer(this.tipMsg)
+        TipLayer({ msg: this.tipMsg })
       }
     }
     .width('100%')

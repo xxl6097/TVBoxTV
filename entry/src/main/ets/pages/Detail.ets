@@ -654,7 +654,7 @@ struct Detail {
       .backgroundColor(T.pageBg(this.themeMode))
 
       if (this.tipMsg.length > 0) {
-        TipLayer(this.tipMsg)
+        TipLayer({ msg: this.tipMsg })
       }
 
       // 续播提示浮层：有进度记录时短暂显示，自动 5s 消失
