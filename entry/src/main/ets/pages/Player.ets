@@ -18,6 +18,9 @@ import { Device, KEY_IS_PHONE } from '../common/Device';
 import { Theme, KEY_THEME, THEME_DARK } from '../common/Theme';
 import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
+import { PlayState } from '../common/PlayState';
+import { fixPlayable } from '../common/PlayUrl';
+import { friendlyErr, isCapabilityHint } from '../common/PlayerErr';
 import window from '@ohos.window';
 
 /** 单击快进快退步长 */
@@ -64,26 +67,6 @@ class SubTrack {
   label: string = '';
 }
 
-/**
- * 把「网页地址」换成「能直接播的流地址」。
- * 采集站常见的坑：第一组线路给的是 https://cdn/play/AbCd1234（网页，靠 hls.js 播），
- * 真流是 https://cdn/play/AbCd1234/index.m3u8。判据是最后一段没有扩展名。
- */
-function fixPlayable(u: string): string {
-  if (u.length === 0 || Cms.isDirect(u)) {
-    return u;
-  }
-  if (u.indexOf('://') < 0) {
-    return u;
-  }
-  const noQuery: string = u.split('?')[0].replace(/\/+$/, '');
-  const last: string = noQuery.substring(noQuery.lastIndexOf('/') + 1);
-  if (last.length > 0 && last.indexOf('.') < 0) {
-    return noQuery + '/index.m3u8';
-  }
-  return u;
-}
-
 @Entry
 @Component
 struct Player {
@@ -93,6 +76,14 @@ struct Player {
   @State playing: boolean = false;
   @State prepared: boolean = false;
   @State resolving: boolean = true;
+  /**
+   * 播放器主状态机：唯一的状态事实来源，所有事件经 applyEv 校验（common/PlayState.ets）。
+   * 故意不用 @State：状态转换本身不该触发整棵组件树重绘，UI 仍由 playing/buffering 驱动；
+   * 后续要把 UI 切到主状态时再改成 @State 即可。
+   */
+  private playState: number = PlayState.IDLE;
+  /** 进入缓冲前的状态，缓冲结束后据此恢复 PLAYING / PAUSED */
+  private stateBeforeBuffer: number = PlayState.IDLE;
   @State curMs: number = 0;
   @State durMs: number = 0;
   @State showOsd: boolean = true;
@@ -474,6 +465,7 @@ struct Player {
     if (this.isLive) {
       const url: string = await this.pickPlayableLive();
       if (url.length === 0) {
+        this.applyEv(PlayState.EV_ERROR);
         this.errMsg = '这一组频道都打不开。可以在直播页换一个分组，或去设置页换一个直播源。';
         return;
       }
@@ -1011,7 +1003,35 @@ struct Player {
     Store.updateWdHistory(h);
   }
 
+  /**
+   * 状态机唯一入口（优化 #133）。
+   *
+   * 原来 playing/prepared/buffering/resolving/errMsg 在二十多处直接赋值，
+   * 组合出来的中间态无法追溯；现在所有生命周期事件都先经 PlayState.reduce
+   * 校验，非法/重复事件直接丢弃，每次真实转换留一条轨迹日志。
+   * 缓冲结束要按「缓冲前的状态」翻译，否则暂停中缓冲完会自己播起来。
+   */
+  private applyEv(ev: number): void {
+    let real: number = ev;
+    if (ev === PlayState.EV_BUFFER_START) {
+      this.stateBeforeBuffer = this.playState;
+    } else if (ev === PlayState.EV_BUFFER_END) {
+      if (this.playState !== PlayState.BUFFERING) {
+        return;                 // 迟到的缓冲结束事件，忽略
+      }
+      real = this.stateBeforeBuffer === PlayState.PAUSED ? PlayState.EV_PAUSE : PlayState.EV_PLAY;
+    }
+    const next: number = PlayState.reduce(this.playState, real);
+    if (next === this.playState) {
+      return;
+    }
+    hilog.info(0x1000, 'BOXN', 'playState %{public}s -> %{public}s (ev=%{public}s)',
+      PlayState.label(this.playState), PlayState.label(next), PlayState.eventLabel(real));
+    this.playState = next;
+  }
+
   releasePlayer(): void {
+    this.applyEv(PlayState.EV_RESET);
     if (this.flashTimer >= 0) {
       clearTimeout(this.flashTimer);
       this.flashTimer = -1;
@@ -1058,6 +1078,7 @@ struct Player {
       return;
     }
     this.initializing = true;
+    this.applyEv(PlayState.EV_LOAD);
     try {
       const sid: string = this.surfaceId;
       const p: media.AVPlayer = await media.createAVPlayer();
@@ -1076,20 +1097,16 @@ struct Player {
       p.on('error', (err: BusinessError) => {
         hilog.error(0x1000, 'BOXN', 'player error code=%{public}d msg=%{public}s isLive=%{public}s',
           err.code, err.message, this.isLive ? 'YES' : 'NO');
-        // 801 = 「直播流不支持变速」。这是系统播放器在 prepared 阶段发的**能力提示**，
+        // 801 / not support 是系统播放器在 prepared 阶段发的**能力提示**，
         // 不是播放失败——紧接着就是 state=playing，画面正常出。
-        // 之前把它当失败处理，导致「画面在播却提示无法播放、自动换台」
-        // （实测 CCTV6/iFan 等多数源每次进入都触发，CCTV1 的源编码不同不发这条）。
-        // 同类能力提示（不支持 seek/暂停等）也按 801 处理。
-        if (err.code === 801) {
-          hilog.info(0x1000, 'BOXN', 'capability hint (code=801), ignore');
+        // 之前把它当失败处理，导致「画面在播却提示无法播放、自动换台」。
+        // 判据统一放在 common/PlayerErr.ets，别在页面里再长一套散落判断。
+        if (isCapabilityHint(err.code, err.message, this.isLive)) {
+          hilog.info(0x1000, 'BOXN', 'capability hint (code=%{public}d), ignore', err.code);
           return;
         }
-        if (err.code !== 801 && this.isLive && /not support/i.test(err.message)) {
-          hilog.info(0x1000, 'BOXN', 'capability hint by msg, ignore');
-          return;
-        }
-        this.errMsg = Player.friendlyErr(err.code, err.message);
+        this.applyEv(PlayState.EV_ERROR);
+        this.errMsg = friendlyErr(err.code, err.message);
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
@@ -1150,6 +1167,7 @@ struct Player {
           }
           p.prepare();
         } else if (state === 'prepared') {
+          this.applyEv(PlayState.EV_PREPARED);
           // 直播流没有总时长（duration 为 -1），置 0 让 UI 走「直播」分支
           this.durMs = this.isLive ? 0 : p.duration;
           this.prepared = true;
@@ -1211,12 +1229,15 @@ struct Player {
             this.measureNet();
           }, 2000);
         } else if (state === 'playing') {
+          this.applyEv(PlayState.EV_PLAY);
           this.playing = true;
           this.liveFail = 0;
           this.buffering = false;
         } else if (state === 'paused') {
+          this.applyEv(PlayState.EV_PAUSE);
           this.playing = false;
         } else if (state === 'completed') {
+          this.applyEv(PlayState.EV_COMPLETE);
           this.playing = false;
           hilog.info(0x1000, 'BOXN', 'state=completed, isLive=%{public}s, hasNext=%{public}s', 
             this.isLive ? 'YES' : 'NO', Playlist.hasNext() ? 'yes' : 'no');
@@ -1237,9 +1258,11 @@ struct Player {
       // 缓冲状态直接反映到界面上：以前卡住就是黑屏干等，看着像死机
       p.on('bufferingUpdate', (info: media.BufferingInfoType, value: number) => {
         if (info === media.BufferingInfoType.BUFFERING_START) {
+          this.applyEv(PlayState.EV_BUFFER_START);
           this.buffering = true;
           this.onStall();
         } else if (info === media.BufferingInfoType.BUFFERING_END) {
+          this.applyEv(PlayState.EV_BUFFER_END);
           this.buffering = false;
         }
       });
@@ -1301,6 +1324,7 @@ struct Player {
       }
     } catch (err) {
       const e = err as Error;
+      this.applyEv(PlayState.EV_ERROR);
       this.errMsg = '初始化播放器失败：' + e.message;
       this.showOsd = true;
     } finally {
@@ -1351,6 +1375,7 @@ struct Player {
     } catch (err) {
       const e = err as BusinessError;
       hilog.error(0x1000, 'BOXN', 'toggle fail code=%{public}d msg=%{public}s', e.code, e.message);
+      this.applyEv(PlayState.EV_ERROR);
       this.errMsg = '播放器状态异常，已停止。点「重试」重新加载。';
       this.releasePlayer();
     }
@@ -1882,54 +1907,8 @@ struct Player {
     this.popOsd();
   }
 
-  /**
-   * 把播放器底层错误码/错误消息转成用户能看懂的中文。
-   * 鸿蒙 AVPlayer 的错误码体系：
-   *  - 5400XXX：常见媒体框架错误
-   *  - 5400101：格式/编码不支持
-   *  - 5400102：网络连接/数据源打不开
-   *  - 5400103：I/O 读取失败（包括 HLS 分片 403/404）
-   *  - 5400104：流中断/数据结束异常
-   *  - 5400105：超时（seek 超时、缓冲超时）
-   *  - 5400106：解码失败
-   *  - 801：能力提示，本函数不会被调用（在 on('error') 里提前 return 了）
-   */
-  private static friendlyErr(code: number, msg: string): string {
-    // 格式/编解码不支持
-    if (code === 5400101) {
-      return '不支持此视频格式或编码，可尝试其他线路';
-    }
-    // 网络层打不开（URL 失效、防盗链、403/404）
-    if (code === 5400102) {
-      const m: string = msg.toLowerCase();
-      if (m.indexOf('403') >= 0) {
-        return '播放地址被拒绝（403），源站可能有防盗链';
-      }
-      if (m.indexOf('404') >= 0) {
-        return '播放地址不存在（404），此资源可能已下线';
-      }
-      return '无法打开视频源，地址可能已失效';
-    }
-    // I/O 失败（HLS 分片失败等）
-    if (code === 5400103) {
-      return '视频数据读取失败，网络不稳定或资源已损坏';
-    }
-    // 流中断
-    if (code === 5400104) {
-      return '视频流异常中断，请重试';
-    }
-    // 超时
-    if (code === 5400105) {
-      return '播放超时，请检查网络后重试';
-    }
-    // 解码失败
-    if (code === 5400106) {
-      return '视频解码失败，可能硬件不支持此规格';
-    }
-    // 通用后备：只显示简短的原始信息，不暴露底层堆栈
-    const first: string = msg.split('\n')[0];
-    return '播放失败（' + code + '）：' + (first.length > 80 ? first.substring(0, 80) + '…' : first);
-  }
+  // 错误码翻译与能力提示判定已拆到 common/PlayerErr.ets
+  // （friendlyErr / isCapabilityHint），播放地址规整化见 common/PlayUrl.ets。
 
   // ==================== 格式化 ====================
 

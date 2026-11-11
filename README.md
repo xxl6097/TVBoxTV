@@ -451,6 +451,34 @@ CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含
 
 ## 六、目录
 
+### 播放器状态机与模块拆分（v1.1.0）
+
+`Player.ets` 只保留 UI 与 AVPlayer 生命周期编排，与界面无关的纯逻辑外置到三个模块：
+
+| 模块 | 职责 |
+|---|---|
+| `common/PlayState.ets` | 主状态机：8 个状态 / 9 个事件 / 显式转移表，非法或重复事件保持原状态 |
+| `common/PlayUrl.ets` | `fixPlayable()` 把无扩展名的网页地址补成 `/index.m3u8` |
+| `common/PlayerErr.ets` | 错误码中文映射 + 能力提示（801 / not support）判定 |
+
+页面侧唯一入口是 `Player.applyEv(ev)`，接入点：`initPlayer`、`on('error')`、
+`stateChange`、`bufferingUpdate`、`releasePlayer`，以及解析失败、toggle 异常两处。
+每次真实转换都留一条状态轨迹：
+
+```
+playState LOADING -> READY (ev=PREPARED)
+playState PLAYING -> BUFFERING (ev=BUFFER_START)
+playState BUFFERING -> ERROR (ev=ERROR)
+```
+
+真机排障直接看 `hilog` 里 `BOXN` 标签即可还原全过程，不用再靠五个布尔猜组合。
+`ERROR` / `COMPLETED` 是终态，迟到的 `playing`、`buffering` 事件不会把错误覆盖掉；
+只有 `EV_LOAD`（重建）和 `EV_RESET`（销毁）能离开终态。
+
+> 第一阶段说明：`playing` / `prepared` / `buffering` / `resolving` 仍驱动 UI，
+> 主状态负责单一事实视图、转移校验与日志轨迹，避免一次性改动 3400 行带来回归。
+> 把 UI 全量切到主状态、以及拆开 `build()` 里的巨型声明式 UI，属于后续独立改动。
+
 ```
 TVBoxTV/
 ├── entry/src/main/ets/
@@ -461,6 +489,9 @@ TVBoxTV/
 │   │   ├── Resolve.ets    播放地址解析（parses type=1）
 │   │   ├── Pointer.ets    灵犀指向遥控的指针点击识别（按下+抬起 / 400ms 去重）
 │   │   ├── PlayGuard.ets  切后台停播兜底（Ability.onBackground 统一停掉播放器）
+│   │   ├── PlayState.ets  播放器主状态机（状态/事件/合法转移表）
+│   │   ├── PlayUrl.ets    播放地址规整化（fixPlayable）
+│   │   ├── PlayerErr.ets  错误码中文映射 + 能力提示判定
 │   │   ├── WdQr.ets       网盘扫码录入面板（电视端扫码，手机填表）
 │   │   └── Store.ets      配置缓存、站点开关、历史、收藏
 │   ├── pages/
