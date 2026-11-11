@@ -20,6 +20,7 @@ import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
 import { PlayState } from '../common/PlayState';
 import { PlayerHud } from '../common/PlayerHud';
+import { PlayerFmt } from '../common/PlayerFmt';
 import { fixPlayable } from '../common/PlayUrl';
 import { friendlyErr, isCapabilityHint } from '../common/PlayerErr';
 import window from '@ohos.window';
@@ -1924,20 +1925,9 @@ struct Player {
     return this.seekPreview >= 0 ? this.seekPreview : this.curMs;
   }
 
+  /** 毫秒 → mm:ss（超过一小时 h:mm:ss）。实现在 common/PlayerFmt.ets，纯函数 */
   fmt(ms: number): string {
-    if (ms <= 0) {
-      return '00:00';
-    }
-    const total: number = Math.floor(ms / 1000);
-    const h: number = Math.floor(total / 3600);
-    const m: number = Math.floor((total % 3600) / 60);
-    const s: number = total % 60;
-    const mm: string = (m < 10 ? '0' : '') + m;
-    const ss: string = (s < 10 ? '0' : '') + s;
-    if (h > 0) {
-      return h + ':' + mm + ':' + ss;
-    }
-    return mm + ':' + ss;
+    return PlayerFmt.time(ms);
   }
 
   volPct(): string {
@@ -2344,17 +2334,9 @@ struct Player {
     }
   }
 
-  /** 秒数格式化：90 → 1分30秒；45 → 45秒；60 → 1分钟 */
+  /** 秒数格式化：90 → 1分30秒；45 → 45秒；60 → 1分钟（实现在 common/PlayerFmt.ets） */
   private fmtSec(sec: number): string {
-    const m: number = Math.floor(sec / 60);
-    const s: number = sec % 60;
-    if (m > 0 && s > 0) {
-      return m + '分' + s + '秒';
-    }
-    if (m > 0) {
-      return m + '分钟';
-    }
-    return s + '秒';
+    return PlayerFmt.sec(sec);
   }
 
   /** 浮现 Apple TV 式跳过按钮并启动倒计时。kind = 'intro' | 'outro' */
