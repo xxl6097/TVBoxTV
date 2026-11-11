@@ -496,6 +496,33 @@ playState BUFFERING -> ERROR (ev=ERROR)
 > 调用处会比原代码更长，且改动落在播放核心 UI 上 —— 收益是行数不是功能，暂不动。
 > 已经拿出去的是耦合最低的部分：HUD 三块 + 五个纯逻辑模块。
 
+### ⚠️ ArkTS 组件内**不要用 getter 派生状态**
+
+踩过的坑（2026-11-11 真机定位）：把 `@State playing/prepared/buffering/resolving`
+改成 `get xxx()` 后，在 `@Component` 内通过 `this.prepared` 读取会拿到 **`undefined`**
+（日志实测 `prepared=undefined`）。`!undefined === true`，于是所有以它为前置条件的
+操作全部静默失效：拖进度条没反应、倍速设了不生效、点击暂停走错分支。
+
+规则：
+
+- 派生状态一律用 `@State` 字段 + 显式同步（见 `Player.syncFlags()`），不要用 getter
+- 以状态为前提的操作**不要静默 return**，至少打一条日志把相关变量值带出来
+- 同类先例：`SSiteView` 的 `sw` 字段不能叫 `enabled`（那是 `CustomComponent` 基类属性）
+
+### 设置页为什么不整体拆成多个文件
+
+`SettingPage.ets` 约 2100 行，六个分组（`SectionSource` / `SectionUpdate` /
+`SectionSites` / `SectionData` / `SectionAbout` / `SectionWebdav`）仍在一个文件里。
+不拆的理由：
+
+- 搬成 `@Builder` 组件：值传递不会跟随状态更新（本项目踩过两次），这些分组里
+  到处都是「开关状态 + 当前值」，一拆就坏
+- 搬成 `@Component`：单个分组要与页面共享 8 个左右的状态和 8 个回调，
+  传参列表比原代码更长，只是把行数从一个文件挪到两个文件
+
+已经搬出去的是**真正独立**的部分：`common/SettingRows.ets`（`SRowView` /
+`SChildView` / `SSiteView` + 视觉常量，纯展示、只有 `@Prop` 与回调）。
+
 ### 直播 EPG 节目单（v1.1.0）
 
 `common/Epg.ets` 解析 XMLTV，在直播页频道格子的第二行显示「现在播什么」。

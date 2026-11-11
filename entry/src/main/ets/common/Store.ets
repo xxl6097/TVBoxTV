@@ -54,6 +54,21 @@ export class FavItem {
   pic: string = '';
   /** 收藏时间戳，用于多设备同步时按时间合并 */
   time: number = 0;
+  /**
+   * 所属自定义分组 ID，空串 = 默认分组（未归类）。
+   *
+   * 字段名与 Web 端 `web/src/types.ts` 的 `groupId` 保持一致，方便以后
+   * 两边走同一套 WebDAV 同步格式；老数据没有这个字段，读出来是 undefined，
+   * 统一按空串处理。
+   */
+  groupId: string = '';
+}
+
+/** 收藏的自定义分组（用户自己建，用来归类收藏） */
+export class FavGroupDef {
+  id: string = '';
+  name: string = '';
+  time: number = 0;
 }
 
 /** 直播频道收藏项：频道名 + URL + 分组 + 时间 */
@@ -758,7 +773,15 @@ export class Store {
       return [];
     }
     try {
-      return JSON.parse(s) as FavItem[];
+      const arr: FavItem[] = JSON.parse(s) as FavItem[];
+      // 老数据的 groupId 是 undefined，统一补成空串（= 默认分组），
+      // 否则后面按分组过滤时会出现 undefined !== '' 而把老收藏全漏掉
+      for (let i = 0; i < arr.length; i++) {
+        if (arr[i].groupId === undefined || arr[i].groupId === null) {
+          arr[i].groupId = '';
+        }
+      }
+      return arr;
     } catch (err) {
       return [];
     }
@@ -809,6 +832,133 @@ export class Store {
     // 收藏变了就推一次云端（开关关着时方法内部直接返回，不会有开销）
     Store.syncFavToWebDAV().catch(() => {});
     return !removed;
+  }
+
+  // ---------- 收藏分组 ----------
+
+  /** 最多建多少个自定义分组 */
+  private static GROUP_MAX: number = 20;
+
+  /** 读全部自定义分组（按创建时间正序） */
+  static async favGroups(): Promise<FavGroupDef[]> {
+    if (Store.prefs === null) {
+      return [];
+    }
+    const s: string = await Store.prefs.get('favGroups', '') as string;
+    if (s.length === 0) {
+      return [];
+    }
+    try {
+      const arr: FavGroupDef[] = JSON.parse(s) as FavGroupDef[];
+      arr.sort((a: FavGroupDef, b: FavGroupDef) => (a.time || 0) - (b.time || 0));
+      return arr;
+    } catch (err) {
+      return [];
+    }
+  }
+
+  /** 新建分组，返回新分组（重名或超上限返回 null） */
+  static async addFavGroup(name: string): Promise<FavGroupDef | null> {
+    const n: string = name.trim();
+    if (n.length === 0 || Store.prefs === null) {
+      return null;
+    }
+    const list: FavGroupDef[] = await Store.favGroups();
+    if (list.length >= Store.GROUP_MAX) {
+      return null;
+    }
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].name === n) {
+        return null;          // 重名
+      }
+    }
+    const g: FavGroupDef = new FavGroupDef();
+    // 用时间戳做 ID：单机应用不需要 UUID，且天然递增、便于排序
+    g.id = 'g' + Date.now();
+    g.name = n;
+    g.time = Date.now();
+    list.push(g);
+    await Store.prefs.put('favGroups', JSON.stringify(list));
+    await Store.prefs.flush();
+    return g;
+  }
+
+  /** 重命名分组 */
+  static async renameFavGroup(id: string, name: string): Promise<boolean> {
+    const n: string = name.trim();
+    if (n.length === 0 || Store.prefs === null) {
+      return false;
+    }
+    const list: FavGroupDef[] = await Store.favGroups();
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].name === n && list[i].id !== id) {
+        return false;         // 和别人重名
+      }
+    }
+    let hit: boolean = false;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id === id) {
+        list[i].name = n;
+        hit = true;
+      }
+    }
+    if (!hit) {
+      return false;
+    }
+    await Store.prefs.put('favGroups', JSON.stringify(list));
+    await Store.prefs.flush();
+    return true;
+  }
+
+  /**
+   * 删除分组：组里的收藏不删，退回默认分组。
+   * （删分组顺带删收藏是很吓人的行为，用户多半只是想清理分类。）
+   */
+  static async delFavGroup(id: string): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const list: FavGroupDef[] = await Store.favGroups();
+    const out: FavGroupDef[] = [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== id) {
+        out.push(list[i]);
+      }
+    }
+    await Store.prefs.put('favGroups', JSON.stringify(out));
+    const favs: FavItem[] = await Store.favorites();
+    let changed: boolean = false;
+    for (let i = 0; i < favs.length; i++) {
+      if (favs[i].groupId === id) {
+        favs[i].groupId = '';
+        changed = true;
+      }
+    }
+    if (changed) {
+      await Store.prefs.put('fav', JSON.stringify(favs));
+    }
+    await Store.prefs.flush();
+  }
+
+  /** 把某条收藏移到指定分组（空串 = 默认分组） */
+  static async moveFavToGroup(f: FavItem, groupId: string): Promise<boolean> {
+    if (Store.prefs === null) {
+      return false;
+    }
+    const favs: FavItem[] = await Store.favorites();
+    let hit: boolean = false;
+    for (let i = 0; i < favs.length; i++) {
+      if (favs[i].siteKey === f.siteKey && favs[i].vodId === f.vodId) {
+        favs[i].groupId = groupId;
+        hit = true;
+      }
+    }
+    if (!hit) {
+      return false;
+    }
+    await Store.prefs.put('fav', JSON.stringify(favs));
+    await Store.prefs.flush();
+    return true;
   }
 
   /**
