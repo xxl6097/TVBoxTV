@@ -17,7 +17,7 @@ import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import display from '@ohos.display';
 import { Store, HistItem } from '../common/Store';
-import { Net } from '../common/Net';
+import { Net, NET_ONLINE } from '../common/Net';
 import { Vod, DetailParam, T } from '../common/Model';
 import { Crawler, CrawlResult } from '../common/Crawler';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
@@ -319,8 +319,16 @@ struct Home {
   @State hasSites: boolean = false;
   /** 是否正在抓最新。改成 @State 才能驱动空态里的「正在更新…」加载提示 */
   @State crawling: boolean = false;
-  /** 当前是否处于离线（由 Net.online() 判定），离线时收起骨架屏、换成明确提示 */
-  @State offline: boolean = false;
+  /**
+   * 当前是否离线。
+   *
+   * 用 @StorageLink 直连 Net 模块维护的 NET_ONLINE：Net 在系统网络事件翻转时
+   * 会写这个键，于是「应用开着的时候断网」也能立刻反映到首页。
+   *
+   * 只靠 autoCrawl() 里判一次是不够的 —— 它只在启动和 30 分钟定时任务触发，
+   * 用户开着应用拔网线，要等半小时才会看到提示。
+   */
+  @StorageLink(NET_ONLINE) netFlag: string = '1';
 
   private tick: number = -1;
   private clockTick: number = -1;
@@ -442,17 +450,29 @@ struct Home {
     Tip.show('已清空 ' + n + ' 条记录');
   }
 
+  /**
+   * 是否离线（'0' = 离线）。
+   *
+   * **只给业务逻辑用**。build() 里不要调这个 —— 必须直接写 `this.netFlag === '0'`，
+   * 否则状态依赖要跨一层方法调用，存在追踪不到的风险（今天刚踩过 getter 返回
+   * undefined 的同类坑）。
+   */
+  offline(): boolean {
+    return this.netFlag === '0';
+  }
+
   async autoCrawl(): Promise<void> {
     if (this.crawling) {
       return;
     }
     // 离线时不要去抓：否则每个站源都要各自等满超时，首页骨架屏会转十几秒
-    // 最后只留一句「没有内容」。直接跳过，等网络恢复后的定时任务再补。
+    // 最后只留一句「没有内容」。直接跳过，等网络恢复后再补。
     if (!Net.online()) {
-      this.offline = true;
+      // 主动刷新一下标志：网络事件有时会漏（息屏期间、刚启动时）
+      this.netFlag = '0';
       return;
     }
-    this.offline = false;
+    this.netFlag = '1';
     this.crawling = true;
     try {
       const r: CrawlResult | null = await Crawler.maybeRun();
@@ -949,7 +969,7 @@ struct Home {
               // 离线时不铺骨架：骨架的意思是「马上就来」，而离线时根本不会有数据，
               // 一直转下去只会让人等。改为直说原因 + 给一个重试入口。
               Column() {
-                if (this.offline) {
+                if (this.netFlag === '0') {
                   Row() {
                     Text('当前离线，无法更新内容')
                       .fontSize(15)
@@ -963,15 +983,15 @@ struct Home {
                       .backgroundColor(T.CARD)
                       .onClick(() => Pointer.fire('home_retry', () => {
                         Feedback.tap();
-                        this.offline = !Net.online();
-                        if (!this.offline) {
+                        this.netFlag = Net.online() ? '1' : '0';
+                        if (this.netFlag === '1') {
                           this.autoCrawl();
                         }
                       }))
                       .onMouse(Pointer.on('home_retry', () => {
                         Feedback.tap();
-                        this.offline = !Net.online();
-                        if (!this.offline) {
+                        this.netFlag = Net.online() ? '1' : '0';
+                        if (this.netFlag === '1') {
                           this.autoCrawl();
                         }
                       }))
@@ -1195,7 +1215,7 @@ struct Home {
             if (this.hasSites) {
               Column() {
                 // 离线时不铺骨架（同电视布局的理由：骨架=马上就来，离线则不会来）
-                if (this.offline) {
+                if (this.netFlag === '0') {
                   Row() {
                     Text('当前离线，无法更新内容')
                       .fontSize(14)
@@ -1209,15 +1229,15 @@ struct Home {
                       .backgroundColor(T.CARD)
                       .onClick(() => Pointer.fire('home_retry_p', () => {
                         Feedback.tap();
-                        this.offline = !Net.online();
-                        if (!this.offline) {
+                        this.netFlag = Net.online() ? '1' : '0';
+                        if (this.netFlag === '1') {
                           this.autoCrawl();
                         }
                       }))
                       .onMouse(Pointer.on('home_retry_p', () => {
                         Feedback.tap();
-                        this.offline = !Net.online();
-                        if (!this.offline) {
+                        this.netFlag = Net.online() ? '1' : '0';
+                        if (this.netFlag === '1') {
                           this.autoCrawl();
                         }
                       }))
