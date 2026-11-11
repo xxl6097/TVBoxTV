@@ -24,6 +24,7 @@ import { Device, KEY_IS_PHONE } from '../common/Device';
 import { Theme, KEY_THEME } from '../common/Theme';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
+import { Epg } from '../common/Epg';
 
 /** 一个站源的测速结果，按 key 与 Site 对应 */
 class SiteSpeed {
@@ -306,6 +307,8 @@ struct SettingPage {
   @State presets: LivePreset[] = [];
   /** 订阅源名字，空串表示还没订阅 */
   @State subName: string = '';
+  /** EPG（XMLTV）节目单地址；空串 = 没配置，直播页不显示「现在播什么」 */
+  @State epgUrl: string = '';
   /**
    * 两处源列表默认折叠。
    * 设置页原本一进来就把 10 个直播源 + 20 个站源全铺开，折叠掉之后首屏只剩
@@ -385,6 +388,7 @@ struct SettingPage {
     this.crawlInfo = await Store.crawlSummary();
     this.presets = fromLives(await Store.subLives());
     this.subName = await Store.subName();
+    this.epgUrl = await Store.epgUrl();
     this.wdSources = await Store.webdavSources();
     await this.reloadWdScanCounts();
     this.readVersion();
@@ -677,7 +681,7 @@ struct SettingPage {
     this.qrHas = false;
     // 手机端自己就是手机，不需要「手机扫码」——直接进手动输入，不启动二维码服务
     this.qrManualMode = Device.isPhone();
-    this.qrManual = kind === 'live' ? this.liveUrl : this.url;
+    this.qrManual = kind === 'live' ? this.liveUrl : (kind === 'epg' ? this.epgUrl : this.url);
     this.qrUrl = '';
     if (Device.isPhone()) {
       this.qrTip = '';
@@ -703,7 +707,9 @@ struct SettingPage {
       ? '手机扫码 → 粘 m3u / txt 直播源地址 → 提交，电视立刻生效'
       : (kind === 'sub'
         ? '手机扫码 → 粘订阅链接（点播站源 + 直播源一起更新）→ 提交'
-        : '手机扫码 → 粘配置地址或整段 JSON → 提交，电视立刻生效');
+        : (kind === 'epg'
+          ? '手机扫码 → 粘 XMLTV 节目单地址（.xml / .xml.gz 解压后的直链）→ 提交'
+          : '手机扫码 → 粘配置地址或整段 JSON → 提交，电视立刻生效'));
     this.drawQr();
   }
 
@@ -757,6 +763,12 @@ struct SettingPage {
         this.msg = '订阅成功：' + r.sites + ' 个站源 · ' + r.lives + ' 个直播源';
         // 订阅成功后立即后台抓一轮最新，不等回首页、不受 6 小时间隔限制
         this.kickCrawl();
+      } else if (this.qrKind === 'epg') {
+        await Store.setEpgUrl(v);
+        this.epgUrl = v;
+        // 换了地址就得丢掉旧节目单，否则直播页还在按上一份数据显示
+        Epg.reset();
+        this.msg = 'EPG 节目单地址已保存';
       } else {
         this.url = v.indexOf('http') === 0 ? v : this.url;
         const n: number = await Store.loadConfig(v);
@@ -803,7 +815,9 @@ struct SettingPage {
               ? (Device.isPhone() ? '录入直播源' : '手机扫码录入直播源')
               : (this.qrKind === 'sub'
                 ? (Device.isPhone() ? '订阅' : '手机扫码订阅')
-                : (Device.isPhone() ? '录入点播配置' : '手机扫码录入点播配置')))
+                : (this.qrKind === 'epg'
+                  ? (Device.isPhone() ? '录入 EPG 节目单' : '手机扫码录入 EPG 节目单')
+                  : (Device.isPhone() ? '录入点播配置' : '手机扫码录入点播配置'))))
               .fontSize(20).fontColor(T.TXT)
             Text(Device.isPhone()
               ? '输入地址后点「保存」，立即生效'
@@ -811,7 +825,9 @@ struct SettingPage {
                 ? '手机与电视连同一个 Wi-Fi，扫码后粘 m3u / txt 地址提交'
                 : (this.qrKind === 'sub'
                   ? '扫码后粘订阅链接，点播站源和直播源一次更新'
-                  : '手机与电视连同一个 Wi-Fi，扫码后粘配置地址或整段 JSON 提交')))
+                  : (this.qrKind === 'epg'
+                    ? '扫码后粘 XMLTV 节目单地址，直播页会显示「正在播什么」'
+                    : '手机与电视连同一个 Wi-Fi，扫码后粘配置地址或整段 JSON 提交'))))
               .fontSize(13).fontColor(T.DIM).margin({ top: 6 })
           }
           .alignItems(HorizontalAlign.Start)
@@ -888,7 +904,9 @@ struct SettingPage {
               TextInput({
                 text: this.qrManual,
                 placeholder: this.qrKind === 'live' ? 'm3u / txt 直播源地址'
-                  : (this.qrKind === 'sub' ? '订阅链接（https://…）' : '配置地址或整段 JSON')
+                  : (this.qrKind === 'sub' ? '订阅链接（https://…）'
+                    : (this.qrKind === 'epg' ? 'XMLTV 节目单地址（https://…/epg.xml）'
+                      : '配置地址或整段 JSON'))
               })
                 .height(46)
                 .width('100%')
@@ -972,6 +990,13 @@ struct SettingPage {
       this.toast('手机已提交直播源，已保存', '#B7F0BC');
       await this.refresh();
       return '已保存：电视上的直播源已更新';
+    }
+    if (kind === 'epg') {
+      await Store.setEpgUrl(v);
+      this.epgUrl = v;
+      Epg.reset();
+      this.toast(v.length === 0 ? '手机已清除 EPG 节目单' : '手机已提交 EPG 地址，已保存', '#B7F0BC');
+      return v.length === 0 ? 'EPG 节目单已清除' : '已保存 EPG 节目单，进直播页即可看到「正在播什么」';
     }
     if (kind === 'sub') {
       const r: SubResult = await Store.loadSubscription(v);
@@ -1642,6 +1667,13 @@ struct SettingPage {
           this.openQr('live');
         },
         onHoverIn: (on: boolean) => this.hoverTo('r_live', on) })
+      this.SDiv()
+      // EPG 是可选项：不填也能正常看直播，只是不显示「现在播什么」
+      SRowView({ label: 'EPG 节目单', value: this.epgUrl.length > 0 ? '已配置 · 点此修改' : '未配置（可选）', arrow: true, focused: this.hi('r_epg'),
+        onTap: () => {
+          this.openQr('epg');
+        },
+        onHoverIn: (on: boolean) => this.hoverTo('r_epg', on) })
 
       // 点播配置有地址时，给一个「重新拉取」的入口
       if (this.url.length > 0) {

@@ -108,6 +108,25 @@ export class Store {
     return await Store.prefs.get('subName', '') as string;
   }
 
+  // ---------- EPG 节目单 ----------
+
+  /** EPG（XMLTV）地址，空串 = 没配置，直播页不显示节目名 */
+  static async epgUrl(): Promise<string> {
+    if (Store.prefs === null) {
+      return '';
+    }
+    return await Store.prefs.get('epgUrl', '') as string;
+  }
+
+  /** 保存 EPG 地址（传空串即清除） */
+  static async setEpgUrl(url: string): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    await Store.prefs.put('epgUrl', url.trim());
+    await Store.prefs.flush();
+  }
+
   /**
    * 载入配置。source 可以是 URL，也可以是直接粘贴的 JSON 文本。
    * 成功后缓存原文，之后离线/源失效也能用上次的站源列表。

@@ -19,6 +19,7 @@ import { Channel, LiveDir, Episode, PlayParam, T, RawLive } from '../common/Mode
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { fromLives, LivePreset } from '../common/LivePresets';
 import { LiveProbe, LiveScore } from '../common/LiveProbe';
+import { Epg } from '../common/Epg';
 import { KEY_IS_PHONE } from '../common/Device';
 import { Theme, KEY_THEME } from '../common/Theme';
 import { PhoneTabBar } from '../common/PhoneTabBar';
@@ -83,6 +84,8 @@ struct LivePage {
   @State deadUrls: string[] = [];
   @State checking: boolean = false;
   @State checkProgress: string = '';
+  /** EPG 节目单是否已就绪（false 时频道格子不显示第二行） */
+  @State epgOn: boolean = false;
   /**
    * 面板打开的时刻。
    *
@@ -169,6 +172,32 @@ struct LivePage {
       return;
     }
     await this.reload();
+    // 节目单是可选数据：放最后、不 await，没配 EPG 时 ensure() 直接返回 0
+    this.loadEpg();
+  }
+
+  /**
+   * 拉一次 EPG 并在到位后重推频道列表。
+   *
+   * 不 await 的原因：XMLTV 常有几 MB，等它会把「进直播页」本身拖慢；
+   * 节目名晚一两秒出现完全可以接受。
+   * 重推列表而不是只改 epgOn：Grid 用的是 LazyForEach + 普通数组，
+   * 数据源不通知的话已经渲染出来的格子不会重算 epgText()。
+   */
+  private async loadEpg(): Promise<void> {
+    const n: number = await Epg.ensure(false);
+    if (n > 0) {
+      this.epgOn = true;
+      this.sync();
+    }
+  }
+
+  /** 频道格子第二行：当前节目；没配 EPG 或没对上台就返回空串 */
+  epgText(chName: string): string {
+    if (!this.epgOn) {
+      return '';
+    }
+    return Epg.nowText(chName);
   }
 
   async reload(): Promise<void> {
@@ -1258,40 +1287,59 @@ struct LivePage {
                     // GridItem 里 100% 会被解析成整个网格的高度，星标就飘到网格顶上去，
                     // 实测「★」跑到屏幕最上面而不是格子右上角）
                     Stack({ alignContent: Alignment.TopEnd }) {
-                      Text(ch.name)
-                        // 手机两列时格子只有 ~85vp 宽，"CCTV5体育"按 14fp 排需要 ~75vp，
-                        // 减去左右 padding 后正好差几个像素，于是被硬断成「CCTV5体 / 育」。
-                        // 手机端降一档字号：整串能进一行，长一点的也断在中英交界
-                        // （"CCTV5+" / "体育赛事"），而不是拦腰切一个汉字。
-                        .fontSize(this.isPhone ? 13 : 14)
-                        // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
-                        // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
-                        .fontColor(this.isDead(ch.url) ? T.DEAD : (this.isCur(ch) ? T.SELECTED : T.TXT))
-                        .decoration({
-                          type: this.isDead(ch.url) ? TextDecorationType.LineThrough : TextDecorationType.None,
-                          color: '#4DFFFFFF'
-                        })
-                        .width('100%')
-                        .height(58)
-                        .borderRadius(T.RADIUS_SM)
-                        .textAlign(TextAlign.Center)
-                        .maxLines(2)
-                        // 保留西文单词完整，配合上面的字号让断点落在中英文交界处。
-                        .wordBreak(WordBreak.BREAK_WORD)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .padding({ left: 6, right: 6 })
-                        .backgroundColor(this.isCur(ch) ? T.CARD_HI :
-                          (this.hi('ch_' + ch.name + ch.url) ? T.CARD_HI : '#00000000'))
-                        .border({
-                          width: T.BORDER,
-                          color: this.isCur(ch) ? T.SELECTED :
-                            (this.hi('ch_' + ch.name + ch.url) ? T.TXT : '#00000000')
-                        })
-                        .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-                        .focusable(true)
-                        .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
-                        .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
-                        .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
+                      // 配了 EPG 就两行（台名 + 当前节目），没配就是原来的一行台名。
+                      // 外框（高度/底色/描边/焦点）都挪到 Column 上，
+                      // Text 只负责文字，两行时才能整体居中而不撑破格子。
+                      Column() {
+                        Text(ch.name)
+                          // 手机两列时格子只有 ~85vp 宽，"CCTV5体育"按 14fp 排需要 ~75vp，
+                          // 减去左右 padding 后正好差几个像素，于是被硬断成「CCTV5体 / 育」。
+                          // 手机端降一档字号：整串能进一行，长一点的也断在中英交界
+                          // （"CCTV5+" / "体育赛事"），而不是拦腰切一个汉字。
+                          .fontSize(this.isPhone ? 13 : 14)
+                          // 检测出连不上的台用灰色 + 删除线：既没从列表里消失（源里确实有这台），
+                          // 又一眼能看出别点。不删掉是因为有些台只是当时抽风，重启源可能又好了。
+                          .fontColor(this.isDead(ch.url) ? T.DEAD : (this.isCur(ch) ? T.SELECTED : T.TXT))
+                          .decoration({
+                            type: this.isDead(ch.url) ? TextDecorationType.LineThrough : TextDecorationType.None,
+                            color: '#4DFFFFFF'
+                          })
+                          .width('100%')
+                          .textAlign(TextAlign.Center)
+                          .maxLines(2)
+                          // 保留西文单词完整，配合上面的字号让断点落在中英文交界处。
+                          .wordBreak(WordBreak.BREAK_WORD)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .padding({ left: 6, right: 6 })
+
+                        if (this.epgText(ch.name).length > 0) {
+                          Text(this.epgText(ch.name))
+                            .fontSize(10)
+                            .fontColor(this.isDead(ch.url) ? T.DEAD : T.DIM)
+                            .width('100%')
+                            .textAlign(TextAlign.Center)
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                            .padding({ left: 6, right: 6 })
+                            .margin({ top: 2 })
+                        }
+                      }
+                      .width('100%')
+                      .height(58)
+                      .justifyContent(FlexAlign.Center)
+                      .borderRadius(T.RADIUS_SM)
+                      .backgroundColor(this.isCur(ch) ? T.CARD_HI :
+                        (this.hi('ch_' + ch.name + ch.url) ? T.CARD_HI : '#00000000'))
+                      .border({
+                        width: T.BORDER,
+                        color: this.isCur(ch) ? T.SELECTED :
+                          (this.hi('ch_' + ch.name + ch.url) ? T.TXT : '#00000000')
+                      })
+                      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                      .focusable(true)
+                      .onFocus(() => this.hover('ch_' + ch.name + ch.url, true))
+                      .onBlur(() => this.hover('ch_' + ch.name + ch.url, false))
+                      .onHover((hv: boolean) => this.hover('ch_' + ch.name + ch.url, hv))
 
                       if (this.isFav(ch)) {
                         Text('★')

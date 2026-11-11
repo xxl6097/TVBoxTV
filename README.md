@@ -453,17 +453,18 @@ CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含
 
 ### 播放器状态机与模块拆分（v1.1.0）
 
-`Player.ets` 只保留 UI 与 AVPlayer 生命周期编排，与界面无关的纯逻辑外置到三个模块：
+`Player.ets` 只保留 UI 与 AVPlayer 生命周期编排，与界面无关的纯逻辑外置到四个模块：
 
 | 模块 | 职责 |
 |---|---|
 | `common/PlayState.ets` | 主状态机：8 个状态 / 9 个事件 / 显式转移表，非法或重复事件保持原状态 |
 | `common/PlayUrl.ets` | `fixPlayable()` 把无扩展名的网页地址补成 `/index.m3u8` |
 | `common/PlayerErr.ets` | 错误码中文映射 + 能力提示（801 / not support）判定 |
+| `common/PlayerHud.ets` | 加载 / 缓冲 / 无法播放三种全屏浮层（状态进、回调出） |
 
 页面侧唯一入口是 `Player.applyEv(ev)`，接入点：`initPlayer`、`on('error')`、
-`stateChange`、`bufferingUpdate`、`releasePlayer`，以及解析失败、toggle 异常两处。
-每次真实转换都留一条状态轨迹：
+`stateChange`、`bufferingUpdate`、`releasePlayer`、看门狗卡顿判定，以及解析失败、
+toggle 异常两处。每次真实转换都留一条状态轨迹：
 
 ```
 playState LOADING -> READY (ev=PREPARED)
@@ -475,9 +476,34 @@ playState BUFFERING -> ERROR (ev=ERROR)
 `ERROR` / `COMPLETED` 是终态，迟到的 `playing`、`buffering` 事件不会把错误覆盖掉；
 只有 `EV_LOAD`（重建）和 `EV_RESET`（销毁）能离开终态。
 
-> 第一阶段说明：`playing` / `prepared` / `buffering` / `resolving` 仍驱动 UI，
-> 主状态负责单一事实视图、转移校验与日志轨迹，避免一次性改动 3400 行带来回归。
-> 把 UI 全量切到主状态、以及拆开 `build()` 里的巨型声明式 UI，属于后续独立改动。
+**第二阶段（UI 全量切主状态）已完成**：`playState` 改为 `@State`，
+原来四个独立布尔改成由它派生的只读 getter：
+
+| 旧字段 | 现在 |
+|---|---|
+| `playing` | `playState === PLAYING` |
+| `prepared` | `READY / PLAYING / PAUSED / BUFFERING / COMPLETED` |
+| `resolving` | `IDLE / LOADING` |
+| `buffering` | `playState === BUFFERING` |
+
+这样「两套事实打架」从结构上不可能发生（改状态只能走 `applyEv`），
+`Cannot assign to 'playing' because it is a read-only property` 会在编译期拦住任何绕过状态机的写法。
+
+> 仍保留的一项：`build()` 里的控制条 / 画质面板 / 倍速面板仍是页面内的 `@Builder`，
+> 与 `this` 上的十几个字段强耦合，拆成独立组件需要成组传参与回调，
+> 留作后续独立任务；本次已把耦合最低的 HUD 三块拆到 `common/PlayerHud.ets`。
+
+### 直播 EPG 节目单（v1.1.0）
+
+`common/Epg.ets` 解析 XMLTV，在直播页频道格子的第二行显示「现在播什么」。
+
+- 入口：设置 → 播放源 → **EPG 节目单**（可扫码录入，也可手动填地址）
+- 匹配：直播源里没有 `tvg-id`，只能按台名对。两边都过一遍 `Epg.norm()`
+  （去空格、括号注释、`高清/4K/HD` 等后缀、标点），先精确匹配，
+  再退到「最长包含」匹配 —— `CCTV5体育` 能对上 `CCTV5+体育赛事`，`CCTV1` 不会误配 `CCTV10`
+- 体量控制：XMLTV 常有 20~80 MB，解析前硬截断到 6 MB、节目条数上限 30000，
+  避免进直播页卡住；缓存 6 小时，换地址即失效
+- 失败不影响直播：没配、拉不到、对不上台名时，格子就是原来的一行台名
 
 ```
 TVBoxTV/
@@ -492,6 +518,8 @@ TVBoxTV/
 │   │   ├── PlayState.ets  播放器主状态机（状态/事件/合法转移表）
 │   │   ├── PlayUrl.ets    播放地址规整化（fixPlayable）
 │   │   ├── PlayerErr.ets  错误码中文映射 + 能力提示判定
+│   │   ├── PlayerHud.ets  播放页浮层（加载 / 缓冲 / 无法播放）
+│   │   ├── Epg.ets        直播 EPG（XMLTV 解析 + 台名归一化匹配）
 │   │   ├── WdQr.ets       网盘扫码录入面板（电视端扫码，手机填表）
 │   │   └── Store.ets      配置缓存、站点开关、历史、收藏
 │   ├── pages/

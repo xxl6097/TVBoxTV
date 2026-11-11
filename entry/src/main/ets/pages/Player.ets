@@ -19,6 +19,7 @@ import { Theme, KEY_THEME, THEME_DARK } from '../common/Theme';
 import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
 import { PlayState } from '../common/PlayState';
+import { PlayerHud } from '../common/PlayerHud';
 import { fixPlayable } from '../common/PlayUrl';
 import { friendlyErr, isCapabilityHint } from '../common/PlayerErr';
 import window from '@ohos.window';
@@ -73,17 +74,40 @@ struct Player {
   @State title: string = '';
   @State errMsg: string = '';
   @State hint: string = '';
-  @State playing: boolean = false;
-  @State prepared: boolean = false;
-  @State resolving: boolean = true;
   /**
-   * 播放器主状态机：唯一的状态事实来源，所有事件经 applyEv 校验（common/PlayState.ets）。
-   * 故意不用 @State：状态转换本身不该触发整棵组件树重绘，UI 仍由 playing/buffering 驱动；
-   * 后续要把 UI 切到主状态时再改成 @State 即可。
+   * 播放器主状态机：**唯一的状态事实来源**（common/PlayState.ets）。
+   *
+   * 第二阶段改造：这里改成 @State，并把原来四个独立的 @State 布尔
+   * （playing / prepared / buffering / resolving）换成下面的只读 getter。
+   * 好处是「两套事实打架」从结构上消失 —— 不可能再出现
+   * playing=true 而主状态已是 PAUSED 这种组合；谁想改状态只能走 applyEv，
+   * 于是转移校验和轨迹日志对所有路径都生效。
    */
-  private playState: number = PlayState.IDLE;
+  @State playState: number = PlayState.IDLE;
   /** 进入缓冲前的状态，缓冲结束后据此恢复 PLAYING / PAUSED */
   private stateBeforeBuffer: number = PlayState.IDLE;
+
+  /** 正在播。缓冲中与暂停都不算 —— 控制条据此显示「暂停/播放」图标 */
+  get playing(): boolean {
+    return this.playState === PlayState.PLAYING;
+  }
+
+  /** 已就绪：能 seek、能显示总时长、能显示控制条 */
+  get prepared(): boolean {
+    return this.playState === PlayState.READY || this.playState === PlayState.PLAYING ||
+      this.playState === PlayState.PAUSED || this.playState === PlayState.BUFFERING ||
+      this.playState === PlayState.COMPLETED;
+  }
+
+  /** 解析中：还没拿到可播地址（初始 IDLE 与 LOADING 都算） */
+  get resolving(): boolean {
+    return this.playState === PlayState.IDLE || this.playState === PlayState.LOADING;
+  }
+
+  /** 缓冲转圈中 */
+  get buffering(): boolean {
+    return this.playState === PlayState.BUFFERING;
+  }
   @State curMs: number = 0;
   @State durMs: number = 0;
   @State showOsd: boolean = true;
@@ -102,8 +126,6 @@ struct Player {
   @State hoverKey: string = '';
   /** 指针滑过进度条时预览的时间点，-1 表示没在悬浮 */
   @State hoverMs: number = -1;
-  /** 缓冲中（网络跟不上或刚换档） */
-  @State buffering: boolean = false;
   /** 控制条上显示的当前画质，如「自动 720P」 */
   @State qLabel: string = '自动';
   /** 画质选择面板是否展开 */
@@ -323,9 +345,7 @@ struct Player {
     if (!this.isLive && this.posMs > 0) {
       this.pendingSeek = this.posMs;
     }
-    this.prepared = false;
-    this.playing = false;
-    this.buffering = true;
+    // 状态交给主状态机：initPlayer() 里会发 EV_LOAD，UI 自动进入「加载中」
     this.initPlayer();
   }
 
@@ -409,7 +429,6 @@ struct Player {
     this.syncEpLabel();
 
     await this.resolveUrl();
-    this.resolving = false;
     // 解析地址期间（直播要逐个探源，可能好几秒）用户已经返回：
     // 这里必须收手，否则会在这之后造出一个没人释放的播放器继续出声
     if (this.closed) {
@@ -782,9 +801,6 @@ struct Player {
   /** 重建播放器，保留进度 */
   private async rebuild(tip: string): Promise<void> {
     this.releasePlayer();
-    this.prepared = false;
-    this.playing = false;
-    this.buffering = true;
     this.errMsg = '';
     if (tip.length > 0) {
       this.showTip(tip);
@@ -859,7 +875,12 @@ struct Player {
       if (this.leaving) {
         return;
       }
-      if (!this.playing || !this.prepared) {
+      // 只盯「正在播」和「已经卡在缓冲」两种状态。
+      // 注意不能用 playing getter 判：进了 BUFFERING 之后 playing 已经是 false，
+      // 那样看门狗第一分支就 return，卡住以后永远没人把它救回来。
+      const active: boolean = this.playState === PlayState.PLAYING ||
+        this.playState === PlayState.BUFFERING;
+      if (!active) {
         this.lastWatchMs = this.posMs;
         this.lastMoveAt = Date.now();
         return;
@@ -867,11 +888,14 @@ struct Player {
       if (this.posMs !== this.lastWatchMs) {
         this.lastWatchMs = this.posMs;
         this.lastMoveAt = Date.now();
-        this.buffering = false;
+        // 位置又动了：如果之前被看门狗判成缓冲，这里收回
+        if (this.playState === PlayState.BUFFERING) {
+          this.applyEv(PlayState.EV_BUFFER_END);
+        }
         return;
       }
       if (Date.now() - this.lastMoveAt > FREEZE_MS) {
-        this.buffering = true;
+        this.applyEv(PlayState.EV_BUFFER_START);
         this.lastMoveAt = Date.now();
         this.onStall();
       }
@@ -1066,10 +1090,9 @@ struct Player {
       }
       this.player = null;
     }
-    // 播放器没了，把播放状态一起复位：否则 onPageHide 之后 UI 还以为在播，
-    // 回到前台重建时 pausePlayback 也会拿旧状态做判断
-    this.prepared = false;
-    this.playing = false;
+    // 播放器没了，状态由 releasePlayer 里的 EV_RESET 统一复位（→ IDLE）。
+    // 这里不再单独改 prepared / playing：它们是主状态的派生值，直接改会编译不过
+    // （只读 getter），也正是这次改造要堵住的「两套事实打架」。
   }
 
   async initPlayer(): Promise<void> {
@@ -1170,11 +1193,9 @@ struct Player {
           this.applyEv(PlayState.EV_PREPARED);
           // 直播流没有总时长（duration 为 -1），置 0 让 UI 走「直播」分支
           this.durMs = this.isLive ? 0 : p.duration;
-          this.prepared = true;
           // 成功 prepared 说明这一次播放正常，重置失败计数
           this.vodFail = 0;
           this.liveFail = 0;
-          this.buffering = false;
           // prepared 时恢复音量偏好（异步，不挡起播）
           Store.volumePref().then((volPref: number) => {
             this.volume = volPref / 15; // 从 0-15 映射回 0-1
@@ -1197,8 +1218,10 @@ struct Player {
           // 后台预加载下一集，不挡当前播放（异步启动，不 await）
           this.preloadNextEpisode().catch(() => {});
           // 部分机型 / 部分流不会补发 playing 状态，这里先乐观置上，
-          // 否则控制条会一直以为在暂停（暂停态不自动收起，挡住半屏画面）
-          this.playing = true;
+          // 否则控制条会一直以为在暂停（暂停态不自动收起，挡住半屏画面）。
+          // 走 applyEv 而不是直接改 playing：READY → PLAYING 是合法转移，
+          // 若此时已被判成 ERROR，这一步会被转移表挡掉，不会把错误态覆盖成播放中。
+          this.applyEv(PlayState.EV_PLAY);
           this.popOsd();
           // 换档/重载后把位置接回去，用户看到的是「顿一下继续」
           if (this.pendingSeek > 0) {
@@ -1230,15 +1253,11 @@ struct Player {
           }, 2000);
         } else if (state === 'playing') {
           this.applyEv(PlayState.EV_PLAY);
-          this.playing = true;
           this.liveFail = 0;
-          this.buffering = false;
         } else if (state === 'paused') {
           this.applyEv(PlayState.EV_PAUSE);
-          this.playing = false;
         } else if (state === 'completed') {
           this.applyEv(PlayState.EV_COMPLETE);
-          this.playing = false;
           hilog.info(0x1000, 'BOXN', 'state=completed, isLive=%{public}s, hasNext=%{public}s', 
             this.isLive ? 'YES' : 'NO', Playlist.hasNext() ? 'yes' : 'no');
           // 直播不走 completed 自动换台：直播流的 completed 通常是短暂断流
@@ -1259,11 +1278,9 @@ struct Player {
       p.on('bufferingUpdate', (info: media.BufferingInfoType, value: number) => {
         if (info === media.BufferingInfoType.BUFFERING_START) {
           this.applyEv(PlayState.EV_BUFFER_START);
-          this.buffering = true;
           this.onStall();
         } else if (info === media.BufferingInfoType.BUFFERING_END) {
           this.applyEv(PlayState.EV_BUFFER_END);
-          this.buffering = false;
         }
       });
 
@@ -1346,7 +1363,7 @@ struct Player {
       } catch (e) {
         // ignore
       }
-      this.playing = false;
+      // 不在这里改 playing：pause() 会触发 stateChange('paused') → EV_PAUSE
     }
   }
 
@@ -1610,14 +1627,11 @@ struct Player {
     }
     this.savePos();
     this.releasePlayer();
-    this.prepared = false;
-    this.playing = false;
     this.curMs = 0;
     this.posMs = 0;
     this.durMs = 0;
     this.seekPreview = -1;
     this.errMsg = '';
-    this.buffering = false;
     this.stallN = 0;
     this.pendingSeek = 0;
     this.introDone = false;
@@ -1638,8 +1652,7 @@ struct Player {
 
     // 尝试使用下一集预加载缓存，命中时直接使用，省去 8-12s 解析等待
     const hitPreload: boolean = this.applyPreload(ep);
-    
-    this.resolving = true;
+
     if (hitPreload) {
       // 命中预加载缓存，已经把 finalUrl/header 写进去，只需 setupQuality
       try {
@@ -1652,7 +1665,6 @@ struct Player {
       // 缓存未命中，走正常解析流程
       await this.resolveUrl();
     }
-    this.resolving = false;
     this.initPlayer();
   }
 
@@ -1662,14 +1674,11 @@ struct Player {
     this.savePos();
     this.releasePlayer();
     this.liveFail = 0;
-    this.prepared = false;
-    this.playing = false;
     this.curMs = 0;
     this.posMs = 0;
     this.durMs = 0;
     this.errMsg = '';
     this.seekPreview = -1;
-    this.buffering = false;
     this.stallN = 0;
     this.pendingSeek = 0;
     this.introDone = false;
@@ -1678,9 +1687,7 @@ struct Player {
     this.skipShow = '';
     this.stopSkipTimer();
     this.showOsd = false;
-    this.resolving = true;
     await this.resolveUrl();
-    this.resolving = false;
     this.initPlayer();
   }
 
@@ -2875,7 +2882,7 @@ struct Player {
               this.pendingSeek = this.posMs;
             }
             this.releasePlayer();
-            this.buffering = true;
+            // releasePlayer 已发 EV_RESET，UI 回到「加载中」，这里不必再手动置 buffering
           }
           this.initPlayer();
         })
@@ -2887,73 +2894,28 @@ struct Player {
           this.surfaceId = '';
         })
 
-      if (this.resolving) {
-        Column() {
-          LoadingProgress().width(52).height(52).color(T.PANEL_TXT)
-          Text(this.isLive ? '正在连接频道…' : '正在解析播放地址…').fontSize(18).fontColor(T.PANEL_SUB).margin({ top: 14 })
-        }
-        .width('100%').height('100%').justifyContent(FlexAlign.Center)
-        .backgroundColor('#000000')
-      }
-
-      // 缓冲提示：卡住时以前就是黑屏干等，现在明确告诉你「在等数据」
-      if (this.buffering && this.prepared && this.errMsg.length === 0 && !this.resolving) {
-        Column() {
-          Row() {
-            LoadingProgress().width(26).height(26).color(T.PANEL_TXT)
-            Text(this.netTxt.length > 0 ? ('缓冲中…  网络 ' + this.netTxt) : '缓冲中…')
-              .fontSize(17).fontColor(T.PANEL_TXT).margin({ left: 14 })
-            if (this.levels.length > 1 && this.qCap === 0) {
-              Text('网络偏慢会自动降画质').fontSize(14).fontColor(T.PANEL_DIM).margin({ left: 14 })
-            }
-          }
-          .padding({ left: 24, right: 24, top: 14, bottom: 14 })
-          .backgroundColor(T.BLACK_70)
-          .borderRadius(14)
-        }
-        .width('100%').height('100%')
-        .justifyContent(FlexAlign.Center)
-        .hitTestBehavior(HitTestMode.Transparent)
-      }
-
-      if (this.errMsg.length > 0) {
-        Column() {
-          Text('无法播放').fontSize(30).fontColor(T.ERR)
-          Text(this.errMsg)
-            .fontSize(19).fontColor(T.PANEL_SUB).margin({ top: 12 })
-            .textAlign(TextAlign.Center).width('80%')
-          Text(this.isLive
-            ? '直播源里的单个频道经常失效，可以在控制条上按「下一台」换一个；整源打不开就去设置页换一个源。'
-            : '常见原因：站源已失效、播放地址需要专用解析器、或编码不被系统支持。')
-            .fontSize(16).fontColor(T.PANEL_DIM).margin({ top: 16 })
-            .textAlign(TextAlign.Center).width('80%')
-          // 播不出来别让用户只能退出：就地重试一次，站源抽风时往往第二次就好了
-          Row() {
-            Text('重试')
-              .fontSize(19).fontColor('#FFFFFF')
-              .height(52).padding({ left: 38, right: 38 })
-              .backgroundColor(this.hi('rt') ? T.PANEL_TXT : T.WHITE_15)
-              .borderRadius(26).textAlign(TextAlign.Center)
-              .animation({ duration: 120, curve: Curve.EaseOut })
-              .onHover((hv: boolean) => this.hoverTo('rt', hv))
-              .onClick(() => this.tap('rt', () => this.retry()))
-              .onMouse(this.ptr('rt', () => this.retry()))
-            Text(this.isLive ? '返回频道列表' : '返回选集')
-              .fontSize(19).fontColor('#FFFFFF')
-              .height(52).padding({ left: 38, right: 38 })
-              .backgroundColor(this.hi('bk') ? T.PANEL_BTN_HI : T.WHITE_15)
-              .borderRadius(26).textAlign(TextAlign.Center)
-              .margin({ left: 18 })
-              .animation({ duration: 120, curve: Curve.EaseOut })
-              .onHover((hv: boolean) => this.hoverTo('bk', hv))
-              .onClick(() => this.tap('bk', () => this.onBackPress()))
-              .onMouse(this.ptr('bk', () => this.onBackPress()))
-          }
-          .margin({ top: 28 })
-        }
-        .width('100%').height('100%').justifyContent(FlexAlign.Center)
-        .backgroundColor(T.BLACK_80)
-      }
+      // 加载 / 缓冲 / 错误三种浮层交给 common/PlayerHud（#140 拆分的第一个模块）。
+      // 约定「状态进、回调出」：组件只管画，不碰 AVPlayer，也不再耦合页面里的十几个字段。
+      PlayerHud({
+        isLive: this.isLive,
+        errMsg: this.errMsg,
+        netTxt: this.netTxt,
+        multiLevel: this.levels.length > 1,
+        autoQuality: this.qCap === 0,
+        resolving: this.resolving,
+        buffering: this.buffering,
+        prepared: this.prepared,
+        retryHi: this.hi('rt'),
+        backHi: this.hi('bk'),
+        onRetry: () => {
+          this.retry();
+        },
+        onBack: () => {
+          this.onBackPress();
+        },
+        onHoverRetry: (on: boolean) => this.hoverTo('rt', on),
+        onHoverBack: (on: boolean) => this.hoverTo('bk', on)
+      })
 
       // 播放/暂停中央图标：全屏居中，不拦截点击
       if (this.playFlash.length > 0 && this.seekPreview < 0) {

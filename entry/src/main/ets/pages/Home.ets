@@ -69,6 +69,9 @@ class R {
   static readonly BAR_H: number = 3;
 }
 
+/** 骨架占位数量：电视一条横滑轨道 6 张，手机 3 列 × 2 行，用同一份下标数组 */
+const SKEL_IDX: number[] = [0, 1, 2, 3, 4, 5];
+
 /** 首页轨道卡片共用的「抬起」效果：缩放 + 投影 + 白色描边 */
 @Extend(Column)
 function railLift(focused: boolean) {
@@ -500,6 +503,80 @@ struct Home {
   }
 
   /**
+   * 骨架占位条。
+   *
+   * 刻意不做 shimmer 循环动画：首页此刻正在等网络，再挂一个反复改 opacity 的
+   * 定时器会让整页跟着重绘，反而更卡。静态灰块 + 真实卡片的圆角/间距已经足够
+   * 传达「内容在路上」，内容到位时由 if 分支切换，天然是一次替换。
+   */
+  @Builder
+  Bone(w: Length, h: Length, r: number, top: number) {
+    Row()
+      .width(w)
+      .height(h)
+      .borderRadius(r)
+      .backgroundColor(T.CARD)
+      .margin({ top: top })
+  }
+
+  /**
+   * 「最近更新」骨架：电视一条横滑轨道，手机 3 列网格。
+   * 尺寸对齐真实卡片（电视 R.W×R.H、手机 16:9），内容回来时不会跳一下。
+   */
+  @Builder
+  FeedSkeleton() {
+    if (this.isPhone) {
+      Grid() {
+        ForEach(SKEL_IDX, (i: number) => {
+          GridItem() {
+            Column() {
+              Row()
+                .width('100%')
+                .aspectRatio(16 / 9)
+                .borderRadius(T.RADIUS)
+                .backgroundColor(T.CARD)
+              this.Bone('82%', 12, 4, 8)
+              this.Bone('48%', 10, 4, 6)
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+          }
+        }, (i: number) => 'skp' + i)
+      }
+      .columnsTemplate(this.phoneFeedCols())
+      .columnsGap(10)
+      .rowsGap(14)
+      .width('100%')
+      .scrollBar(BarState.Off)
+      .enableScrollInteraction(false)
+    } else {
+      Scroll() {
+        Row() {
+          ForEach(SKEL_IDX, (i: number) => {
+            Column() {
+              Row()
+                .width(R.W)
+                .height(R.H)
+                .borderRadius(R.RADIUS)
+                .backgroundColor(T.CARD)
+              this.Bone(R.W * 0.8, 13, 4, 7)
+              this.Bone(R.W * 0.45, 11, 4, 6)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .margin({ right: i === SKEL_IDX.length - 1 ? 0 : R.GAP })
+          }, (i: number) => 'skt' + i)
+        }
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .enableScrollInteraction(false)
+      .width('100%')
+      .align(Alignment.Start)
+      .padding({ top: 4, bottom: 6 })
+    }
+  }
+
+  /**
    * 「继续观看」专用标题行：比通用 RailHeader 多一个「清空」按钮。
    *
    * 清空带二次确认（confirmClearHist），按钮文案从「清空」变成「确认清空？」，
@@ -856,24 +933,27 @@ struct Home {
           if (this.hist.length === 0 && this.feed.length === 0) {
             if (this.hasSites) {
               // 已订阅但「最近更新」还没抓出来：要么正在抓，要么这轮没抓到数据。
-              // 别再让人以为没订阅，给一个明确的「正在更新」状态 + 点播兜底入口。
+              // 先铺一排骨架说明「内容在路上」，再补一行状态与兜底入口，
+              // 比原来一屏黑配一行小字更容易让人判断是卡住了还是在加载。
               Column() {
+                this.FeedSkeleton()
                 Row() {
                   if (this.crawling) {
-                    LoadingProgress().width(18).height(18).color(T.SUB)
+                    LoadingProgress().width(16).height(16).color(T.SUB)
                   }
                   Text(this.crawling ? '正在更新「最近更新」…' : '已订阅，正在拉取最新影片…')
-                    .fontSize(16)
+                    .fontSize(14)
                     .fontColor(T.SUB)
-                    .margin({ left: this.crawling ? 10 : 0 })
+                    .margin({ left: this.crawling ? 8 : 0 })
                 }
+                .margin({ top: 18 })
                 Text(this.isPhone ? '也可以直接点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。' : '也可以直接点上方「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
                   .fontSize(13)
                   .fontColor(T.DIM)
-                  .margin({ top: 8 })
+                  .margin({ top: 6 })
               }
               .width('100%')
-              .margin({ top: 40 })
+              .margin({ top: 24 })
               .alignItems(HorizontalAlign.Start)
             } else {
               Column() {
@@ -1058,22 +1138,24 @@ struct Home {
           if (this.hist.length === 0 && this.feed.length === 0) {
             if (this.hasSites) {
               Column() {
+                this.FeedSkeleton()
                 Row() {
                   if (this.crawling) {
-                    LoadingProgress().width(18).height(18).color(T.SUB)
+                    LoadingProgress().width(16).height(16).color(T.SUB)
                   }
                   Text(this.crawling ? '正在更新「最近更新」…' : '已订阅，正在拉取最新影片…')
-                    .fontSize(15)
+                    .fontSize(14)
                     .fontColor(T.SUB)
-                    .margin({ left: this.crawling ? 10 : 0 })
+                    .margin({ left: this.crawling ? 8 : 0 })
                 }
+                .margin({ top: 16 })
                 Text('也可以点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
                   .fontSize(12)
                   .fontColor(T.DIM)
-                  .margin({ top: 8 })
+                  .margin({ top: 6 })
               }
               .width('100%')
-              .margin({ top: 30 })
+              .margin({ top: 20 })
               .alignItems(HorizontalAlign.Start)
             } else {
               Column() {
