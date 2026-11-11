@@ -93,8 +93,28 @@ struct Player {
     return this.playState === PlayState.PLAYING;
   }
 
-  /** 已就绪：能 seek、能显示总时长、能显示控制条 */
+  /**
+   * 已就绪：能 seek、能调音量/倍速、能显示控制条。
+   *
+   * **以「播放器实例存在且没报错」为准，不再严格看主状态是否已推进到 READY。**
+   *
+   * 踩过的坑：第二阶段把 prepared 改成派生 getter（只认 READY/PLAYING/PAUSED/…）后，
+   * 只要有一条路径没能把主状态推到这些值（surface 重建、换档重连、起播事件被吞），
+   * prepared 就会一直是 false。而 seekToRatio 里是 `!prepared` 静默 return、
+   * pickSpeed 里是 `!prepared` 跳过 applySpeed 但照样弹「已切到 1.5 倍速」——
+   * 表现出来就是「进度条拖了没反应」「倍速设了不生效」，两个症状同源。
+   *
+   * 播放器在手就允许调用：状态不允许时 seek/setSpeed 会抛 BusinessError，
+   * 由调用处的 try/catch 兜底（applySeek 会回滚进度并提示「定位失败」）。
+   * 也就是说这里放宽只会让「本来该失败的调用去失败一次」，不会把成功变成失败。
+   */
   get prepared(): boolean {
+    if (this.playState === PlayState.ERROR) {
+      return false;
+    }
+    if (this.player !== null) {
+      return true;
+    }
     return this.playState === PlayState.READY || this.playState === PlayState.PLAYING ||
       this.playState === PlayState.PAUSED || this.playState === PlayState.BUFFERING ||
       this.playState === PlayState.COMPLETED;
@@ -1582,6 +1602,10 @@ struct Player {
   /** 点进度条定位。ratio 为 0~1 */
   seekToRatio(ratio: number): void {
     if (this.player === null || !this.prepared || this.durMs <= 0) {
+      // 这条以前是静默 return，真机上表现为「拖了有预览、松手没反应」。
+      // 记一条日志，至少能从 hilog 看出是哪一项没满足。
+      hilog.info(0x1000, 'BOXN', 'seek skip player=%{public}s prepared=%{public}s dur=%{public}d',
+        '' + (this.player !== null), '' + this.prepared, this.durMs);
       return;
     }
     // 点进度条定位同样撤掉跳过按钮
@@ -2176,7 +2200,12 @@ struct Player {
     try {
       p.setSpeed(Player.speedOf(this.speed));
     } catch (e) {
-      // 不支持变速的源，保持原速
+      // 不支持变速的源（HLS 直播、部分点播封装）会抛 BusinessError。
+      // 以前这里空 catch，用户只看到「已切到 1.5 倍速」而声音没变 ——
+      // 现在明说，至少不会以为是软件坏了。
+      const err = e as Error;
+      hilog.error(0x1000, 'BOXN', 'setSpeed fail %{public}s: %{public}s', '' + this.speed, err.message);
+      this.showTip('这个源不支持 ' + this.speed + ' 倍速');
     }
   }
 
@@ -2185,8 +2214,15 @@ struct Player {
     await Store.setSpeedPref(v);
     if (this.player !== null && this.prepared) {
       this.applySpeed(this.player);
+      hilog.info(0x1000, 'BOXN', 'speed apply %{public}s state=%{public}s',
+        '' + v, PlayState.label(this.playState));
+      this.showTip(v === 1 ? '已恢复 1.0 倍速' : ('已切到 ' + v + ' 倍速'));
+    } else {
+      // 以前无论有没有真正生效都弹「已切到 1.5 倍速」，用户看到提示却听不出变化。
+      hilog.info(0x1000, 'BOXN', 'speed skip player=%{public}s prepared=%{public}s state=%{public}s',
+        '' + (this.player !== null), '' + this.prepared, PlayState.label(this.playState));
+      this.showTip('播放器还没准备好，倍速稍后生效');
     }
-    this.showTip(v === 1 ? '已恢复 1.0 倍速' : ('已切到 ' + v + ' 倍速'));
   }
 
   /**
