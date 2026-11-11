@@ -43,6 +43,10 @@ const LIVE_SKIP_MAX: number = 4;
 const LIVE_PROBE_MAX: number = 7;
 /** 直播错误去重窗口：同一频道X秒内只计一次错误，避免网络抖动误换台 */
 const LIVE_ERR_WINDOW: number = 8000;
+/** 画面缩放模式常量（对应 media.VideoScaleType 枚举值） */
+const SCALE_STRETCH: number = 0;  // 拉伸铺满（可能变形）
+const SCALE_CROP: number = 1;     // 等比裁剪铺满（裁掉溢出部分）
+const SCALE_FIT: number = 2;      // 等比适应（留黑边）
 /** 卡顿看门狗：位置多久不动就认为在缓冲 */
 const FREEZE_MS: number = 5000;
 /** 两次自动换档的最小间隔，避免来回抖 */
@@ -115,8 +119,8 @@ struct Player {
   @State showQ: boolean = false;
   /** 实测网速文案，如「3.4 MB/s」 */
   @State netTxt: string = '';
-  /** 画面显示模式：0 拉伸铺满 / 1 等比裁剪铺满 / 2 等比适应留黑边 */
-  @State scaleMode: number = 0;
+  /** 画面显示模式：SCALE_STRETCH=0 / SCALE_CROP=1 / SCALE_FIT=2 */
+  @State scaleMode: number = SCALE_STRETCH;
   /** 播放倍速，1 = 正常。全局偏好，起播自动生效 */
   @State speed: number = 1;
   /** 这个源提供的字幕轨；空数组表示没有字幕 */
@@ -368,7 +372,7 @@ struct Player {
     // 手机竖屏默认「等比适应留黑边」：默认的 VIDEO_SCALE_TYPE_FIT 是拉伸铺满，
     // 横屏视频在竖屏手机里会被拉长变形，这里按设备形态切换默认画面比例。
     if (this.isPhone) {
-      this.scaleMode = 2;
+      this.scaleMode = SCALE_FIT;
     }
     await Store.init(getContext(this) as common.UIAbilityContext);
     // 恢复全局偏好：画面比例、清晰度
@@ -2113,8 +2117,8 @@ struct Player {
         // 个别流/机型不支持，忽略
       }
     }
-    const name: string = mode === 1 ? '裁剪铺满（等比不变形）'
-      : (mode === 2 ? '等比适应（留黑边）' : '拉伸铺满');
+    const name: string = mode === SCALE_CROP ? '裁剪铺满（等比不变形）'
+      : (mode === SCALE_FIT ? '等比适应（留黑边）' : '拉伸铺满');
     this.showTip('画面比例：' + name);
   }
 

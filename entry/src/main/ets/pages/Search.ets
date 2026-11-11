@@ -55,6 +55,8 @@ struct SearchPage {
   private gen: number = 0;
   /** 联想建议防抖计时器（300ms）：快速打字时不每个字都触发 */
   private suggTimer: number = -1;
+  /** 搜不到结果时刷新热门推荐的轮次（交替两种取法） */
+  private hotRound: number = 0;
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -298,8 +300,8 @@ struct SearchPage {
     this.loading = false;
     if (this.groups.length === 0) {
       this.err = '没有搜到「' + this.kw.trim() + '」';
-      // 搜不到时把热门推荐刷新一次（偶数代是按历史频次取的，奇数代是不同站源的随机一页）
-      this.loadHotVods();
+      // 搜不到时换一批热门推荐（偶数轮按搜索历史加权，奇数轮随机取一页）
+      await this.loadHotVods();
     }
   }
 
@@ -325,6 +327,48 @@ struct SearchPage {
   openHotVod(v: Vod): void {
     this.kw = v.name;
     this.doSearch();
+  }
+
+  /**
+   * 搜不到结果时换一批热门推荐，别让空态永远挂着同一批片名。
+   * 偶数轮：按搜索历史词加权（kws 已按「次数×时间衰减」排序，靠前更贴合偏好）；
+   * 奇数轮：从 feed 的随机位置起环绕取一页。
+   * feed 为空时保留原推荐，不把已有内容清空。
+   */
+  private async loadHotVods(): Promise<void> {
+    this.hotRound += 1;
+    const feed: Vod[] = await Store.feed();
+    if (feed.length === 0) {
+      return;
+    }
+    const picked: Vod[] = [];
+    if (this.hotRound % 2 === 0) {
+      for (let i = 0; i < this.kws.length && picked.length < 12; i++) {
+        const kw: string = this.kws[i].trim();
+        if (kw.length === 0) {
+          continue;
+        }
+        for (let j = 0; j < feed.length && picked.length < 12; j++) {
+          if (feed[j].name.indexOf(kw) >= 0 && picked.indexOf(feed[j]) < 0) {
+            picked.push(feed[j]);
+          }
+        }
+      }
+      for (let j = 0; j < feed.length && picked.length < 12; j++) {
+        if (picked.indexOf(feed[j]) < 0) {
+          picked.push(feed[j]);
+        }
+      }
+    } else {
+      const start: number = Math.floor(Math.random() * feed.length);
+      for (let k = 0; k < feed.length && picked.length < 12; k++) {
+        const v: Vod = feed[(start + k) % feed.length];
+        if (picked.indexOf(v) < 0) {
+          picked.push(v);
+        }
+      }
+    }
+    this.hotVods = picked;
   }
 
   /** 灵犀遥控器是指针模式，高亮靠 hover 驱动 */
