@@ -40,8 +40,15 @@ JAVA="$DEVECO/jbr/Contents/Home/bin/java"
 OUT="build/release"
 UNSIGNED="$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
 PACKINFO="$ROOT/entry/build/default/outputs/default/pack.info"
-APP_UNSIGNED="$OUT/夜帧影视-1.0.4-release-unsigned.app"
-TARGET="$OUT/夜帧影视-1.0.4-release-signed.app"
+
+# 版本号从 AppScope/app.json5 读，不写死。
+# 原来这里硬编码 1.0.4，app.json5 早就升到 1.1.0 了，产物名一直是旧版本 ——
+# 提审时按名字找包会拿错文件，商店里显示的还是 1.0.4。
+VER="$(grep -m1 '"versionName"' "$ROOT/AppScope/app.json5" \
+  | sed -E 's/.*"versionName"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+[ -n "$VER" ] || VER="0.0.0"
+APP_UNSIGNED="$OUT/夜帧影视-${VER}-release-unsigned.app"
+TARGET="$OUT/夜帧影视-${VER}-release-signed.app"
 
 if [ -z "$CER" ] || [ -z "$P7B" ]; then
   cat <<EOF

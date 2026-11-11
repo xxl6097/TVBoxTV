@@ -19,12 +19,25 @@ import { Channel, LiveDir, Episode, PlayParam, T, RawLive } from '../common/Mode
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { fromLives, LivePreset } from '../common/LivePresets';
 import { LiveProbe, LiveScore } from '../common/LiveProbe';
-import { Epg } from '../common/Epg';
+import { Epg, EpgProg } from '../common/Epg';
 import { KEY_IS_PHONE } from '../common/Device';
 import { Theme, KEY_THEME } from '../common/Theme';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { isBackCode } from '../common/TvFocus';
 import { Pointer } from '../common/Pointer';
+
+/**
+ * 「今日节目单」面板的一行：一个台 + 正在播 + 接下来。
+ * 做成快照（打开面板时算一次）而不是在 build 里现算，
+ * 否则每帧都要遍历各台的节目数组，滚动会掉帧。
+ */
+class EpgRow {
+  ch: Channel = new Channel();
+  /** 「节目名  HH:MM-HH:MM」；没对上节目时为空串 */
+  cur: string = '';
+  /** 「接下来：节目名  HH:MM」 */
+  next: string = '';
+}
 
 @Entry
 @Component
@@ -86,6 +99,9 @@ struct LivePage {
   @State checkProgress: string = '';
   /** EPG 节目单是否已就绪（false 时频道格子不显示第二行） */
   @State epgOn: boolean = false;
+  /** 今日节目单面板 */
+  @State showEpg: boolean = false;
+  @State epgRows: EpgRow[] = [];
   /**
    * 面板打开的时刻。
    *
@@ -198,6 +214,46 @@ struct LivePage {
       return '';
     }
     return Epg.nowText(chName);
+  }
+
+  /**
+   * 打开「今日节目单」：把当前分组的台各取一条「正在播 + 接下来」拍成快照。
+   *
+   * 为什么要拍快照而不是在 build 里现算：Epg.now() 每条都要遍历该台的节目数组，
+   * 面板若逐帧重算，滚动时会明显掉帧。上限 40 台和「检测」保持一致——
+   * 一屏能看的量，再多用户也不会一个个翻。
+   */
+  openEpg(): void {
+    const list: Channel[] = this.channels();
+    if (list.length === 0) {
+      Tip.show('当前分组没有频道');
+      return;
+    }
+    if (!this.epgOn) {
+      Tip.show('还没拿到节目单，去「设置 → 播放源 → EPG 节目单」填一个 XMLTV 地址');
+      return;
+    }
+    const cap: number = 40;
+    const rows: EpgRow[] = [];
+    for (let i = 0; i < list.length && i < cap; i++) {
+      const r: EpgRow = new EpgRow();
+      r.ch = list[i];
+      const now: EpgProg | null = Epg.now(list[i].name);
+      if (now !== null) {
+        r.cur = now.name + '  ' + Epg.hhmm(now.start) + '-' + Epg.hhmm(now.stop);
+      }
+      const today: EpgProg[] = Epg.today(list[i].name);
+      // today() 的第一条可能就是正在播的，跳过它取真正的「接下来」
+      for (let j = 0; j < today.length; j++) {
+        if (now === null || today[j].start !== now.start) {
+          r.next = '接下来：' + today[j].name + '  ' + Epg.hhmm(today[j].start);
+          break;
+        }
+      }
+      rows.push(r);
+    }
+    this.epgRows = rows;
+    this.showEpg = true;
   }
 
   async reload(): Promise<void> {
@@ -766,6 +822,118 @@ struct LivePage {
   }
 
   /**
+   * 今日节目单面板。
+   *
+   * 只列当前分组（上限 40 台，与「检测」一致）：EPG 的价值是「现在这一屏都在播什么」，
+   * 把整份源的几百台铺开反而找不到。点某一行直接切台，把「看节目单」和「换台」合成一步。
+   */
+  @Builder
+  EpgPanel() {
+    Stack() {
+      // 点空白关闭
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#B3000000')
+        .onClick(() => {
+          Feedback.tap();
+          this.showEpg = false;
+        })
+
+      Column() {
+        Row() {
+          Text('今日节目单')
+            .fontSize(19)
+            .fontColor(T.TXT)
+          Text('  ' + this.crumb())
+            .fontSize(13)
+            .fontColor(T.DIM)
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('✕')
+            .fontSize(18)
+            .fontColor(this.hi('epgx') ? T.TXT : T.SUB)
+            .width(36)
+            .height(36)
+            .textAlign(TextAlign.Center)
+            .borderRadius(T.RADIUS_SM)
+            .backgroundColor(this.hi('epgx') ? T.CARD_HI : '#00000000')
+            .onHover((hv: boolean) => this.hover('epgx', hv))
+            .onClick(() => {
+              Feedback.tap();
+              this.showEpg = false;
+            })
+            .onMouse(Pointer.pressRelease('epgx', () => {
+              Feedback.tap();
+              this.showEpg = false;
+            }))
+        }
+        .width('100%')
+        .padding({ bottom: 12 })
+
+        List() {
+          ForEach(this.epgRows, (r: EpgRow) => {
+            ListItem() {
+              Row() {
+                Text(r.ch.name)
+                  .fontSize(14)
+                  .fontColor(this.isCur(r.ch) ? T.SELECTED : T.TXT)
+                  .width(112)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                Column() {
+                  Text(r.cur.length > 0 ? r.cur : '暂无节目信息')
+                    .fontSize(14)
+                    .fontColor(r.cur.length > 0 ? T.SUB : T.DIM)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  if (r.next.length > 0) {
+                    Text(r.next)
+                      .fontSize(12)
+                      .fontColor(T.DIM)
+                      .margin({ top: 3 })
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+              }
+              .width('100%')
+              .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+              .borderRadius(T.RADIUS_SM)
+              .backgroundColor(this.hi('epgr_' + r.ch.url) ? T.CARD_HI : '#00000000')
+              .onHover((hv: boolean) => this.hover('epgr_' + r.ch.url, hv))
+              .onClick(() => {
+                Feedback.tap();
+                this.showEpg = false;
+                this.tapChannel(r.ch);
+              })
+              .onMouse(Pointer.pressRelease('epgr:' + r.ch.url, () => {
+                Feedback.tap();
+                this.showEpg = false;
+                this.tapChannel(r.ch);
+              }))
+            }
+          }, (r: EpgRow) => 'epgr' + r.ch.url)
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .scrollBar(BarState.Off)
+      }
+      .width(this.isPhone ? '92%' : 760)
+      .constraintSize({ maxHeight: this.isPhone ? '72%' : 600 })
+      .padding(18)
+      .backgroundColor(T.SURFACE)
+      .borderRadius(24)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /**
    * 测速排行面板。
    *
    * 独立浮层而不是塞进工具栏下拉：一行要放「名次 + 源名 + 速度 + 台数 + 可播率 + 操作」，
@@ -1072,6 +1240,35 @@ struct LivePage {
               this.checkChannels();
             });
           }))
+          // 只有拿到节目单才显示入口：没配 EPG 时这个按钮点了也只能给一句提示，
+          // 常驻只会白占一排按钮的宽度
+          if (this.epgOn) {
+            Text('节目单')
+              .fontSize(15)
+              .fontColor(this.hi('epg') ? T.TXT : T.SUB)
+              .height(40)
+              .padding({ left: 14, right: 14 })
+              .margin({ left: 4 })
+              .borderRadius(T.RADIUS)
+              .textAlign(TextAlign.Center)
+              .backgroundColor(this.hi('epg') ? T.CARD_HI : '#00000000')
+              .border({ width: T.BORDER, color: this.hi('epg') ? T.TXT : '#00000000' })
+              .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+              .focusable(true)
+              .onFocus(() => this.hover('epg', true))
+              .onBlur(() => this.hover('epg', false))
+              .onHover((hv: boolean) => this.hover('epg', hv))
+              .onClick(() => {
+                this.fire('epg', () => {
+                  this.openEpg();
+                });
+              })
+              .onMouse(Pointer.pressRelease('epg', () => {
+                this.fire('epg', () => {
+                  this.openEpg();
+                });
+              }))
+          }
           Text('刷新')
             .fontSize(15)
             .fontColor(T.TXT)
@@ -1439,6 +1636,14 @@ struct LivePage {
       .height('100%')
       .visibility(this.showSpeed ? Visibility.Visible : Visibility.None)
       .hitTestBehavior(this.showSpeed ? HitTestMode.Default : HitTestMode.None)
+
+      Stack() {
+        this.EpgPanel()
+      }
+      .width('100%')
+      .height('100%')
+      .visibility(this.showEpg ? Visibility.Visible : Visibility.None)
+      .hitTestBehavior(this.showEpg ? HitTestMode.Default : HitTestMode.None)
 
       Stack() {
         TipLayer({ msg: this.tipMsg })
