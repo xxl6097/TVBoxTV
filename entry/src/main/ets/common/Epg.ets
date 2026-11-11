@@ -69,6 +69,29 @@ export class Epg {
     return Epg.lastErr;
   }
 
+  /** 节目单是什么时候拉下来的，用来看「数据新不新」 */
+  static loadedAtText(): string {
+    if (Epg.loadedAt === 0) {
+      return '';
+    }
+    const d: Date = new Date(Epg.loadedAt);
+    const now: Date = new Date();
+    const sameDay: boolean = d.getFullYear() === now.getFullYear()
+      && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return (sameDay ? '今天 ' : '昨天 ') + Epg.hhmm(Epg.loadedAt);
+  }
+
+  /** 一批台名里有多少能对上节目单（设置页/节目单标题用来给匹配率） */
+  static matched(names: string[]): number {
+    let n: number = 0;
+    for (let i = 0; i < names.length; i++) {
+      if (Epg.resolve(names[i]).length > 0) {
+        n++;
+      }
+    }
+    return n;
+  }
+
   /**
    * 归一化台名。
    *
@@ -99,7 +122,8 @@ export class Epg {
    * 返回解析到的频道数（0 表示没配置或拉取失败）。
    */
   static async ensure(force: boolean): Promise<number> {
-    if (!force && Epg.chs.length > 0 && Date.now() - Epg.loadedAt < Epg.TTL) {
+    if (!force && Epg.chs.length > 0 && Date.now() - Epg.loadedAt < Epg.TTL
+      && Epg.sameDay(Epg.loadedAt, Date.now())) {
       return Epg.chs.length;
     }
     if (Epg.busy) {
@@ -188,6 +212,21 @@ export class Epg {
     const h: number = d.getHours();
     const m: number = d.getMinutes();
     return (h < 10 ? '0' + h : '' + h) + ':' + (m < 10 ? '0' + m : '' + m);
+  }
+
+  /**
+   * 两个时间戳是否同一天（本地时区）。
+   *
+   * 为什么单靠 TTL 不够：节目单是按「天」组织的数据。晚上 22:00 拉一份，
+   * 到凌晨 2:00 只过了 4 小时、TTL 还没到，但缓存里全是昨天的节目 ——
+   * 结果是频道格子第二行集体消失（now() 找不到正在播的）、
+   * 节目单面板把昨天剩下的节目当成「接下来」。所以跨天必须作废。
+   */
+  private static sameDay(a: number, b: number): boolean {
+    const x: Date = new Date(a);
+    const y: Date = new Date(b);
+    return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth()
+      && x.getDate() === y.getDate();
   }
 
   // ==================== 匹配 ====================

@@ -195,11 +195,18 @@ export class LiveProbe {
    * 结果是一堆「假失效」——明明能播的台被标灰，比不标更糟。
    *
    * onTick 每检测完一条调一次，界面可以边测边标灰，不用等全部结束。
+   *
+   * cancelled：可选的中途退出判据。只在每批（parallel 个）开始前查一次 ——
+   * 正在飞的那一批仍然会跑完（探活本身有超时，最多几秒），
+   * 但不会再往下发新的，用户点「停止」不必等到 40 台全测完。
    */
   static async channels(chs: Channel[], onTick: (ch: Channel, alive: boolean) => void,
-    parallel: number = 4): Promise<number> {
+    parallel: number = 4, cancelled?: () => boolean): Promise<number> {
     let dead: number = 0;
     for (let s = 0; s < chs.length; s += parallel) {
+      if (cancelled !== undefined && cancelled()) {
+        break;
+      }
       const jobs: Promise<void>[] = [];
       for (let i = s; i < Math.min(s + parallel, chs.length); i++) {
         const ch: Channel = chs[i];

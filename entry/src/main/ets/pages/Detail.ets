@@ -11,6 +11,7 @@ import { KEY_IS_PHONE } from '../common/Device';
 import { Theme, KEY_THEME } from '../common/Theme';
 import { Poster } from '../common/Poster';
 import { Pointer } from '../common/Pointer';
+import { ArraySource } from '../common/DataSource';
 
 /** 剧集网格：整宽 8 列，单项高 46、间距 10。epsHeight() 靠这三个数算总高 */
 const EPS_COLS: number = 8;
@@ -59,6 +60,19 @@ struct Detail {
 
   /** 剧集网格的滚动控制器：进页面要自动滚到「上次看到」那一集 */
   private epScroller: Scroller = new Scroller();
+  /**
+   * 剧集网格的数据源（LazyForEach）。
+   *
+   * 原来 Grid 里是 `ForEach(this.epsView())`：200 集的剧一次建 200 个 GridItem，
+   * 每个还带边框/动画/两组事件，进详情页会明显顿一下。改成 LazyForEach 后
+   * 只建可视区 + cachedCount 范围内的，滚动时边回收边建。
+   *
+   * 数据是「成片替换」的（加载完成 / 切线路 / 切正倒序），所以统一走 syncEps()，
+   * 不需要逐条 notify。
+   */
+  private epSrc: ArraySource<Episode> = new ArraySource<Episode>();
+  /** 集数，驱动空态与「网格要不要自己滚」的判断（数据源本身不是状态变量） */
+  @State epCount: number = 0;
   /** 只自动定位一次，用户手动滚走之后不再抢回焦点 */
   private located: boolean = false;
 
@@ -167,6 +181,13 @@ struct Detail {
     return out;
   }
 
+  /** 把当前（线路 + 正/倒序）下的剧集推给 LazyForEach 数据源 */
+  private syncEps(): void {
+    const list: Episode[] = this.epsView();
+    this.epCount = list.length;
+    this.epSrc.set(list);
+  }
+
   /** 按 url 反查真实集数下标（倒序显示时不能直接用显示位置） */
   realIdx(ep: Episode): number {
     if (this.lines.length === 0 || this.lineIdx >= this.lines.length) {
@@ -246,9 +267,15 @@ struct Detail {
           break;
         }
       }
+      // 用户在这部片子上手动选过线路就沿用他选的，别再退回收视最差的默认线
+      const savedLine: number = await Store.linePref(this.siteKey, this.vodId);
+      if (savedLine >= 0 && savedLine < this.lines.length) {
+        this.lineIdx = savedLine;
+      }
       if (this.lines.length === 0) {
         this.err = '该片没有可播放的剧集地址';
       }
+      this.syncEps();
     } catch (err) {
       const e = err as Error;
       this.err = e.message;
@@ -495,11 +522,15 @@ struct Detail {
                               .onClick(() => Pointer.fire('d_line' + i, () => {
                                   Feedback.tap();
                                   this.lineIdx = i;
+                                  this.syncEps();
+                                  Store.setLinePref(this.siteKey, this.vodId, i).catch(() => {});
                                   Tip.show('已切到线路：' + l.name);
                               }))
                               .onMouse(Pointer.on('d_line' + i, () => {
                                   Feedback.tap();
                                   this.lineIdx = i;
+                                  this.syncEps();
+                                  Store.setLinePref(this.siteKey, this.vodId, i).catch(() => {});
                                   Tip.show('已切到线路：' + l.name);
                               }))
                           }
@@ -544,13 +575,13 @@ struct Detail {
                     .onFocus(() => this.hoverTo('ord', true))
                     .onBlur(() => this.hoverTo('ord', false))
                     .onHover((hv: boolean) => this.hoverTo('ord', hv))
-                    .onClick(() => Pointer.fire('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; }))
-                    .onMouse(Pointer.on('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; }))
+                    .onClick(() => Pointer.fire('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; this.syncEps(); }))
+                    .onMouse(Pointer.on('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; this.syncEps(); }))
                 }
                 .width('100%').margin({ top: 20, bottom: 10 })
 
                 Grid(this.epScroller) {
-                  ForEach(this.epsView(), (ep: Episode) => {
+                  LazyForEach(this.epSrc, (ep: Episode) => {
                     GridItem() {
                       Text(ep.name)
                         .fontSize(16)
@@ -580,6 +611,9 @@ struct Detail {
                 .columnsTemplate(this.epsColsT())
                 .columnsGap(EPS_GAP)
                 .rowsGap(EPS_GAP)
+                // 预建可视区上下各 20 个：滚动时不会出现「白块等着建」的顿感，
+                // 又不至于像 ForEach 那样一次把 200 集全建出来
+                .cachedCount(20)
                 .width('100%')
                 // 行数少时高度按内容算准（不留空白），行数多时封顶 4 行自己滚
                 .height(this.epsBoxHeight())

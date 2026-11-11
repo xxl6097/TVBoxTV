@@ -31,6 +31,21 @@ export class HistItem {
   time: number = 0;
 }
 
+/**
+ * 「这部片上次用的是哪条线路」。
+ *
+ * 采集站的线路质量差别很大：第一条常常是需要解析的网页地址，能直连的往往在后面。
+ * 用户手动挑了一条能用的，下次再进详情页却又回到第一条，得重挑一遍。
+ */
+class LinePick {
+  /** siteKey|vodId */
+  k: string = '';
+  /** 线路下标 */
+  i: number = 0;
+  /** 最后使用时间，用来淘汰最旧的记录 */
+  t: number = 0;
+}
+
 export class FavItem {
   siteKey: string = '';
   siteName: string = '';
@@ -777,8 +792,20 @@ export class Store {
       f.time = Date.now();
       out.unshift(f);
     }
-    await Store.prefs.put('fav', JSON.stringify(out));
-    await Store.prefs.flush();
+    // 收藏原来没有任何上限，会一直长。preferences 单个 string 值有容量上限，
+    // 长到某一天 put 会直接抛异常，而这里没捕获 —— 表现是「点了收藏但下次打开没了」。
+    // 现在先按条数兜住，写失败也只记日志、不再静默崩在调用方。
+    if (out.length > Store.FAV_MAX) {
+      out.length = Store.FAV_MAX;
+    }
+    try {
+      await Store.prefs.put('fav', JSON.stringify(out));
+      await Store.prefs.flush();
+    } catch (err) {
+      const e = err as Error;
+      hilog.error(0x1000, 'BOXN', 'fav save fail: %{public}s', e.message);
+      return !removed;
+    }
     // 收藏变了就推一次云端（开关关着时方法内部直接返回，不会有开销）
     Store.syncFavToWebDAV().catch(() => {});
     return !removed;
@@ -815,7 +842,69 @@ export class Store {
     return true;
   }
 
+  // ---------- 线路记忆 ----------
+
+  /** 最多记多少部片的线路选择（约 10KB，够用且不会撑爆单键） */
+  private static LINE_MAX: number = 120;
+
+  private static async linePicks(): Promise<LinePick[]> {
+    if (Store.prefs === null) {
+      return [];
+    }
+    const s: string = await Store.prefs.get('linePrefs', '') as string;
+    if (s.length === 0) {
+      return [];
+    }
+    try {
+      return JSON.parse(s) as LinePick[];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  /** 上次在这部片子上选的线路下标；没有记录返回 -1 */
+  static async linePref(siteKey: string, vodId: string): Promise<number> {
+    const all: LinePick[] = await Store.linePicks();
+    const k: string = siteKey + '|' + vodId;
+    for (let i = 0; i < all.length; i++) {
+      if (all[i].k === k) {
+        return all[i].i;
+      }
+    }
+    return -1;
+  }
+
+  /** 记住这部片子用的是第几条线路 */
+  static async setLinePref(siteKey: string, vodId: string, idx: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const k: string = siteKey + '|' + vodId;
+    const all: LinePick[] = await Store.linePicks();
+    const out: LinePick[] = [];
+    const mine: LinePick = new LinePick();
+    mine.k = k;
+    mine.i = idx;
+    mine.t = Date.now();
+    out.push(mine);
+    for (let i = 0; i < all.length && out.length < Store.LINE_MAX; i++) {
+      if (all[i].k !== k) {
+        out.push(all[i]);
+      }
+    }
+    try {
+      await Store.prefs.put('linePrefs', JSON.stringify(out));
+      await Store.prefs.flush();
+    } catch (err) {
+      const e = err as Error;
+      hilog.error(0x1000, 'BOXN', 'linePref save fail: %{public}s', e.message);
+    }
+  }
+
   // ---------- 搜索历史 ----------
+
+  /** 收藏条数上限：防无限增长撑爆 preferences 的单键容量 */
+  private static FAV_MAX: number = 500;
 
   /** 最多留几条。电视上用指针输入关键词很费劲，历史点一下就能重搜 */
   private static KW_MAX: number = 20;

@@ -97,11 +97,20 @@ struct LivePage {
   @State deadUrls: string[] = [];
   @State checking: boolean = false;
   @State checkProgress: string = '';
+  /** 检测中途退出标志（检测中再点一次「检测」即置位） */
+  private checkStop: boolean = false;
   /** EPG 节目单是否已就绪（false 时频道格子不显示第二行） */
   @State epgOn: boolean = false;
   /** 今日节目单面板 */
   @State showEpg: boolean = false;
   @State epgRows: EpgRow[] = [];
+  /** 节目单面板的过滤词（台名或节目名） */
+  @State epgKw: string = '';
+  /** 匹配统计：对上台名的台数 / 参与统计的台数 */
+  @State epgMatched: number = 0;
+  @State epgTotal: number = 0;
+  /** 节目单拉取时间文案，如「今天 14:20」 */
+  @State epgAt: string = '';
   /**
    * 面板打开的时刻。
    *
@@ -219,9 +228,12 @@ struct LivePage {
   /**
    * 打开「今日节目单」：把当前分组的台各取一条「正在播 + 接下来」拍成快照。
    *
-   * 为什么要拍快照而不是在 build 里现算：Epg.now() 每条都要遍历该台的节目数组，
-   * 面板若逐帧重算，滚动时会明显掉帧。上限 40 台和「检测」保持一致——
-   * 一屏能看的量，再多用户也不会一个个翻。
+   * 为什么拍快照：Epg.now() 每条都要遍历该台的节目数组，面板若逐帧重算，
+   * 滚动时会明显掉帧。
+   *
+   * 原来只取前 40 台（和「检测」一样），但节目单的用途就是「翻一遍看有什么」，
+   * 40 台之后既没有节目名也翻不到，等于把三分之二的频道排除了。现在按当前分组
+   * 全量算（499 台也就几万次比较），只对极端大源保留一个 300 的兜底上限。
    */
   openEpg(): void {
     const list: Channel[] = this.channels();
@@ -233,16 +245,21 @@ struct LivePage {
       Tip.show('还没拿到节目单，去「设置 → 播放源 → EPG 节目单」填一个 XMLTV 地址');
       return;
     }
-    const cap: number = 40;
+    const cap: number = 300;
+    const use: Channel[] = list.length > cap ? list.slice(0, cap) : list;
+    const names: string[] = [];
+    for (let i = 0; i < use.length; i++) {
+      names.push(use[i].name);
+    }
     const rows: EpgRow[] = [];
-    for (let i = 0; i < list.length && i < cap; i++) {
+    for (let i = 0; i < use.length; i++) {
       const r: EpgRow = new EpgRow();
-      r.ch = list[i];
-      const now: EpgProg | null = Epg.now(list[i].name);
+      r.ch = use[i];
+      const now: EpgProg | null = Epg.now(use[i].name);
       if (now !== null) {
         r.cur = now.name + '  ' + Epg.hhmm(now.start) + '-' + Epg.hhmm(now.stop);
       }
-      const today: EpgProg[] = Epg.today(list[i].name);
+      const today: EpgProg[] = Epg.today(use[i].name);
       // today() 的第一条可能就是正在播的，跳过它取真正的「接下来」
       for (let j = 0; j < today.length; j++) {
         if (now === null || today[j].start !== now.start) {
@@ -253,7 +270,41 @@ struct LivePage {
       rows.push(r);
     }
     this.epgRows = rows;
+    this.epgMatched = Epg.matched(names);
+    this.epgTotal = use.length;
+    this.epgAt = Epg.loadedAtText();
+    this.epgKw = '';
     this.showEpg = true;
+  }
+
+  /** 节目单按关键词过滤（台名或节目名命中都算） */
+  epgView(): EpgRow[] {
+    const kw: string = this.epgKw.trim().toLowerCase();
+    if (kw.length === 0) {
+      return this.epgRows;
+    }
+    const out: EpgRow[] = [];
+    for (let i = 0; i < this.epgRows.length; i++) {
+      const r: EpgRow = this.epgRows[i];
+      if (r.ch.name.toLowerCase().indexOf(kw) >= 0 || r.cur.toLowerCase().indexOf(kw) >= 0) {
+        out.push(r);
+      }
+    }
+    return out;
+  }
+
+  /** 面板里的「刷新」：强制重拉节目单，再重建快照 */
+  async refreshEpg(): Promise<void> {
+    Tip.show('正在刷新节目单…');
+    const n: number = await Epg.ensure(true);
+    if (n > 0) {
+      this.epgOn = true;
+      this.sync();
+      this.openEpg();
+      Tip.show('节目单已更新：' + n + ' 个频道');
+    } else {
+      Tip.show('节目单拉取失败：' + (Epg.error().length > 0 ? Epg.error() : '地址不可达'));
+    }
   }
 
   async reload(): Promise<void> {
@@ -724,11 +775,15 @@ struct LivePage {
    *
    * 只测当前看到的这一组（上限 40 台）：整份源有几百台，全测要几分钟，
    * 而且用户此刻关心的就是眼前这一屏能不能点。
+   *
+   * 检测中再点一次 = 停止：探活是按 4 个一批发的，停止后会跑完手上这一批
+   * （每台都有超时，最多几秒），但不再往下发新的。
    */
   async checkChannels(): Promise<void> {
     hilog.info(0x1000, 'BOXN', 'chk enter checking=%{public}s', '' + this.checking);
     if (this.checking) {
-      Tip.show('正在检测，请稍等');
+      this.checkStop = true;
+      Tip.show('正在停止检测…');
       return;
     }
     const list: Channel[] = this.channels();
@@ -740,6 +795,7 @@ struct LivePage {
     const CAP: number = 40;
     const use: Channel[] = list.length > CAP ? list.slice(0, CAP) : list;
     this.checking = true;
+    this.checkStop = false;
     const dead: string[] = [];
     let done: number = 0;
     this.checkProgress = '0 / ' + use.length;
@@ -754,13 +810,20 @@ struct LivePage {
         next.push(ch.url);
         this.deadUrls = next;
       }
-    });
+    }, 4, (): boolean => this.checkStop);
 
+    const stopped: boolean = this.checkStop;
     this.checking = false;
+    this.checkStop = false;
     this.checkProgress = '';
     // 失效台要在列表上标灰+删除线，标记是一次性成片更新的，测完整表重推一次
     this.sync();
-    hilog.info(0x1000, 'BOXN', 'chk done dead=%{public}d of %{public}d', deadCount, use.length);
+    hilog.info(0x1000, 'BOXN', 'chk done dead=%{public}d of %{public}d stopped=%{public}s',
+      deadCount, use.length, '' + stopped);
+    if (stopped) {
+      Tip.show('已停止检测：测了 ' + done + ' 台，' + deadCount + ' 台连不上，已标灰');
+      return;
+    }
     if (deadCount === 0) {
       Tip.show('这 ' + use.length + ' 台全部可连');
     } else {
@@ -851,6 +914,25 @@ struct LivePage {
             .layoutWeight(1)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+          // 节目单缓存 6 小时，想立刻拿最新的走这里
+          Text('刷新')
+            .fontSize(13)
+            .fontColor(this.hi('epgrf') ? T.TXT : T.SUB)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .borderRadius(T.RADIUS_SM)
+            .textAlign(TextAlign.Center)
+            .margin({ right: 8 })
+            .backgroundColor(this.hi('epgrf') ? T.CARD_HI : '#00000000')
+            .onHover((hv: boolean) => this.hover('epgrf', hv))
+            .onClick(() => {
+              Feedback.tap();
+              this.refreshEpg();
+            })
+            .onMouse(Pointer.pressRelease('epgrf', () => {
+              Feedback.tap();
+              this.refreshEpg();
+            }))
           Text('✕')
             .fontSize(18)
             .fontColor(this.hi('epgx') ? T.TXT : T.SUB)
@@ -872,8 +954,43 @@ struct LivePage {
         .width('100%')
         .padding({ bottom: 12 })
 
+        // 状态行：数据是什么时候拉的 + 台名匹配率。
+        // 匹配率必须露出来 —— XMLTV 里的台名和直播源里的写法经常对不上，
+        // 不给数字的话用户会以为是功能坏了。
+        Row() {
+          Text(this.epgAt.length > 0 ? ('节目单更新于 ' + this.epgAt) : '节目单已加载')
+            .fontSize(12)
+            .fontColor(T.DIM)
+          Text('· 已匹配 ' + this.epgMatched + ' / ' + this.epgTotal + ' 台')
+            .fontSize(12)
+            .fontColor(this.epgMatched === 0 ? T.ERR : T.DIM)
+            .margin({ left: 8 })
+          Blank()
+          if (this.epgKw.length > 0) {
+            Text('筛出 ' + this.epgView().length + ' 台')
+              .fontSize(12)
+              .fontColor(T.DIM)
+          }
+        }
+        .width('100%')
+        .padding({ bottom: 10 })
+
+        TextInput({ placeholder: '搜台名或节目名', text: this.epgKw })
+          .placeholderColor(T.DIM)
+          .fontSize(14)
+          .fontColor(T.TXT)
+          .height(40)
+          .padding({ left: 14, right: 14 })
+          .backgroundColor(T.CARD)
+          .borderRadius(T.RADIUS_SM)
+          .width('100%')
+          .margin({ bottom: 10 })
+          .onChange((v: string) => {
+            this.epgKw = v;
+          })
+
         List() {
-          ForEach(this.epgRows, (r: EpgRow) => {
+          ForEach(this.epgView(), (r: EpgRow) => {
             ListItem() {
               Row() {
                 Text(r.ch.name)
@@ -1215,7 +1332,7 @@ struct LivePage {
               this.openSpeed();
             });
           }))
-          Text(this.checking ? ('检测 ' + this.checkProgress) : '检测')
+          Text(this.checking ? ('停止 ' + this.checkProgress) : '检测')
             .fontSize(15)
             .fontColor(this.checking ? T.SUB : (this.hi('chk') ? T.TXT : T.SUB))
             .height(40)
