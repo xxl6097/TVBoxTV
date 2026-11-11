@@ -1068,7 +1068,13 @@ struct Player {
   private applyEv(ev: number): void {
     let real: number = ev;
     if (ev === PlayState.EV_BUFFER_START) {
-      this.stateBeforeBuffer = this.playState;
+      // 只在「第一次进入缓冲」时记下缓冲前的状态。
+      // HLS 会在缓冲期间反复发 BUFFERING_START，若无条件覆盖，
+      // 「暂停中被缓冲事件打扰」的场景会先把 PAUSED 记成 BUFFERING，
+      // 缓冲结束时按「非 PAUSED 就播」的规则变成自动播放。
+      if (this.playState !== PlayState.BUFFERING) {
+        this.stateBeforeBuffer = this.playState;
+      }
     } else if (ev === PlayState.EV_BUFFER_END) {
       if (this.playState !== PlayState.BUFFERING) {
         return;                 // 迟到的缓冲结束事件，忽略
@@ -1422,6 +1428,14 @@ struct Player {
     } catch (err) {
       const e = err as BusinessError;
       hilog.error(0x1000, 'BOXN', 'toggle fail code=%{public}d msg=%{public}s', e.code, e.message);
+      // 5400102 = Operate Not Permit：只是「此刻这个状态下不允许 play/pause」，
+      // 不是播放失败。以前一律当错误处理 —— 直接释放播放器 + 弹「播放器状态异常」，
+      // 在起播那一瞬点一下就能把整部片打掉。prepare/缓冲切换期间这种拒绝很常见，
+      // 给个轻提示就够了，等状态就绪再点即可。
+      if (e.code === 5400102) {
+        this.showTip('画面还没准备好，稍后再试');
+        return;
+      }
       this.applyEv(PlayState.EV_ERROR);
       this.errMsg = '播放器状态异常，已停止。点「重试」重新加载。';
       this.releasePlayer();
