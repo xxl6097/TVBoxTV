@@ -535,10 +535,12 @@ struct CollectPage {
           .margin({ left: 8 })
         Text('  ' + this.favs.length + ' 部').fontSize(14).fontColor(T.SUB)
         Blank()
-        // 自定义分组入口：建了分组才显示，避免空白状态下多一排按钮
-        if (this.groups.length > 0) {
-          Text(this.curGroup.length === 0 ? '分组' : ('分组：' + this.groupNameOf(this.curGroup)))
-            .fontSize(15)
+        // 自定义分组入口。**常显**：新建分组在面板里，如果「一个分组都没有就不显示入口」，
+        // 用户永远进不去建第一个分组（鸡生蛋）。
+        Text(this.curGroup.length === 0
+          ? (this.groups.length > 0 ? '分组' : '分组 / 新建')
+          : ('分组：' + (this.curGroup === '__none' ? '未分组' : this.groupNameOf(this.curGroup))))
+          .fontSize(15)
             .fontColor(this.curGroup.length > 0 ? T.SELECTED : (this.hi('cp_gsel') ? T.TXT : T.SUB))
             .padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .margin({ right: 4 })
@@ -557,7 +559,6 @@ struct CollectPage {
                 Feedback.tap();
                 this.showGroups = true;
             }))
-        }
         // 分组切换按钮
         Text(this.grouped ? '取消分组' : '按站源分组')
           .fontSize(15)
@@ -641,15 +642,19 @@ struct CollectPage {
     }
     .width('100%')
     .height('100%')
-      if (this.tipMsg.length > 0) {
-        TipLayer({ msg: this.tipMsg })
-      }
-      if (this.showGroups) {
-        this.GroupPanel()
-      }
-      if (this.moveTarget !== null) {
-        this.MovePanel()
-      }
+
+    // 三个浮层必须在 Stack 内、与 Column 同级：
+    // 之前被误写在 Column 的链式属性之后，编译能过但浮层永远不渲染，
+    // 表现就是「长按收藏卡片毫无反应」。
+    if (this.tipMsg.length > 0) {
+      TipLayer({ msg: this.tipMsg })
+    }
+    if (this.showGroups) {
+      this.GroupPanel()
+    }
+    if (this.moveTarget !== null) {
+      this.MovePanel()
+    }
     }
     .width('100%')
     .height('100%')
