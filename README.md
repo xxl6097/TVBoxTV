@@ -453,7 +453,7 @@ CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含
 
 ### 播放器状态机与模块拆分（v1.1.0）
 
-`Player.ets` 只保留 UI 与 AVPlayer 生命周期编排，与界面无关的纯逻辑外置到四个模块：
+`Player.ets` 只保留 UI 与 AVPlayer 生命周期编排，与界面无关的纯逻辑外置到五个模块：
 
 | 模块 | 职责 |
 |---|---|
@@ -461,6 +461,7 @@ CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含
 | `common/PlayUrl.ets` | `fixPlayable()` 把无扩展名的网页地址补成 `/index.m3u8` |
 | `common/PlayerErr.ets` | 错误码中文映射 + 能力提示（801 / not support）判定 |
 | `common/PlayerHud.ets` | 加载 / 缓冲 / 无法播放三种全屏浮层（状态进、回调出） |
+| `common/PlayerFmt.ets` | 时间格式化 `time(ms)` / `sec(sec)`，纯函数、可单测 |
 
 页面侧唯一入口是 `Player.applyEv(ev)`，接入点：`initPlayer`、`on('error')`、
 `stateChange`、`bufferingUpdate`、`releasePlayer`、看门狗卡顿判定，以及解析失败、
@@ -489,9 +490,11 @@ playState BUFFERING -> ERROR (ev=ERROR)
 这样「两套事实打架」从结构上不可能发生（改状态只能走 `applyEv`），
 `Cannot assign to 'playing' because it is a read-only property` 会在编译期拦住任何绕过状态机的写法。
 
-> 仍保留的一项：`build()` 里的控制条 / 画质面板 / 倍速面板仍是页面内的 `@Builder`，
-> 与 `this` 上的十几个字段强耦合，拆成独立组件需要成组传参与回调，
-> 留作后续独立任务；本次已把耦合最低的 HUD 三块拆到 `common/PlayerHud.ets`。
+> 仍保留的一项：`build()` 里的控制条 / 画质面板 / 倍速面板仍是页面内的 `@Builder`。
+> 它们与 `this` 上的十几个状态一一对应（`curMs`/`durMs`/`volume`/`levels`/`qCap`/`speed`…），
+> 拆成独立 `@Component` 要传 16-20 个 `@Prop`/`@Link` 加同等数量的回调，
+> 调用处会比原代码更长，且改动落在播放核心 UI 上 —— 收益是行数不是功能，暂不动。
+> 已经拿出去的是耦合最低的部分：HUD 三块 + 五个纯逻辑模块。
 
 ### 直播 EPG 节目单（v1.1.0）
 
