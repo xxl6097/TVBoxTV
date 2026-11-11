@@ -32,46 +32,70 @@ export class Cms {
    * 搜索不缓存：关键词千变万化，缓存命中率低，还容易把「刚试过的搜索」结果留旧。
    */
   private static hits: CmHit[] = [];
-  private static readonly HIT_MAX: number = 30;
-  private static readonly HIT_CHARS: number = 3000000;
+  /**
+   * 最多缓存条数（LRU 淘汰）。用户长时间浏览多个站点时不会无限增长：
+   * 100 条约 ~6-10 MB，超出后淘汰最久未访问的，不是最早写入的。
+   */
+  private static readonly HIT_MAX: number = 100;
+  /** 单条响应最大字符数；单个超大响应不独占缓存 */
+  private static readonly HIT_SINGLE_MAX: number = 500000;
+  /** 缓存总字符上限；超出从最久未访问的开始淘汰 */
+  private static readonly HIT_CHARS: number = 5000000;
   private static readonly TTL_CAT: number = 300000;
   private static readonly TTL_LIST: number = 90000;
   private static readonly TTL_DETAIL: number = 600000;
 
-  /** 读缓存；过期或没有都返回空串 */
+  /**
+   * 读缓存（LRU 命中）：命中时把项目移到数组尾部（最近使用），
+   * 淘汰时从头部取（最久未使用），实现真 LRU。
+   */
   private static hit(url: string, ttl: number): string {
     const now: number = Date.now();
     for (let i = 0; i < Cms.hits.length; i++) {
       if (Cms.hits[i].key === url) {
         if (now - Cms.hits[i].at <= ttl) {
-          return Cms.hits[i].body;
+          // LRU：命中时把这条移到尾部，标记为最近使用
+          const item: CmHit = Cms.hits[i];
+          Cms.hits.splice(i, 1);
+          Cms.hits.push(item);
+          return item.body;
         }
-        Cms.hits.splice(i, 1);   // 过期就地清掉，避免数组越攒越长
+        Cms.hits.splice(i, 1);   // 过期就地清掉
         return '';
       }
     }
     return '';
   }
 
-  /** 写缓存：同 URL 覆盖、超条数按最旧淘汰、超总字数从最旧开始丢 */
+  /**
+   * 写缓存（LRU 淘汰）：超容时从头部（最久未用）依次丢，而不是固定丢最旧写入的。
+   * 超大单条响应（>500KB）不缓存，避免一条大页占满整个缓存池。
+   */
   private static keep(url: string, body: string): void {
     if (body.length === 0) {
       return;                  // 空响应不缓存，否则一次失败会「粘」住 90 秒
+    }
+    if (body.length > Cms.HIT_SINGLE_MAX) {
+      hilog.info(0x1000, 'BOXN', 'cache skip (too large %{public}d chars)', body.length);
+      return;
     }
     const e = new CmHit();
     e.key = url;
     e.body = body;
     e.at = Date.now();
+    // 同 URL 覆盖（先删再 push 到尾部）
     for (let i = 0; i < Cms.hits.length; i++) {
       if (Cms.hits[i].key === url) {
-        Cms.hits[i] = e;
-        return;
+        Cms.hits.splice(i, 1);
+        break;
       }
     }
     Cms.hits.push(e);
+    // LRU：超条数时淘汰头部（最久未访问）
     while (Cms.hits.length > Cms.HIT_MAX) {
       Cms.hits.shift();
     }
+    // 总字符超限时，也从头部淘汰
     let total: number = 0;
     for (let i = 0; i < Cms.hits.length; i++) {
       total += Cms.hits[i].body.length;

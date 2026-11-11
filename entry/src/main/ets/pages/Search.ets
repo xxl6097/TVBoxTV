@@ -297,7 +297,9 @@ struct SearchPage {
     this.progress = '';
     this.loading = false;
     if (this.groups.length === 0) {
-      this.err = '没有搜到结果（站源可能已失效，或需要爬虫运行时）';
+      this.err = '没有搜到「' + this.kw.trim() + '」';
+      // 搜不到时把热门推荐刷新一次（偶数代是按历史频次取的，奇数代是不同站源的随机一页）
+      this.loadHotVods();
     }
   }
 

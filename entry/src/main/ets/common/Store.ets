@@ -806,6 +806,25 @@ export class Store {
    * 存储格式 JSON: [{"kw":"庆余年","hits":3,"time":1699526400000}, ...]
    * 旧格式（纯文本 \n 分隔）自动迁移。
    */
+  /**
+   * 搜索历史排序：按「点击次数 × 时间衰减」综合评分降序。
+   *
+   * 时间衰减因子：7 天内权重 1.0，30 天内线性衰减到 0.3，超过 30 天 0.1。
+   * 这样「上周搜了 3 次」排在「半年前搜了 10 次」前面——用户意图会随时间漂移。
+   */
+  static kwScore(rec: KwRecord): number {
+    const ageDays: number = (Date.now() - rec.time) / 86400000;
+    let decay: number;
+    if (ageDays <= 7) {
+      decay = 1.0;
+    } else if (ageDays <= 30) {
+      decay = 1.0 - (ageDays - 7) / 23 * 0.7; // 7d→1.0, 30d→0.3
+    } else {
+      decay = 0.1;
+    }
+    return rec.hits * decay;
+  }
+
   static async keywords(): Promise<string[]> {
     if (Store.prefs === null) {
       return [];
@@ -818,7 +837,8 @@ export class Store {
     if (raw.startsWith('[')) {
       try {
         const arr: KwRecord[] = JSON.parse(raw) as KwRecord[];
-        arr.sort((a: KwRecord, b: KwRecord) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+        // 按时间衰减后的综合评分排序
+        arr.sort((a: KwRecord, b: KwRecord) => Store.kwScore(b) - Store.kwScore(a));
         const out: string[] = [];
         for (let i = 0; i < arr.length && i < Store.KW_MAX; i++) {
           out.push(arr[i].kw);
@@ -892,8 +912,8 @@ export class Store {
     }
     await Store.prefs.put('kwHist', JSON.stringify(arr));
     await Store.prefs.flush();
-    // 返回排序后的关键词列表
-    arr.sort((a: KwRecord, b: KwRecord) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+    // 返回排序后的关键词列表（衰减评分）
+    arr.sort((a: KwRecord, b: KwRecord) => Store.kwScore(b) - Store.kwScore(a));
     const out: string[] = [];
     for (let i = 0; i < arr.length; i++) {
       out.push(arr[i].kw);
@@ -929,7 +949,7 @@ export class Store {
     }
     await Store.prefs.put('kwHist', JSON.stringify(keep));
     await Store.prefs.flush();
-    keep.sort((a: KwRecord, b: KwRecord) => b.hits !== a.hits ? b.hits - a.hits : b.time - a.time);
+    keep.sort((a: KwRecord, b: KwRecord) => Store.kwScore(b) - Store.kwScore(a));
     const out: string[] = [];
     for (let i = 0; i < keep.length; i++) {
       out.push(keep[i].kw);
