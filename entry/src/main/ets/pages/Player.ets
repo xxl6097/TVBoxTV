@@ -1068,9 +1068,22 @@ struct Player {
       this.player = p;
 
       p.on('error', (err: BusinessError) => {
-        this.errMsg = '播放失败（code ' + err.code + '）：' + err.message;
-        hilog.error(0x1000, 'BOXN', 'player error code=%{public}d msg=%{public}s isLive=%{public}s', 
+        hilog.error(0x1000, 'BOXN', 'player error code=%{public}d msg=%{public}s isLive=%{public}s',
           err.code, err.message, this.isLive ? 'YES' : 'NO');
+        // 801 = 「直播流不支持变速」。这是系统播放器在 prepared 阶段发的**能力提示**，
+        // 不是播放失败——紧接着就是 state=playing，画面正常出。
+        // 之前把它当失败处理，导致「画面在播却提示无法播放、自动换台」
+        // （实测 CCTV6/iFan 等多数源每次进入都触发，CCTV1 的源编码不同不发这条）。
+        // 同类能力提示（不支持 seek/暂停等）也按 801 处理。
+        if (err.code === 801) {
+          hilog.info(0x1000, 'BOXN', 'capability hint (code=801), ignore');
+          return;
+        }
+        if (err.code !== 801 && this.isLive && /not support/i.test(err.message)) {
+          hilog.info(0x1000, 'BOXN', 'capability hint by msg, ignore');
+          return;
+        }
+        this.errMsg = '播放失败（code ' + err.code + '）：' + err.message;
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
