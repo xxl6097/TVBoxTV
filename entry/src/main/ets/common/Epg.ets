@@ -61,6 +61,16 @@ export class Epg {
     return Epg.chs.length > 0;
   }
 
+  /**
+   * 当前缓存是否还新鲜（未过期且没跨天）。
+   * 页面用它判断「要不要重拉」—— 与 ensure() 内部的判断保持一致，
+   * 避免出现 ensure 认为要重拉、调用方却以为不用的情况。
+   */
+  static fresh(): boolean {
+    return Epg.chs.length > 0 && Date.now() - Epg.loadedAt < Epg.TTL
+      && Epg.sameDay(Epg.loadedAt, Date.now());
+  }
+
   /** 已解析的频道数（设置页用来显示状态） */
   static count(): number {
     return Epg.chs.length;
@@ -125,8 +135,7 @@ export class Epg {
    * 返回解析到的频道数（0 表示没配置或拉取失败）。
    */
   static async ensure(force: boolean): Promise<number> {
-    if (!force && Epg.chs.length > 0 && Date.now() - Epg.loadedAt < Epg.TTL
-      && Epg.sameDay(Epg.loadedAt, Date.now())) {
+    if (!force && Epg.fresh()) {
       return Epg.chs.length;
     }
     if (Epg.busy) {

@@ -111,6 +111,8 @@ struct LivePage {
   @State epgTotal: number = 0;
   /** 节目单拉取时间文案，如「今天 14:20」 */
   @State epgAt: string = '';
+  /** 节目单正在分帧构建中 */
+  @State epgBuilding: boolean = false;
   /**
    * 面板打开的时刻。
    *
@@ -135,6 +137,23 @@ struct LivePage {
    * 页面就一直停在「还没有配置直播源」，非得手动点刷新才行。
    */
   onPageShow(): void {
+    // 节目单自检：从播放页返回、或应用一直开着跨过零点之后，
+    // epgOn 还是 true 但 Epg 内部缓存已经按「跨天」作废 —— 表现是格子里
+    // 节目名集体消失且不会自己回来。这里每次进页面都判一次，
+    // 只有真的作废了才重拉并重推列表（ensure 自身有 6 小时 + 同一天的双重判断）。
+    if (this.epgOn && !Epg.fresh()) {
+      Epg.ensure(false).then((n: number) => {
+        if (n > 0) {
+          this.sync();
+        } else {
+          // 拉不到了（没网/地址失效）：把入口和格子第二行一起收掉，
+          // 留着一个永远空的「节目单」按钮比没有更让人困惑
+          this.epgOn = false;
+          this.sync();
+        }
+      }).catch(() => {
+      });
+    }
     // 从播放页返回：同步「当前频道」高亮。播放页里可能换了台（Playlist 游标变了），
     // 这里把 current 的地址记下来，频道网格据此标出正在看的台。
     this.loadFav();
@@ -245,36 +264,55 @@ struct LivePage {
       Tip.show('还没拿到节目单，去「设置 → 播放源 → EPG 节目单」填一个 XMLTV 地址');
       return;
     }
-    const cap: number = 300;
-    const use: Channel[] = list.length > cap ? list.slice(0, cap) : list;
-    const names: string[] = [];
-    for (let i = 0; i < use.length; i++) {
-      names.push(use[i].name);
-    }
-    const rows: EpgRow[] = [];
-    for (let i = 0; i < use.length; i++) {
-      const r: EpgRow = new EpgRow();
-      r.ch = use[i];
-      const now: EpgProg | null = Epg.now(use[i].name);
-      if (now !== null) {
-        r.cur = now.name + '  ' + Epg.hhmm(now.start) + '-' + Epg.hhmm(now.stop);
-      }
-      const today: EpgProg[] = Epg.today(use[i].name);
-      // today() 的第一条可能就是正在播的，跳过它取真正的「接下来」
-      for (let j = 0; j < today.length; j++) {
-        if (now === null || today[j].start !== now.start) {
-          r.next = '接下来：' + today[j].name + '  ' + Epg.hhmm(today[j].start);
-          break;
-        }
-      }
-      rows.push(r);
-    }
-    this.epgRows = rows;
-    this.epgMatched = Epg.matched(names);
-    this.epgTotal = use.length;
-    this.epgAt = Epg.loadedAtText();
+    // 先弹出空面板 + 转圈，再分帧算。
+    // 原来是在点击回调里同步算完再显示：300 台的源每台要遍历节目数组，
+    // 主线程被占住，表现为「点了节目单，卡一下才出来」。
+    this.epgRows = [];
     this.epgKw = '';
     this.showEpg = true;
+    this.epgBuilding = true;
+    this.epgMatched = 0;
+    this.epgTotal = 0;
+    this.epgAt = Epg.loadedAtText();
+    const cap: number = 300;
+    const use: Channel[] = list.length > cap ? list.slice(0, cap) : list;
+    // 每帧算 30 台：既不会一次占满主线程，也不会让用户等太久
+    const BATCH: number = 30;
+    let i: number = 0;
+    const step = (): void => {
+      if (!this.showEpg) {
+        this.epgBuilding = false;
+        return;
+      }
+      const end: number = Math.min(i + BATCH, use.length);
+      for (; i < end; i++) {
+        const r: EpgRow = new EpgRow();
+        r.ch = use[i];
+        const now: EpgProg | null = Epg.now(use[i].name);
+        if (now !== null) {
+          r.cur = now.name + '  ' + Epg.hhmm(now.start) + '-' + Epg.hhmm(now.stop);
+        }
+        const today: EpgProg[] = Epg.today(use[i].name);
+        for (let j = 0; j < today.length; j++) {
+          if (now === null || today[j].start !== now.start) {
+            r.next = '接下来：' + today[j].name + '  ' + Epg.hhmm(today[j].start);
+            break;
+          }
+        }
+        if (r.cur.length > 0) {
+          this.epgMatched++;
+        }
+        this.epgRows = this.epgRows.concat([r]);
+      }
+      this.epgTotal = i;
+      if (i < use.length) {
+        setTimeout(step, 0);
+      } else {
+        this.epgBuilding = false;
+        this.epgMatched = Epg.matched(use.map((c: Channel): string => c.name));
+      }
+    };
+    setTimeout(step, 0);
   }
 
   /** 节目单按关键词过滤（台名或节目名命中都算） */
@@ -958,7 +996,9 @@ struct LivePage {
         // 匹配率必须露出来 —— XMLTV 里的台名和直播源里的写法经常对不上，
         // 不给数字的话用户会以为是功能坏了。
         Row() {
-          Text(this.epgAt.length > 0 ? ('节目单更新于 ' + this.epgAt) : '节目单已加载')
+          Text(this.epgBuilding
+            ? ('正在整理节目单… ' + this.epgTotal + ' 台')
+            : (this.epgAt.length > 0 ? ('节目单更新于 ' + this.epgAt) : '节目单已加载'))
             .fontSize(12)
             .fontColor(T.DIM)
           Text('· 已匹配 ' + this.epgMatched + ' / ' + this.epgTotal + ' 台')

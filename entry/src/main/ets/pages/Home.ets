@@ -17,6 +17,7 @@ import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import display from '@ohos.display';
 import { Store, HistItem } from '../common/Store';
+import { Net } from '../common/Net';
 import { Vod, DetailParam, T } from '../common/Model';
 import { Crawler, CrawlResult } from '../common/Crawler';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
@@ -318,6 +319,8 @@ struct Home {
   @State hasSites: boolean = false;
   /** 是否正在抓最新。改成 @State 才能驱动空态里的「正在更新…」加载提示 */
   @State crawling: boolean = false;
+  /** 当前是否处于离线（由 Net.online() 判定），离线时收起骨架屏、换成明确提示 */
+  @State offline: boolean = false;
 
   private tick: number = -1;
   private clockTick: number = -1;
@@ -443,6 +446,13 @@ struct Home {
     if (this.crawling) {
       return;
     }
+    // 离线时不要去抓：否则每个站源都要各自等满超时，首页骨架屏会转十几秒
+    // 最后只留一句「没有内容」。直接跳过，等网络恢复后的定时任务再补。
+    if (!Net.online()) {
+      this.offline = true;
+      return;
+    }
+    this.offline = false;
     this.crawling = true;
     try {
       const r: CrawlResult | null = await Crawler.maybeRun();
@@ -935,22 +945,61 @@ struct Home {
               // 已订阅但「最近更新」还没抓出来：要么正在抓，要么这轮没抓到数据。
               // 先铺一排骨架说明「内容在路上」，再补一行状态与兜底入口，
               // 比原来一屏黑配一行小字更容易让人判断是卡住了还是在加载。
+              //
+              // 离线时不铺骨架：骨架的意思是「马上就来」，而离线时根本不会有数据，
+              // 一直转下去只会让人等。改为直说原因 + 给一个重试入口。
               Column() {
-                this.FeedSkeleton()
-                Row() {
-                  if (this.crawling) {
-                    LoadingProgress().width(16).height(16).color(T.SUB)
+                if (this.offline) {
+                  Row() {
+                    Text('当前离线，无法更新内容')
+                      .fontSize(15)
+                      .fontColor(T.WARN)
+                    Text('重试')
+                      .fontSize(14)
+                      .fontColor(T.TXT)
+                      .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+                      .margin({ left: 14 })
+                      .borderRadius(T.RADIUS_PILL)
+                      .backgroundColor(T.CARD)
+                      .onClick(() => Pointer.fire('home_retry', () => {
+                        Feedback.tap();
+                        this.offline = !Net.online();
+                        if (!this.offline) {
+                          this.autoCrawl();
+                        }
+                      }))
+                      .onMouse(Pointer.on('home_retry', () => {
+                        Feedback.tap();
+                        this.offline = !Net.online();
+                        if (!this.offline) {
+                          this.autoCrawl();
+                        }
+                      }))
                   }
-                  Text(this.crawling ? '正在更新「最近更新」…' : '已订阅，正在拉取最新影片…')
-                    .fontSize(14)
-                    .fontColor(T.SUB)
-                    .margin({ left: this.crawling ? 8 : 0 })
+                  .margin({ top: 18 })
+                  Text(this.hist.length > 0
+                    ? '「继续观看」和「收藏」仍可正常使用，联网后会自动更新「最近更新」。'
+                    : '连上网络后会自动更新。也可以先点「直播」看已缓存的频道。')
+                    .fontSize(13)
+                    .fontColor(T.DIM)
+                    .margin({ top: 8 })
+                } else {
+                  this.FeedSkeleton()
+                  Row() {
+                    if (this.crawling) {
+                      LoadingProgress().width(16).height(16).color(T.SUB)
+                    }
+                    Text(this.crawling ? '正在更新「最近更新」…' : '已订阅，正在拉取最新影片…')
+                      .fontSize(14)
+                      .fontColor(T.SUB)
+                      .margin({ left: this.crawling ? 8 : 0 })
+                  }
+                  .margin({ top: 18 })
+                  Text(this.isPhone ? '也可以直接点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。' : '也可以直接点上方「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
+                    .fontSize(13)
+                    .fontColor(T.DIM)
+                    .margin({ top: 6 })
                 }
-                .margin({ top: 18 })
-                Text(this.isPhone ? '也可以直接点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。' : '也可以直接点上方「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
-                  .fontSize(13)
-                  .fontColor(T.DIM)
-                  .margin({ top: 6 })
               }
               .width('100%')
               .margin({ top: 24 })
@@ -1023,6 +1072,13 @@ struct Home {
           .fontColor(T.TXT)
           .maxLines(1)
           .layoutWeight(1)
+        // 手机顶部补一个应用内的时分秒时钟。
+        // 系统状态栏只显示 HH:MM 且由系统绘制、应用改不了；
+        // TV 端本来就有时钟（HH:MM:SS），这里让两端观感一致。
+        Text(this.clock)
+          .fontSize(14)
+          .fontColor(T.SUB)
+          .margin({ right: 10 })
         Text('直连')
           .fontSize(14)
           .fontColor(T.SUB)
@@ -1138,21 +1194,56 @@ struct Home {
           if (this.hist.length === 0 && this.feed.length === 0) {
             if (this.hasSites) {
               Column() {
-                this.FeedSkeleton()
-                Row() {
-                  if (this.crawling) {
-                    LoadingProgress().width(16).height(16).color(T.SUB)
+                // 离线时不铺骨架（同电视布局的理由：骨架=马上就来，离线则不会来）
+                if (this.offline) {
+                  Row() {
+                    Text('当前离线，无法更新内容')
+                      .fontSize(14)
+                      .fontColor(T.WARN)
+                    Text('重试')
+                      .fontSize(13)
+                      .fontColor(T.TXT)
+                      .padding({ left: 13, right: 13, top: 6, bottom: 6 })
+                      .margin({ left: 12 })
+                      .borderRadius(T.RADIUS_PILL)
+                      .backgroundColor(T.CARD)
+                      .onClick(() => Pointer.fire('home_retry_p', () => {
+                        Feedback.tap();
+                        this.offline = !Net.online();
+                        if (!this.offline) {
+                          this.autoCrawl();
+                        }
+                      }))
+                      .onMouse(Pointer.on('home_retry_p', () => {
+                        Feedback.tap();
+                        this.offline = !Net.online();
+                        if (!this.offline) {
+                          this.autoCrawl();
+                        }
+                      }))
                   }
-                  Text(this.crawling ? '正在更新「最近更新」…' : '已订阅，正在拉取最新影片…')
-                    .fontSize(14)
-                    .fontColor(T.SUB)
-                    .margin({ left: this.crawling ? 8 : 0 })
+                  .margin({ top: 16 })
+                  Text('「继续观看」和「收藏」仍可正常使用，联网后会自动更新。')
+                    .fontSize(12)
+                    .fontColor(T.DIM)
+                    .margin({ top: 6 })
+                } else {
+                  this.FeedSkeleton()
+                  Row() {
+                    if (this.crawling) {
+                      LoadingProgress().width(16).height(16).color(T.SUB)
+                    }
+                    Text(this.crawling ? '正在更新「最近更新」…' : '已订阅，正在拉取最新影片…')
+                      .fontSize(14)
+                      .fontColor(T.SUB)
+                      .margin({ left: this.crawling ? 8 : 0 })
+                  }
+                  .margin({ top: 16 })
+                  Text('也可以点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
+                    .fontSize(12)
+                    .fontColor(T.DIM)
+                    .margin({ top: 6 })
                 }
-                .margin({ top: 16 })
-                Text('也可以点底部「点播」按分类浏览，或到「设置 → 内容更新 → 立即更新」。')
-                  .fontSize(12)
-                  .fontColor(T.DIM)
-                  .margin({ top: 6 })
               }
               .width('100%')
               .margin({ top: 20 })

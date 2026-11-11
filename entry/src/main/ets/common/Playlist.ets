@@ -80,4 +80,16 @@ export class Playlist {
     }
     return Playlist.eps[t];
   }
+
+  /**
+   * 取「当前游标之后第 ahead 集」（不改游标）。
+   * 预加载要在用户还没切过去时就把后面几集解析好，所以必须有这个只读入口。
+   */
+  static peek(ahead: number): Episode | null {
+    const t: number = Playlist.idx + ahead;
+    if (t < 0 || t >= Playlist.eps.length) {
+      return null;
+    }
+    return Playlist.eps[t];
+  }
 }

@@ -69,6 +69,13 @@ class SubTrack {
   label: string = '';
 }
 
+/** 一集预加载好的解析结果 */
+class PreloadHit {
+  url: string = '';
+  header: Record<string, string> = {};
+  at: number = 0;
+}
+
 @Entry
 @Component
 struct Player {
@@ -164,14 +171,16 @@ struct Player {
   private panStartX: number = 0;
   
   // ===== 下一集预加载缓存 =====
-  /** 预加载下一集的 raw url（缓存 key） */
-  private preloadedUrl: string = '';
-  /** 预加载下一集的最终播放地址 */
-  private preloadedFinalUrl: string = '';
-  /** 预加载的 header */
-  private preloadedHeader: Record<string, string> = {};
-  /** 预加载状态：-1=未开始 / 0=加载中 / 1=成功 / 2=失败 */
-  private preloadStatus: number = -1;
+  /**
+   * 预加载结果缓存：raw url → 已解析好的最终地址。
+   *
+   * 原来只有一个槽位（preloadedUrl / preloadedFinalUrl / preloadedStatus），
+   * 连续快进两集时第二集必然未命中，又得等 8-12 秒解析。
+   * 现在按 URL 存一个小表，并在每次起播/切集后预取「后面 2 集」。
+   */
+  private preloadMap: Map<string, PreloadHit> = new Map();
+  /** 正在预取中的 raw url，避免同一集重复发起 */
+  private preloadBusy: Set<string> = new Set();
 
   private player: media.AVPlayer | null = null;
   private initializing: boolean = false;
@@ -551,29 +560,45 @@ struct Player {
     if (this.isLive || this.directMode || this.closed) {
       return;
     }
-    // 没有下一集
-    if (!Playlist.hasNext()) {
+    // 预取后面 2 集：连续快进时第二跳才不会又等 8-12 秒
+    await this.preloadAhead(2);
+  }
+
+  /**
+   * 预取「后面 ahead 集」（默认 2 集）。
+   *
+   * 连续快进时，只预取下一集的话第二跳必然未命中、又要等 8-12 秒。
+   * 串行发起而不是并发：同时解析两条容易把源站打限流，反而更慢。
+   */
+  private async preloadAhead(ahead: number): Promise<void> {
+    if (this.isLive || this.directMode || this.closed) {
       return;
     }
-    // 获取下一集的 Episode 对象
-    const next = Playlist.nextEpisode();
-    if (!next || next.url.length === 0) {
-      return;
+    for (let i = 1; i <= ahead; i++) {
+      if (this.closed) {
+        return;
+      }
+      const ep: Episode | null = Playlist.peek(i);
+      if (ep === null || ep.url.length === 0) {
+        return;
+      }
+      // 已缓存 / 正在取就跳过
+      if (this.preloadMap.has(ep.url) || this.preloadBusy.has(ep.url)) {
+        continue;
+      }
+      this.preloadBusy.add(ep.url);
+      await this.preloadOne(ep.url);
     }
-    const nextRaw: string = next.url;
-    // 已经预加载过这集了
-    if (this.preloadedUrl !== '' && this.preloadedUrl === nextRaw && this.preloadStatus === 1) {
-      return;
-    }
-    // 标记开始预加载
-    this.preloadStatus = 0;
+  }
+
+  /** 解析并缓存指定 raw url；失败只记日志（预加载失败不该打扰用户） */
+  private async preloadOne(rawUrl: string): Promise<void> {
     try {
       let finalUrl: string = '';
       let header: Record<string, string> = {};
-      // 先试「补全 m3u8」
-      const guess: string = fixPlayable(nextRaw);
+      const guess: string = fixPlayable(rawUrl);
       let done: boolean = false;
-      if (guess !== nextRaw) {
+      if (guess !== rawUrl) {
         try {
           const head: string = await Http.text(guess, undefined, 4000);
           if (head.indexOf('#EXTM3U') >= 0) {
@@ -585,21 +610,19 @@ struct Player {
         }
       }
       if (!done) {
-        const r: Resolved = await Resolver.resolve(nextRaw, Store.parses());
+        const r: Resolved = await Resolver.resolve(rawUrl, Store.parses());
         finalUrl = fixPlayable(r.url);
         header = r.header;
       }
       if (this.closed) {
         return;
       }
-      // 缓存下一集的预加载结果
-      this.preloadedUrl = nextRaw;
-      this.preloadedFinalUrl = finalUrl;
-      this.preloadedHeader = header;
-      this.preloadStatus = 1;
-      hilog.info(0x1000, 'BOXN', 'preload next: %{public}s', finalUrl.substring(0, 60));
+      this.preloadMap.set(rawUrl, { url: finalUrl, header: header, at: Date.now() });
+      hilog.info(0x1000, 'BOXN', 'preload ok: %{public}s', finalUrl.substring(0, 60));
     } catch (e) {
-      this.preloadStatus = 2;
+      hilog.info(0x1000, 'BOXN', 'preload fail: %{public}s', (e as Error).message);
+    } finally {
+      this.preloadBusy.delete(rawUrl);
     }
   }
 
@@ -612,16 +635,15 @@ struct Player {
     if (this.isLive || this.directMode) {
       return false;
     }
-    if (this.preloadStatus !== 1 || this.preloadedUrl !== ep.url) {
+    const hit: PreloadHit | undefined = this.preloadMap.get(ep.url);
+    if (hit === undefined) {
       return false;
     }
     hilog.info(0x1000, 'BOXN', 'preload hit: %{public}s', ep.url.substring(0, 60));
-    // 从缓存中恢复 finalUrl 和 header
-    this.finalUrl = this.preloadedFinalUrl;
-    this.header = this.preloadedHeader;
-    this.preloadedUrl = '';
-    this.preloadedFinalUrl = '';
-    this.preloadStatus = -1;
+    this.finalUrl = hit.url;
+    this.header = hit.header;
+    // 用完即弃：解析结果里可能带临时 token，留久了反而会用到过期地址
+    this.preloadMap.delete(ep.url);
     return true;
   }
 
@@ -651,6 +673,9 @@ struct Player {
     try {
       head = await Http.peek(this.finalUrl, 1500);
     } catch (e) {
+      // 画质探测失败不影响起播（按单码率放行），但要留痕：
+      // 排障时要能区分「这源本来单码率」和「探测超时了」
+      hilog.info(0x1000, 'BOXN', 'quality probe fail: %{public}s', (e as Error).message);
       this.syncQLabel();
       return;
     }
@@ -684,7 +709,8 @@ struct Player {
       this.speed = await Store.speedPref();
       // 音量恢复后面，需要播放器准备好
     } catch (e) {
-      // 偏好读取失败，用默认值
+      // 偏好读取失败用默认值，但记一条：否则「为什么每次都是 1.0 倍速」无从查起
+      hilog.info(0x1000, 'BOXN', 'pref load fail, use defaults: %{public}s', (e as Error).message);
     }
   }
 
@@ -844,6 +870,10 @@ struct Player {
         const pl: string = await Http.text(listUrl, undefined, 5000);
         seg = Quality.firstSegment(pl, listUrl);
       } catch (e) {
+        // 拿不到分片列表就退回整条播放列表地址估速，但要记下来：
+        // 否则测速结果异常时没法判断是源的问题还是这里降级了
+        hilog.info(0x1000, 'BOXN', 'quality segment fail, fallback to list url: %{public}s',
+          (e as Error).message);
         seg = '';
       }
       if (seg.length === 0) {
@@ -2149,16 +2179,36 @@ struct Player {
   private async setScale(mode: number): Promise<void> {
     this.scaleMode = mode;
     await Store.setScaleModePref(mode);
+    const name: string = mode === SCALE_CROP ? '裁剪铺满（等比不变形）'
+      : (mode === SCALE_FIT ? '等比适应（留黑边）' : '拉伸铺满');
     if (this.player !== null) {
       try {
         this.player.videoScaleType = mode as media.VideoScaleType;
       } catch (e) {
-        // 个别流/机型不支持，忽略
+        // 个别流/机型不支持改缩放。以前这里静默忽略、照样提示「画面比例：X」，
+        // 用户会以为设置成功但画面没变 —— 现在如实说是这个源不支持。
+        hilog.info(0x1000, 'BOXN', 'setScale fail: %{public}s', (e as Error).message);
+        this.showTip('这个源不支持调整画面比例');
+        return;
       }
     }
-    const name: string = mode === SCALE_CROP ? '裁剪铺满（等比不变形）'
-      : (mode === SCALE_FIT ? '等比适应（留黑边）' : '拉伸铺满');
     this.showTip('画面比例：' + name);
+  }
+
+  /** 点画面唤出控制条等隐藏手势的说明文案 */
+  private handTipText(): string {
+    const lines: string[] = [
+      '· 点画面唤出控制条，拖进度条或左右滑可快进/快退',
+      '· 上下滑：左半屏调亮度、右半屏调音量'
+    ];
+    if (!this.isLive) {
+      lines.push('· 长按左右两侧可连续快进/快退，松手即定位');
+      lines.push('· 播完自动接下一集；片头片尾可在这里设置跳过');
+    } else {
+      lines.push('· 直播实时流不支持快进，压左右键可切上一个/下一个频道');
+      lines.push('· 部分直播源不支持倍速，切了没变化时会给出提示');
+    }
+    return lines.join('\n');
   }
 
   /**
@@ -2244,7 +2294,13 @@ struct Player {
       // 现在明说，至少不会以为是软件坏了。
       const err = e as Error;
       hilog.error(0x1000, 'BOXN', 'setSpeed fail %{public}s: %{public}s', '' + this.speed, err.message);
-      this.showTip('这个源不支持 ' + this.speed + ' 倍速');
+      // 别只说「不支持」就完事：直播源不支持变速是常态，用户真正想知道的是「那我还能怎么办」。
+      // 点播换线路/换画质后可能就支持了；直播只能回 1.0 倍速。
+      if (this.isLive) {
+        this.showTip('直播流不支持 ' + this.speed + ' 倍速，已保持原速');
+      } else {
+        this.showTip('这个源不支持 ' + this.speed + ' 倍速，可换条线路再试');
+      }
     }
   }
 
@@ -2900,7 +2956,22 @@ struct Player {
         if (this.skipEditKind === 'outro') {
           this.SkipEditBar('outro')
         }
-          }
+
+        // 操作说明：手势是隐藏功能，不写出来用户只能靠试。
+        // 放在面板最底部（要滚一下才看到），不占常用项的位置。
+        Divider()
+          .color('#1FFFFFFF')
+          .margin({ top: 18, bottom: 12 })
+        Text(this.isLive ? '操作提示（直播）' : '操作提示')
+          .fontSize(13).fontColor(T.PANEL_DIM)
+          .width('100%')
+        Text(this.handTipText())
+          .fontSize(12)
+          .fontColor(T.PANEL_DIM)
+          .lineHeight(19)
+          .width('100%')
+          .margin({ top: 6 })
+      }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
