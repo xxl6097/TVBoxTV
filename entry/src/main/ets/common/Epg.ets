@@ -53,6 +53,8 @@ export class Epg {
   private static loadedAt: number = 0;
   private static busy: boolean = false;
   private static lastErr: string = '';
+  /** 台名 → channelId 的解析缓存（空串表示确认对不上，也要缓存，避免反复扫） */
+  private static resCache: Map<string, string> = new Map();
 
   /** 是否已有可用节目单 */
   static loaded(): boolean {
@@ -113,6 +115,7 @@ export class Epg {
     Epg.chs = [];
     Epg.progs = new Map();
     Epg.nameIdx = new Map();
+    Epg.resCache = new Map();
     Epg.loadedAt = 0;
     Epg.lastErr = '';
   }
@@ -233,6 +236,18 @@ export class Epg {
 
   /** 台名 → channelId。先精确，再「包含」兜底 */
   private static resolve(chName: string): string {
+    // 结果缓存：直播页每个频道格子每次重绘都会问一次，没命中时那次「包含匹配」
+    // 要把整个 nameIdx 走一遍（XMLTV 常有几千个台），499 台的列表滚动时会明显吃帧。
+    const cached: string | undefined = Epg.resCache.get(chName);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const got: string = Epg.resolveRaw(chName);
+    Epg.resCache.set(chName, got);
+    return got;
+  }
+
+  private static resolveRaw(chName: string): string {
     const n: string = Epg.norm(chName);
     if (n.length === 0) {
       return '';

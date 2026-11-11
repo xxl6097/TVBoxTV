@@ -88,9 +88,18 @@ struct Player {
   /** 进入缓冲前的状态，缓冲结束后据此恢复 PLAYING / PAUSED */
   private stateBeforeBuffer: number = PlayState.IDLE;
 
-  /** 正在播。缓冲中与暂停都不算 —— 控制条据此显示「暂停/播放」图标 */
+  /**
+   * 是否处于「在播」状态。**缓冲中也算在播。**
+   *
+   * 为什么把 BUFFERING 算进来：把布尔换成派生 getter 之后，缓冲期间
+   * playState 是 BUFFERING、playing 就成了 false，于是
+   *   - 控制条按钮文案变成「播放」（明明是播到一半卡在缓冲）
+   *   - 点它走 play() 分支而不是 pause()（用户想暂停，结果毫无反应）
+   *   - popOsd 里「暂停时不自动收起」生效，控制条卡在屏幕上不收
+   * 原来的独立布尔在缓冲时仍是 true，语义就是「在播，只是没数据」。
+   */
   get playing(): boolean {
-    return this.playState === PlayState.PLAYING;
+    return this.playState === PlayState.PLAYING || this.playState === PlayState.BUFFERING;
   }
 
   /**
@@ -1587,7 +1596,10 @@ struct Player {
       this.updateOutroAfterSeek(t);
       hilog.info(0x1000, 'BOXN', 'seek apply %{public}d', t);
     } catch (e) {
-      // 状态不允许：把 UI 拉回播放器真实位置，避免「时间跳了、画面没动」
+      // 状态不允许：把 UI 拉回播放器真实位置，避免「时间跳了、画面没动」。
+      // 同时把目标记进 pendingSeek —— prepared 回调里会自动补跳，
+      // 用户不必再拖一次（原来只提示「定位失败」，等于让他重来）。
+      this.pendingSeek = t > 0 ? t : 0;
       try {
         const real: number = this.player.currentTime;
         this.posMs = real;
@@ -1595,7 +1607,7 @@ struct Player {
       } catch (e2) {
         // 连 currentTime 都读不到就保持原样
       }
-      this.showTip('定位失败，请重试');
+      this.showTip('正在准备，稍后自动跳转');
     }
   }
 

@@ -114,5 +114,10 @@ export struct PlayerHud {
     }
     .width('100%')
     .height('100%')
+    // 关键：这层是铺满全屏的，默认 HitTestMode.Default 会把点击「吃掉」，
+    // 导致播放页根节点上的 onClick / onMouse 收不到 —— 表现就是「点画面唤不出控制条、
+    // 指针移动也不亮」。没有内容要显示时让命中测试穿透过去；
+    // 只有真的有错误页时才拦截，保证「重试 / 返回」按钮不被下层抢走。
+    .hitTestBehavior(this.errMsg.length > 0 ? HitTestMode.Default : HitTestMode.Transparent)
   }
 }
