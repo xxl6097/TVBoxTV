@@ -64,6 +64,18 @@ export class FavItem {
   groupId: string = '';
 }
 
+/** 一部片的片头/片尾跳过设置 */
+export class SkipPref {
+  /** siteKey|vodId */
+  k: string = '';
+  /** 片头跳过秒数，0 = 不跳 */
+  intro: number = 0;
+  /** 片尾跳过秒数，0 = 不跳 */
+  outro: number = 0;
+  /** 最后修改时间，用于淘汰最旧的记录 */
+  t: number = 0;
+}
+
 /** 收藏的自定义分组（用户自己建，用来归类收藏） */
 export class FavGroupDef {
   id: string = '';
@@ -1377,6 +1389,80 @@ export class Store {
     await Store.prefs.flush();
   }
 
+
+  /**
+   * 片头/片尾跳过：**按影片分别保存**。
+   *
+   * 原来只有 `introSkip` / `outroSkip` 两个全局数字，所有视频共用：
+   * 在 A 剧上设了 90 秒，换到 B 剧（片头 10 秒）、电影（没有片头）、
+   * 甚至综艺，起播后都会照样跳到 90 秒 —— 用户看到的就是
+   * 「设置了跳过片头后，其他不同类型的视频也会跳」。
+   *
+   * 现在按 `siteKey|vodId` 存，单部片一份；键 `skipPrefs`。
+   * 第一次遇到某部片且没有记录时，**不回退到全局值**（那正是串味的根源），
+   * 直接返回 0 = 不跳。老版本的全局键只用于「升级后仍希望有个默认」的场景，
+   * 这里选择彻底不用，宁可让老用户重设一次，也不要再串。
+   */
+  private static SKIP_MAX: number = 200;
+
+  private static async skipPrefs(): Promise<SkipPref[]> {
+    if (Store.prefs === null) {
+      return [];
+    }
+    const s: string = await Store.prefs.get('skipPrefs', '') as string;
+    if (s.length === 0) {
+      return [];
+    }
+    try {
+      return JSON.parse(s) as SkipPref[];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  /** 读某部片的跳过设置；没有记录返回全 0 */
+  static async skipPref(siteKey: string, vodId: string): Promise<SkipPref> {
+    const all: SkipPref[] = await Store.skipPrefs();
+    const k: string = siteKey + '|' + vodId;
+    for (let i = 0; i < all.length; i++) {
+      if (all[i].k === k) {
+        return all[i];
+      }
+    }
+    return new SkipPref();
+  }
+
+  /** 写入某部片的跳过设置（两个值一起写，避免半更新） */
+  static async setSkipPref(siteKey: string, vodId: string, intro: number, outro: number): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const k: string = siteKey + '|' + vodId;
+    const all: SkipPref[] = await Store.skipPrefs();
+    const out: SkipPref[] = [];
+    const mine: SkipPref = new SkipPref();
+    mine.k = k;
+    mine.intro = intro;
+    mine.outro = outro;
+    mine.t = Date.now();
+    out.push(mine);
+    // 两个都是 0 就不必留着这条记录（等于恢复默认）
+    if (intro === 0 && outro === 0) {
+      out.shift();
+    }
+    for (let i = 0; i < all.length && out.length < Store.SKIP_MAX; i++) {
+      if (all[i].k !== k) {
+        out.push(all[i]);
+      }
+    }
+    try {
+      await Store.prefs.put('skipPrefs', JSON.stringify(out));
+      await Store.prefs.flush();
+    } catch (err) {
+      const e = err as Error;
+      hilog.error(0x1000, 'BOXN', 'skipPref save fail: %{public}s', e.message);
+    }
+  }
 
   /** 片头跳过秒数，0 = 不跳过 */
   static async introSkipSec(): Promise<number> {

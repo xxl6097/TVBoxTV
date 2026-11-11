@@ -5,7 +5,7 @@ import common from '@ohos.app.ability.common';
 import hilog from '@ohos.hilog';
 import { BusinessError } from '@ohos.base';
 import { KeyCode } from '@ohos.multimodalInput.keyCode';
-import { Store, HistItem } from '../common/Store';
+import { Store, HistItem, SkipPref } from '../common/Store';
 import { Cms } from '../common/Cms';
 import { Http } from '../common/Http';
 import { PlayParam, Episode, T, WdHistory } from '../common/Model';
@@ -422,6 +422,15 @@ struct Player {
       this.wdSrcId = p.wdSrcId.length > 0 ? p.wdSrcId : '';
       this.wdSrcName = p.wdSrcName.length > 0 ? p.wdSrcName : '';
       this.wdVod = p.wdVod.length > 0 ? p.wdVod : '';
+
+      // 片头片尾跳过是**按影片**存的：不同剧/电影的片头长度完全不一样，
+      // 用全局值会让 A 剧设的 90 秒套到 B 剧上（表现为「其他视频也被跳过」）。
+      // 必须放在这里读 —— restorePreferences() 执行时 siteKey/vodId 还没赋上，
+      // 拿到的永远是空串，所有视频会共用一条记录。
+      const kh: string[] = this.skipKey();
+      const sp: SkipPref = await Store.skipPref(kh[0], kh[1]);
+      this.introSkipSec = sp.intro;
+      this.outroSkipSec = sp.outro;
       this.wdDir = p.wdDir.length > 0 ? p.wdDir : '';
       this.wdSeries = p.wdSeries;
       // 直连（手动填地址）是一个孤立地址，没有剧集概念。
@@ -434,9 +443,6 @@ struct Player {
     }
     // 画质偏好是全局的：上次选了 720P，这次进来自动还是 720P
     this.qCap = await Store.qualityPref();
-    // 片头片尾跳过也是全局偏好
-    this.introSkipSec = await Store.introSkipSec();
-    this.outroSkipSec = await Store.outroSkipSec();
     // 倍速同理：整部剧一般都用同一个速度看
     this.speed = await Store.speedPref();
     this.syncEpLabel();
@@ -2203,7 +2209,7 @@ struct Player {
     ];
     if (!this.isLive) {
       lines.push('· 长按左右两侧可连续快进/快退，松手即定位');
-      lines.push('· 播完自动接下一集；片头片尾可在这里设置跳过');
+      lines.push('· 播完自动接下一集；片头片尾可在这里设置跳过（仅对当前这部片生效）');
     } else {
       lines.push('· 直播实时流不支持快进，压左右键可切上一个/下一个频道');
       lines.push('· 部分直播源不支持倍速，切了没变化时会给出提示');
@@ -2456,13 +2462,39 @@ struct Player {
   private async pickSkip(kind: string, sec: number): Promise<void> {
     if (kind === 'intro') {
       this.introSkipSec = sec;
-      await Store.setIntroSkipSec(sec);
-      this.showTip(sec > 0 ? ('已设片头跳过 ' + sec + ' 秒，起播自动生效') : '已关闭片头跳过');
     } else {
       this.outroSkipSec = sec;
-      await Store.setOutroSkipSec(sec);
-      this.showTip(sec > 0 ? ('已设片尾跳过 ' + sec + ' 秒，播到片尾自动切') : '已关闭片尾跳过');
     }
+    // 只写当前这部片，不影响其他视频（键的合成规则见 skipKey()）
+    const k1: string[] = this.skipKey();
+    await Store.setSkipPref(k1[0], k1[1], this.introSkipSec, this.outroSkipSec);
+    if (kind === 'intro') {
+      this.showTip(sec > 0 ? ('已设片头跳过 ' + sec + ' 秒，本片起播自动生效') : '已关闭片头跳过');
+    } else {
+      this.showTip(sec > 0 ? ('已设片尾跳过 ' + sec + ' 秒，本片播到片尾自动切') : '已关闭片尾跳过');
+    }
+  }
+
+  /**
+   * 跳过设置的主键 [siteKey, vodId]。
+   *
+   * 点播有 siteKey/vodId；网盘和直连这两类在这两个字段上是空的，
+   * 如果直接用会把所有网盘/直连视频挤到同一条记录里（等于又变成全局）。
+   * 这里按来源合成：
+   *   - 网盘：用 wdSrcId + wdVod（网盘源 + 条目路径，唯一）
+   *   - 直连：用 rawUrl（地址本身唯一）
+   */
+  private skipKey(): string[] {
+    if (this.siteKey.length > 0 || this.vodId.length > 0) {
+      return [this.siteKey, this.vodId];
+    }
+    if (this.wdSrcId.length > 0 || this.wdVod.length > 0) {
+      return ['wd:' + this.wdSrcId, this.wdVod];
+    }
+    // 直连：地址可能带临时签名，取「问号前」的部分当主键，避免每次进都变
+    const u: string = this.rawUrl;
+    const q: number = u.indexOf('?');
+    return ['direct', q > 0 ? u.substring(0, q) : u];
   }
 
   /** 秒数格式化：90 → 1分30秒；45 → 45秒；60 → 1分钟（实现在 common/PlayerFmt.ets） */
@@ -2606,15 +2638,19 @@ struct Player {
   private async applySkipEdit(): Promise<void> {
     if (this.skipEditKind === 'intro') {
       this.introSkipSec = this.skipEditVal;
-      await Store.setIntroSkipSec(this.skipEditVal);
-      this.showTip(this.skipEditVal > 0
-        ? ('已设片头跳过 ' + this.fmtSec(this.skipEditVal))
-        : '已关闭片头跳过');
     } else if (this.skipEditKind === 'outro') {
       this.outroSkipSec = this.skipEditVal;
-      await Store.setOutroSkipSec(this.skipEditVal);
+    }
+    // 同样只写当前这部片
+    const k2: string[] = this.skipKey();
+    await Store.setSkipPref(k2[0], k2[1], this.introSkipSec, this.outroSkipSec);
+    if (this.skipEditKind === 'intro') {
       this.showTip(this.skipEditVal > 0
-        ? ('已设片尾跳过 ' + this.fmtSec(this.skipEditVal))
+        ? ('已设片头跳过 ' + this.fmtSec(this.skipEditVal) + '（仅本片）')
+        : '已关闭片头跳过');
+    } else if (this.skipEditKind === 'outro') {
+      this.showTip(this.skipEditVal > 0
+        ? ('已设片尾跳过 ' + this.fmtSec(this.skipEditVal) + '（仅本片）')
         : '已关闭片尾跳过');
     }
     this.skipEditKind = '';
