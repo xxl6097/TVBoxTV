@@ -76,67 +76,41 @@ struct Player {
   @State errMsg: string = '';
   @State hint: string = '';
   /**
-   * 播放器主状态机：**唯一的状态事实来源**（common/PlayState.ets）。
+   * 播放器主状态机（common/PlayState.ets）：负责**转移校验 + 轨迹日志 + 缓冲防抖**。
    *
-   * 第二阶段改造：这里改成 @State，并把原来四个独立的 @State 布尔
-   * （playing / prepared / buffering / resolving）换成下面的只读 getter。
-   * 好处是「两套事实打架」从结构上消失 —— 不可能再出现
-   * playing=true 而主状态已是 PAUSED 这种组合；谁想改状态只能走 applyEv，
-   * 于是转移校验和轨迹日志对所有路径都生效。
+   * 重要教训：UI 布尔（下面的 playing / prepared / buffering / resolving）**必须保持
+   * @State 字段，不能改成派生 getter**。实测在 ArkTS 的 @Component 里，用 `this.prepared`
+   * 读取 getter 会拿到 `undefined`（真机日志打出来就是 `prepared=undefined`），
+   * 而 `!undefined === true`，于是所有以它为前置条件的操作（seek / 倍速 / 播放暂停 /
+   * 选字幕）全部静默失效 —— 表现就是「拖进度没反应、倍速设了不生效」。
+   *
+   * 现在的关系：
+   *   - 状态机推进后调 syncFlags()，把三个可由状态推导的布尔同步好；
+   *   - prepared **不与状态机耦合**，只跟播放器生命周期走（prepared/playing 事件置 true，
+   *     release 置 false）。它是「播放器能不能接受 seek / setSpeed」的物理事实，
+   *     不该被 UI 状态推断带偏。
    */
   @State playState: number = PlayState.IDLE;
   /** 进入缓冲前的状态，缓冲结束后据此恢复 PLAYING / PAUSED */
   private stateBeforeBuffer: number = PlayState.IDLE;
+  /** 缓冲进入的防抖定时器（见 applyEv 的说明），-1 表示没有待判定 */
+  private bufTimer: number = -1;
 
-  /**
-   * 是否处于「在播」状态。**缓冲中也算在播。**
-   *
-   * 为什么把 BUFFERING 算进来：把布尔换成派生 getter 之后，缓冲期间
-   * playState 是 BUFFERING、playing 就成了 false，于是
-   *   - 控制条按钮文案变成「播放」（明明是播到一半卡在缓冲）
-   *   - 点它走 play() 分支而不是 pause()（用户想暂停，结果毫无反应）
-   *   - popOsd 里「暂停时不自动收起」生效，控制条卡在屏幕上不收
-   * 原来的独立布尔在缓冲时仍是 true，语义就是「在播，只是没数据」。
-   */
-  get playing(): boolean {
-    return this.playState === PlayState.PLAYING || this.playState === PlayState.BUFFERING;
-  }
-
-  /**
-   * 已就绪：能 seek、能调音量/倍速、能显示控制条。
-   *
-   * **以「播放器实例存在且没报错」为准，不再严格看主状态是否已推进到 READY。**
-   *
-   * 踩过的坑：第二阶段把 prepared 改成派生 getter（只认 READY/PLAYING/PAUSED/…）后，
-   * 只要有一条路径没能把主状态推到这些值（surface 重建、换档重连、起播事件被吞），
-   * prepared 就会一直是 false。而 seekToRatio 里是 `!prepared` 静默 return、
-   * pickSpeed 里是 `!prepared` 跳过 applySpeed 但照样弹「已切到 1.5 倍速」——
-   * 表现出来就是「进度条拖了没反应」「倍速设了不生效」，两个症状同源。
-   *
-   * 播放器在手就允许调用：状态不允许时 seek/setSpeed 会抛 BusinessError，
-   * 由调用处的 try/catch 兜底（applySeek 会回滚进度并提示「定位失败」）。
-   * 也就是说这里放宽只会让「本来该失败的调用去失败一次」，不会把成功变成失败。
-   */
-  get prepared(): boolean {
-    if (this.playState === PlayState.ERROR) {
-      return false;
-    }
-    if (this.player !== null) {
-      return true;
-    }
-    return this.playState === PlayState.READY || this.playState === PlayState.PLAYING ||
-      this.playState === PlayState.PAUSED || this.playState === PlayState.BUFFERING ||
-      this.playState === PlayState.COMPLETED;
-  }
-
-  /** 解析中：还没拿到可播地址（初始 IDLE 与 LOADING 都算） */
-  get resolving(): boolean {
-    return this.playState === PlayState.IDLE || this.playState === PlayState.LOADING;
-  }
-
+  /** 是否在播。缓冲也算 —— 缓冲时按暂停应该真暂停，而不是掉进 play() 分支 */
+  @State playing: boolean = false;
+  /** 播放器已 prepared：可以 seek / 调倍速 / 选字幕轨 */
+  @State prepared: boolean = false;
+  /** 解析地址中（加载遮罩） */
+  @State resolving: boolean = true;
   /** 缓冲转圈中 */
-  get buffering(): boolean {
-    return this.playState === PlayState.BUFFERING;
+  @State buffering: boolean = false;
+
+  /** 由主状态推导出三个 UI 布尔（prepared 不参与，它只跟播放器生命周期走） */
+  private syncFlags(): void {
+    const s: number = this.playState;
+    this.playing = s === PlayState.PLAYING || s === PlayState.BUFFERING;
+    this.buffering = s === PlayState.BUFFERING;
+    this.resolving = s === PlayState.IDLE || s === PlayState.LOADING;
   }
   @State curMs: number = 0;
   @State durMs: number = 0;
@@ -1063,35 +1037,68 @@ struct Player {
    * 原来 playing/prepared/buffering/resolving/errMsg 在二十多处直接赋值，
    * 组合出来的中间态无法追溯；现在所有生命周期事件都先经 PlayState.reduce
    * 校验，非法/重复事件直接丢弃，每次真实转换留一条轨迹日志。
-   * 缓冲结束要按「缓冲前的状态」翻译，否则暂停中缓冲完会自己播起来。
+   *
+   * **缓冲事件做了防抖**：真机日志显示起播那一刻 AVPlayer 会把 BUFFER_START /
+   * PLAY 连续交替派发，47ms 内抖出 6 次状态转移（BUFFERING↔PLAYING）。后果是
+   * 控制条图标和「缓冲中」提示闪烁、stateBeforeBuffer 被反复覆盖。
+   * 真正的卡顿会持续几百毫秒以上，所以把「进入缓冲」延后 300ms 生效，
+   * 期间收到 BUFFER_END 就当这次抖动没发生过。
    */
   private applyEv(ev: number): void {
-    let real: number = ev;
     if (ev === PlayState.EV_BUFFER_START) {
-      // 只在「第一次进入缓冲」时记下缓冲前的状态。
-      // HLS 会在缓冲期间反复发 BUFFERING_START，若无条件覆盖，
-      // 「暂停中被缓冲事件打扰」的场景会先把 PAUSED 记成 BUFFERING，
-      // 缓冲结束时按「非 PAUSED 就播」的规则变成自动播放。
-      if (this.playState !== PlayState.BUFFERING) {
-        this.stateBeforeBuffer = this.playState;
+      if (this.playState === PlayState.BUFFERING || this.bufTimer >= 0) {
+        return;                 // 已在缓冲，或已在等待判定
       }
-    } else if (ev === PlayState.EV_BUFFER_END) {
+      this.bufTimer = setTimeout(() => {
+        this.bufTimer = -1;
+        if (this.playState === PlayState.BUFFERING) {
+          return;
+        }
+        // 真正进入缓冲时再记「缓冲前状态」，此时它才是稳定的
+        this.stateBeforeBuffer = this.playState;
+        this.moveState(PlayState.EV_BUFFER_START);
+      }, 300);
+      return;
+    }
+    if (ev === PlayState.EV_BUFFER_END) {
+      if (this.bufTimer >= 0) {
+        clearTimeout(this.bufTimer);
+        this.bufTimer = -1;
+        return;                 // 假缓冲：还没进 BUFFERING 就结束了
+      }
       if (this.playState !== PlayState.BUFFERING) {
         return;                 // 迟到的缓冲结束事件，忽略
       }
-      real = this.stateBeforeBuffer === PlayState.PAUSED ? PlayState.EV_PAUSE : PlayState.EV_PLAY;
+      // 缓冲结束按「缓冲前的状态」翻译，否则暂停中缓冲完会自己播起来
+      const real: number = this.stateBeforeBuffer === PlayState.PAUSED
+        ? PlayState.EV_PAUSE : PlayState.EV_PLAY;
+      this.moveState(real);
+      return;
     }
-    const next: number = PlayState.reduce(this.playState, real);
+    this.moveState(ev);
+  }
+
+  /** 实际推进状态机并记轨迹（applyEv 被防抖拦住时不走这里） */
+  private moveState(ev: number): void {
+    const next: number = PlayState.reduce(this.playState, ev);
     if (next === this.playState) {
       return;
     }
     hilog.info(0x1000, 'BOXN', 'playState %{public}s -> %{public}s (ev=%{public}s)',
-      PlayState.label(this.playState), PlayState.label(next), PlayState.eventLabel(real));
+      PlayState.label(this.playState), PlayState.label(next), PlayState.eventLabel(ev));
     this.playState = next;
+    // 状态变了就把三个 UI 布尔同步过去（prepared 不在这里，见字段注释）
+    this.syncFlags();
   }
 
   releasePlayer(): void {
     this.applyEv(PlayState.EV_RESET);
+    // prepared 跟着播放器实例走：实例没了就不能再 seek / 调倍速
+    this.prepared = false;
+    if (this.bufTimer >= 0) {
+      clearTimeout(this.bufTimer);
+      this.bufTimer = -1;
+    }
     if (this.flashTimer >= 0) {
       clearTimeout(this.flashTimer);
       this.flashTimer = -1;
@@ -1227,6 +1234,9 @@ struct Player {
           p.prepare();
         } else if (state === 'prepared') {
           this.applyEv(PlayState.EV_PREPARED);
+          // prepared 是播放器的物理事实，直接置位（不经状态机推导）：
+          // seek / 倍速 / 选轨都以它为前提，任何「推导不到」都会让这些功能静默失效
+          this.prepared = true;
           // 直播流没有总时长（duration 为 -1），置 0 让 UI 走「直播」分支
           this.durMs = this.isLive ? 0 : p.duration;
           // 成功 prepared 说明这一次播放正常，重置失败计数
@@ -1289,6 +1299,8 @@ struct Player {
           }, 2000);
         } else if (state === 'playing') {
           this.applyEv(PlayState.EV_PLAY);
+          // 双保险：个别机型/源从 initialized 直接到 playing，不补发 prepared
+          this.prepared = true;
           this.liveFail = 0;
         } else if (state === 'paused') {
           this.applyEv(PlayState.EV_PAUSE);
@@ -1405,7 +1417,8 @@ struct Player {
 
   togglePlay(): void {
     if (this.player === null || !this.prepared) {
-      hilog.info(0x1000, 'BOXN', 'toggle skipped prepared=%{public}s', this.prepared ? 'y' : 'n');
+      hilog.info(0x1000, 'BOXN', 'toggle skipped player=%{public}s prepared=%{public}s state=%{public}s',
+        '' + (this.player !== null), '' + this.prepared, PlayState.label(this.playState));
       return;
     }
     hilog.info(0x1000, 'BOXN', 'toggle before playing=%{public}s', this.playing ? 'y' : 'n');
