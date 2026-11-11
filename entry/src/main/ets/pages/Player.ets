@@ -281,6 +281,8 @@ struct Player {
   private introDone: boolean = false;
   /** 片尾跳过本集只做一次，切集后重置 */
   private outroFired: boolean = false;
+  /** 80% 进度预加载触发标记，切集时复位 */
+  private preloadFired80: boolean = false;
   /** 真实播放位置（毫秒）。curMs 只负责显示，避免每秒刷新整棵树 */
   private posMs: number = 0;
   private watchTimer: number = -1;
@@ -1083,7 +1085,7 @@ struct Player {
           hilog.info(0x1000, 'BOXN', 'capability hint by msg, ignore');
           return;
         }
-        this.errMsg = '播放失败（code ' + err.code + '）：' + err.message;
+        this.errMsg = Player.friendlyErr(err.code, err.message);
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
@@ -1251,6 +1253,14 @@ struct Player {
           this.outroFired = true;
           this.showSkipBtn('outro', 8);
           return;
+        }
+        // 80% 进度时再次预加载下一集：prepared 时拿到的解析结果可能因临时 token 失效，
+        // 80% 时重新预解析保证切集时命中率更高（约5~10分钟更新一次地址）
+        if (!this.isLive && !this.directMode && this.durMs > 60000 &&
+          t > 0 && this.durMs > 0 && !this.preloadFired80 &&
+          t >= this.durMs * 0.8) {
+          this.preloadFired80 = true;
+          this.preloadNextEpisode().catch(() => {});
         }
         if (this.seekPreview >= 0) {
           // 拖动/快进预览中：进度条走 seekPreview，这里不碰 curMs，避免预览被实时位置覆盖
@@ -1583,9 +1593,7 @@ struct Player {
     this.pendingSeek = 0;
     this.introDone = false;
     this.outroFired = false;
-    this.skipShow = '';
-    this.stopSkipTimer();
-    this.rawUrl = ep.url;
+    this.preloadFired80 = false;
     this.epName = ep.name;
     this.epIndex = Playlist.index();
     if (this.isLive) {
@@ -1637,6 +1645,7 @@ struct Player {
     this.pendingSeek = 0;
     this.introDone = false;
     this.outroFired = false;
+    this.preloadFired80 = false;
     this.skipShow = '';
     this.stopSkipTimer();
     this.showOsd = false;
@@ -1867,6 +1876,55 @@ struct Player {
       this.toastTimer = -1;
     }, 2000);
     this.popOsd();
+  }
+
+  /**
+   * 把播放器底层错误码/错误消息转成用户能看懂的中文。
+   * 鸿蒙 AVPlayer 的错误码体系：
+   *  - 5400XXX：常见媒体框架错误
+   *  - 5400101：格式/编码不支持
+   *  - 5400102：网络连接/数据源打不开
+   *  - 5400103：I/O 读取失败（包括 HLS 分片 403/404）
+   *  - 5400104：流中断/数据结束异常
+   *  - 5400105：超时（seek 超时、缓冲超时）
+   *  - 5400106：解码失败
+   *  - 801：能力提示，本函数不会被调用（在 on('error') 里提前 return 了）
+   */
+  private static friendlyErr(code: number, msg: string): string {
+    // 格式/编解码不支持
+    if (code === 5400101) {
+      return '不支持此视频格式或编码，可尝试其他线路';
+    }
+    // 网络层打不开（URL 失效、防盗链、403/404）
+    if (code === 5400102) {
+      const m: string = msg.toLowerCase();
+      if (m.indexOf('403') >= 0) {
+        return '播放地址被拒绝（403），源站可能有防盗链';
+      }
+      if (m.indexOf('404') >= 0) {
+        return '播放地址不存在（404），此资源可能已下线';
+      }
+      return '无法打开视频源，地址可能已失效';
+    }
+    // I/O 失败（HLS 分片失败等）
+    if (code === 5400103) {
+      return '视频数据读取失败，网络不稳定或资源已损坏';
+    }
+    // 流中断
+    if (code === 5400104) {
+      return '视频流异常中断，请重试';
+    }
+    // 超时
+    if (code === 5400105) {
+      return '播放超时，请检查网络后重试';
+    }
+    // 解码失败
+    if (code === 5400106) {
+      return '视频解码失败，可能硬件不支持此规格';
+    }
+    // 通用后备：只显示简短的原始信息，不暴露底层堆栈
+    const first: string = msg.split('\n')[0];
+    return '播放失败（' + code + '）：' + (first.length > 80 ? first.substring(0, 80) + '…' : first);
   }
 
   // ==================== 格式化 ====================
