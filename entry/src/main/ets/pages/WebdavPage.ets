@@ -220,6 +220,18 @@ struct WebdavPage {
     if (idx < 0 || idx >= vod.eps.length) {
       return;
     }
+    /**
+     * 系统播放器只解 mp4 / mkv / ts 三种容器（见 Webdav.PLAYABLE_EXT）。
+     * 其余格式（avi/rmvb/wmv/flv/mov/mpeg…）进播放页必然 CONTAINER_ERR，
+     * 用户看到的是黑屏 +「视频解码失败，可能硬件不支持」，容易被误会成手机不行。
+     * 这里提前拦住，直接说清是格式问题。
+     */
+    const f: string = vod.eps[idx].name;
+    if (!Webdav.playable(f)) {
+      Tip.show('系统播放器不支持 ' + Webdav.extLabel(f) +
+        ' 格式（仅支持 MP4 / MKV / TS），可先转成 MP4 再放');
+      return;
+    }
     // 交给播放列表，剧集可切上/下一集
     const eps: Episode[] = [];
     for (let i = 0; i < vod.eps.length; i++) {

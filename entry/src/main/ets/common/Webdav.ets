@@ -13,6 +13,23 @@ import { Cms } from './Cms';
 const VIDEO_EXT: string[] = ['mp4', 'mkv', 'avi', 'ts', 'm2ts', 'mts', 'mov', 'wmv', 'flv',
   'rmvb', 'rm', 'm4v', 'webm', '3gp', 'mpg', 'mpeg', 'vob', 'm2t', 'f4v'];
 
+/**
+ * 系统播放器（AVPlayer）真正支持的视频容器。
+ *
+ * 依据官方能力表：视频容器只有 **mp4 / mkv / ts**（视频 H.264/H.265，
+ * 音频 AAC/MP3）。网页版规格页把 AVI/MOV/WMV 等也算进去，那是「本地图库」
+ * 的能力，不等于 AVPlayer 的 MediaCodec 通路支持。
+ *
+ * 实测：播 avi/rmvb 等会直接报
+ *   5400106 Unsupported Format: CONTAINER_ERR-unsupport container format type
+ * 也就是「连容器都打不开」，和编码无关。
+ *
+ * 所以扫描时仍把这些文件识别成影片（用户能看到「文件确实在」），
+ * 但要标记成「系统播不了」，并在播放前拦下来给出准确原因，
+ * 而不是让用户对着「视频解码失败，可能硬件不支持」一脸茫然。
+ */
+const PLAYABLE_EXT: string[] = ['mp4', 'mkv', 'ts'];
+
 /** 一个文件名解析出的影视元信息 */
 class Parsed {
   title: string = '';
@@ -205,6 +222,36 @@ export class Webdav {
     }
     const ext: string = name.substring(dot + 1).toLowerCase();
     return VIDEO_EXT.indexOf(ext) >= 0;
+  }
+
+  /**
+   * 取扩展名（小写，无扩展名返回空串）。
+   * 用于判断「系统播放器到底放不放得了」，见 PLAYABLE_EXT 的说明。
+   */
+  static extOf(name: string): string {
+    const dot: number = name.lastIndexOf('.');
+    if (dot < 0) {
+      return '';
+    }
+    return name.substring(dot + 1).toLowerCase();
+  }
+
+  /**
+   * 这个文件名能不能被系统播放器播放。
+   * 无扩展名的视频（NAS 常见）按「能播」放行 —— 不去猜，交给播放器试。
+   */
+  static playable(name: string): boolean {
+    const ext: string = Webdav.extOf(name);
+    if (ext.length === 0) {
+      return true;
+    }
+    return PLAYABLE_EXT.indexOf(ext) >= 0;
+  }
+
+  /** 给人看的格式名，如「AVI」；无扩展名返回「未知格式」 */
+  static extLabel(name: string): string {
+    const ext: string = Webdav.extOf(name);
+    return ext.length === 0 ? '未知格式' : ext.toUpperCase();
   }
 
   /** 从绝对 href 取最后一段目录名（URL 解码后） */

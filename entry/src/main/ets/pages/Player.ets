@@ -548,6 +548,18 @@ struct Player {
       this.finalUrl = this.rawUrl;
       this.header = this.paramHeader;
       this.via = '直连';
+      /**
+       * 直连先探一次，把「地址打不开」和「格式不对」分开。
+       *
+       * 播放器对 HTTP 失败一律报 5400106 CONTAINER_ERR（它把 403 的
+       * 67 字节纯文本当成媒体流解析），单看错误码分不清是权限问题还是格式问题。
+       * 这里带认证抓一次首包：
+       *  - 401/403：明确告诉用户是权限/授权，别让人去转码
+       *  - 404：资源已不存在
+       *  - 2xx：能读到数据，才继续交给播放器
+       * 探测失败（超时/断网）不阻止播放，交给播放器自己判。
+       */
+      await this.preflight();
       await this.setupQuality();
       return;
     }
@@ -674,12 +686,67 @@ struct Player {
     if (hit === undefined) {
       return false;
     }
-    hilog.info(0x1000, 'BOXN', 'preload hit: %{public}s', ep.url.substring(0, 60));
+    /**
+     * 缓存有效期。
+     *
+     * 这些 m3u8 地址普遍带临时 token（见过 401 的），预加载可能是几分钟前的，
+     * 直接拿来用就会：加载 → 401 → RESET → 重新解析，用户看到的是
+     * 「点了下一集，二十多秒没反应」。
+     *
+     * 60 秒是折中：连续快进/追剧时缓存基本都在几十秒内产生，能命中；
+     * 放了很久的地址宁可重新解析，也不要用一个已知会失败的。
+     */
+    const age: number = Date.now() - hit.at;
+    if (age > 60000) {
+      hilog.info(0x1000, 'BOXN', 'preload stale %{public}ds, discard: %{public}s',
+        Math.floor(age / 1000), ep.url.substring(0, 50));
+      this.preloadMap.delete(ep.url);
+      return false;
+    }
+    hilog.info(0x1000, 'BOXN', 'preload hit (%{public}ds old): %{public}s',
+      Math.floor(age / 1000), ep.url.substring(0, 60));
     this.finalUrl = hit.url;
     this.header = hit.header;
     // 用完即弃：解析结果里可能带临时 token，留久了反而会用到过期地址
     this.preloadMap.delete(ep.url);
     return true;
+  }
+
+  /**
+   * 直连/网盘播前的可用性探测：把「打不开地址」和「格式不支持」分开。
+   *
+   * 为什么必须做：播放器对任何 HTTP 失败都报 5400106 CONTAINER_ERR
+   * （它把 403/401 的纯文本响应当媒体流解析），单看错误码分不清是
+   * 权限问题还是格式问题 —— 用户会被引去转码，而真正原因是 403。
+   *
+   * 探测本身失败不阻断播放（也许只是探测超时），只在明确拿到
+   * 401/403/404 时提前给出准确结论。
+   */
+  private async preflight(): Promise<void> {
+    if (this.finalUrl.indexOf('http') !== 0) {
+      return;
+    }
+    let msg: string = '';
+    try {
+      // 只要首包就能判定权限，别把 4GB 文件读完
+      await Http.text(this.finalUrl, this.header, 6000);
+      hilog.info(0x1000, 'BOXN', 'preflight ok');
+      return;
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    hilog.info(0x1000, 'BOXN', 'preflight fail: %{public}s', msg);
+    if (msg.indexOf('401') >= 0) {
+      this.errMsg = '网盘要求登录（401），用户名或密码不对';
+    } else if (msg.indexOf('403') >= 0) {
+      this.errMsg = '网盘拒绝访问此路径（403）。不是视频格式问题 —— ' +
+        '请检查网盘的授权目录是否包含该文件夹';
+    } else if (msg.indexOf('404') >= 0) {
+      this.errMsg = '文件不存在（404），可能已被删除或改名';
+    } else {
+      // 超时/网络类：交给播放器按它自己的错误码给出结论
+      this.errMsg = '';
+    }
   }
 
   // ==================== 画质 ====================
@@ -1274,7 +1341,13 @@ struct Player {
           return;
         }
         this.applyEv(PlayState.EV_ERROR);
-        this.errMsg = friendlyErr(err.code, err.message);
+        // preflight 已经拿到准确原因（401/403/404）时优先用它：
+        // 播放器对这些情况只会报 5400106「容器格式不支持」，那是误导。
+        if (this.errMsg.length === 0) {
+          this.errMsg = friendlyErr(err.code, err.message);
+        } else {
+          hilog.info(0x1000, 'BOXN', 'keep preflight err: %{public}s', this.errMsg.substring(0, 40));
+        }
         // 直播单台失效太常见（源站限流/换地址），自动顺到下个频道，
         // 连挂 3 台说明整源有问题，停下来给用户看错误和重试
         if (this.isLive && this.liveFail < 3 && Playlist.hasNext()) {
@@ -1535,6 +1608,18 @@ struct Player {
 
       // 先给数据源，等它进 initialized，再在回调里挂 surface
       try {
+        // 网盘（WebDAV）必须带 Basic Auth，否则服务器回 401 + 13 字节纯文本，
+        // 播放器拿这段文本当媒体流解析 → CONTAINER_ERR，界面看起来像「格式不支持」。
+        // 这里把 header 的键和条数打出来：能区分「压根没传」「传了但键不对」。
+        let hk: string = 'none';
+        try {
+          const ks: string[] = Object.keys(this.header);
+          hk = ks.length + '[' + ks.join(',') + ']';
+        } catch (e) {
+          hk = 'err';
+        }
+        hilog.info(0x1000, 'BOXN', 'media src url=%{public}s header=%{public}s',
+          this.finalUrl.substring(0, 70), hk);
         const src: media.MediaSource = media.createMediaSourceWithUrl(this.finalUrl, this.header);
         // 期望清晰度 + 缓冲水位：慢网多垫几秒，是治卡顿最直接的一招
         const strategy: media.PlaybackStrategy = {
@@ -1886,8 +1971,17 @@ struct Player {
     this.from = this.isLive ? 'live' : (this.directMode ? 'direct' : Playlist.title());
     this.syncEpLabel();
 
+    // 先把界面切到「加载中」，别让上一集的画面/文案继续挂着。
+    // 切换要重新解析地址（8-12 秒，预加载过期时更久），这段时间界面若毫无变化，
+    // 用户会以为「点下一集没反应」，反复点同一颗按钮。
+    this.buffering = true;
+    this.resolving = !this.applyPreload(ep);
+    if (this.resolving) {
+      this.showTip('正在准备 ' + ep.name + '…');
+    }
+
     // 尝试使用下一集预加载缓存，命中时直接使用，省去 8-12s 解析等待
-    const hitPreload: boolean = this.applyPreload(ep);
+    const hitPreload: boolean = !this.resolving;
 
     if (hitPreload) {
       // 命中预加载缓存，已经把 finalUrl/header 写进去，只需 setupQuality

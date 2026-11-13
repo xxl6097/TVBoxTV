@@ -55,6 +55,16 @@ export function friendlyErr(code: number, msg: string): string {
     return '播放超时，请检查网络后重试';
   }
   if (code === 5400106) {
+    /**
+     * 5400106 实际包含两类完全不同的失败，原来看消息里的关键字才能分开：
+     *  - CONTAINER_ERR：连容器都解不开（avi/rmvb/wmv/flv 等）。系统播放器
+     *    只支持 mp4/mkv/ts，这才是网盘/本地文件最常见的情况。
+     *  - 解码失败：容器能开，但编码不支持（如个别 H.265/10bit）。
+     * 原来一律说「硬件不支持」，会把「格式选错了」误导成「手机不行」。
+     */
+    if (/CONTAINER_ERR|container format/i.test(msg)) {
+      return '系统播放器打不开这个视频的封装格式，转成 MP4 后可播放';
+    }
     return '视频解码失败，可能硬件不支持此规格';
   }
   // 通用后备：只显示简短的原始信息，不暴露底层堆栈
