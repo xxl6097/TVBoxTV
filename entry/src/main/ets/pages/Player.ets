@@ -1946,7 +1946,24 @@ struct Player {
     }
     hilog.info(0x1000, 'BOXN', 'switchEpisode go: idx=%{public}d/%{public}d ep=%{public}s',
       Playlist.index(), Playlist.count(), ep.name);
+    /**
+     * 顺序很重要：先 savePos()，再动 rawUrl / epIndex。
+     *
+     * saveWdPos 里 h.url = this.rawUrl、h.epIndex = this.epIndex，
+     * 存的是「刚才在看的那一集」。如果把 rawUrl 换到前面，
+     * 续播记录就会变成「第 01 集的进度 + 第 02 集的地址」，
+     * 下次续播直接跳错集。
+     */
     this.savePos();
+    /**
+     * 切集必须换地址 —— 这一步原来漏了。
+     *
+     * 标题/集数/进度全都更新了，唯独 this.rawUrl 还停在进入播放页时那一集。
+     * 点播没暴露这个问题，因为 resolveUrl() 会拿 Playlist 里的新地址重新解析；
+     * 而直连/网盘走 directMode 分支，直接把 this.rawUrl 当最终地址用 ——
+     * 于是界面显示「第 02 集」，画面还是第 01 集。
+     */
+    this.rawUrl = ep.url;
     this.releasePlayer();
     this.curMs = 0;
     this.posMs = 0;
