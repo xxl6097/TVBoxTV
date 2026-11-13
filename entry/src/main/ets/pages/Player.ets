@@ -61,6 +61,13 @@ const SPEED_BYTES: number = 384 * 1024;
 /** 可选倍速档位。系统枚举只认固定几档，这里只列常用的 */
 const SPEEDS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
+/** 一条字幕（自己接管渲染用） */
+class SubCue {
+  start: number = 0;
+  end: number = 0;
+  text: string = '';
+}
+
 /** 一条可选字幕轨（从 AVPlayer 的轨道表里挑出来的） */
 class SubTrack {
   /** selectTrack 要的轨道号 */
@@ -250,6 +257,20 @@ struct Player {
   private winW: number = 0;
   /** 已选中的字幕轨道号（AVPlayer 里的轨道号，不是 subs 下标）；-1 表示没选 */
   private subTrackIdx: number = -1;
+  /**
+   * 字幕时间轴微调（毫秒，正数 = 字幕延后出现）。
+   *
+   * 系统没有字幕延迟 API，但提供了 subtitleUpdate 事件（带 text/startTime/duration）。
+   * 所以自己接管显示：先在事件里把字幕缓存下来，再由计时器按「当前播放位置 ± 偏移」
+   * 决定该显示哪一条、什么时候显示 —— 原生字幕层关闭，改由我们画。
+   */
+  @State subOffsetMs: number = 0;
+  /** 当前应该显示的字幕文本（空 = 不显示） */
+  @State subText: string = '';
+  /** 已收到的字幕条目（按 startTime 升序） */
+  private subCache: SubCue[] = [];
+  /** 字幕缓存对应的视频源，换集时清空 */
+  private subCacheFor: string = '';
 
   private siteKey: string = '';
   private vodId: string = '';
@@ -436,6 +457,8 @@ struct Player {
       // 倍速也按影片存（用户确认按片保存，与片头跳过一致）：
       // 给某部剧设了 1.5x 不该让纪录片也跟着 1.5x
       this.speed = sp.speed > 0 ? sp.speed : 1;
+      // 字幕时间轴偏移也按影片恢复
+      this.subOffsetMs = sp.subOffset;
       this.wdDir = p.wdDir.length > 0 ? p.wdDir : '';
       this.wdSeries = p.wdSeries;
       // 直连（手动填地址）是一个孤立地址，没有剧集概念。
@@ -711,6 +734,43 @@ struct Player {
     this.levels = list;
     this.levelIdx = this.pickInitialLevel();
     this.syncQLabel();
+  }
+
+  /**
+   * 按「当前播放位置 + 偏移」挑出该显示的字幕。
+   *
+   * 只在选中了字幕轨、且缓存里有内容时才算；offsetMs 为正值表示字幕整体延后。
+   * 用二分查找：一部电影几千条，每 200ms 线性扫一遍太浪费。
+   */
+  private tickSubtitle(t: number): void {
+    if (this.subTrackIdx < 0 || this.subCache.length === 0) {
+      if (this.subText.length > 0) {
+        this.subText = '';
+      }
+      return;
+    }
+    // 播放位置减去偏移 = 字幕时间轴上的位置
+    // 偏移 +500ms（字幕太早）时，应当在视频比字幕晚 500ms 处才显示字幕
+    const p: number = t - this.subOffsetMs;
+    const arr: SubCue[] = this.subCache;
+    let lo: number = 0;
+    let hi: number = arr.length - 1;
+    let hit: number = -1;
+    while (lo <= hi) {
+      const mid: number = (lo + hi) >> 1;
+      if (p < arr[mid].start) {
+        hi = mid - 1;
+      } else if (p >= arr[mid].end) {
+        lo = mid + 1;
+      } else {
+        hit = mid;
+        break;
+      }
+    }
+    const next: string = hit >= 0 ? arr[hit].text : '';
+    if (next !== this.subText) {
+      this.subText = next;
+    }
   }
 
   /** 从 Store 恢复播放器全局偏好（画面比例、清晰度、音量）。
@@ -1364,6 +1424,37 @@ struct Player {
         }
       });
 
+      /**
+       * 字幕内容采集。
+       *
+       * 系统只在外部字幕被选中时推送这个事件，带 text / startTime / duration。
+       * 我们把它们攒进 subCache，再由 tickSubtitle() 按偏移量决定显示 ——
+       * 这样字幕时间轴就能微调（系统本身没有延迟 API）。
+       */
+      p.on('subtitleUpdate', (info: media.SubtitleInfo) => {
+        const txt: string = info.text !== undefined && info.text !== null ? info.text : '';
+        const st: number = info.startTime !== undefined && info.startTime !== null ? info.startTime : 0;
+        const du: number = info.duration !== undefined && info.duration !== null ? info.duration : 2000;
+        if (txt.length === 0) {
+          return;
+        }
+        const c: SubCue = new SubCue();
+        c.start = st;
+        c.end = st + (du > 0 ? du : 2000);
+        c.text = txt;
+        // 追加并保持按开始时间升序（个别源推送顺序不严格）
+        const arr: SubCue[] = this.subCache;
+        let i: number = arr.length;
+        while (i > 0 && arr[i - 1].start > c.start) {
+          i--;
+        }
+        arr.splice(i, 0, c);
+        // 上限保护：一部电影几千条，超了就丢最旧的
+        if (arr.length > 6000) {
+          arr.splice(0, arr.length - 6000);
+        }
+      });
+
       // 缓冲状态直接反映到界面上：以前卡住就是黑屏干等，看着像死机
       p.on('bufferingUpdate', (info: media.BufferingInfoType, value: number) => {
         if (info === media.BufferingInfoType.BUFFERING_START) {
@@ -1401,6 +1492,8 @@ struct Player {
        */
       p.on('timeUpdate', (t: number) => {
         this.posMs = t;
+        // 自己接管字幕显示：按偏移量在本地缓存里挑当前该显示的那条
+        this.tickSubtitle(t);
         // 片尾跳过：播到片尾起点，浮现 Apple TV 式「下一集/跳过片尾」按钮，点一下或倒计时结束即跳
         //
         // 两道保护（原来都没有）：
@@ -1743,15 +1836,22 @@ struct Player {
       delta, this.isLive ? 'YES' : 'NO');
     // 页面已销毁（用户已返回）时不要再换台/换集——那会重新拉起一个播放器
     if (this.closed) {
+      hilog.info(0x1000, 'BOXN', 'switchEpisode abort: page closed');
       return;
     }
     if (Playlist.count() === 0) {
+      // 这条最容易被误解成「按钮没反应」：列表空了，方法静默返回，
+      // 界面上只弹一句提示，用户看到的就是「点了没动静」。
+      hilog.info(0x1000, 'BOXN', 'switchEpisode abort: playlist empty direct=%{public}s',
+        this.directMode ? 'y' : 'n');
       this.showTip(this.isLive ? '当前分组没有其他频道'
         : (this.directMode ? '直连播放没有上一集/下一集' : '当前没有可切换的剧集，返回详情页选集'));
       return;
     }
     const ep: Episode | null = Playlist.step(delta);
     if (ep === null) {
+      hilog.info(0x1000, 'BOXN', 'switchEpisode abort: at boundary idx=%{public}d n=%{public}d',
+        Playlist.index(), Playlist.count());
       if (this.isLive) {
         this.showTip(delta > 0 ? '已经是最后一个频道' : '已经是第一个频道');
       } else {
@@ -1759,6 +1859,8 @@ struct Player {
       }
       return;
     }
+    hilog.info(0x1000, 'BOXN', 'switchEpisode go: idx=%{public}d/%{public}d ep=%{public}s',
+      Playlist.index(), Playlist.count(), ep.name);
     this.savePos();
     this.releasePlayer();
     this.curMs = 0;
@@ -2484,6 +2586,42 @@ struct Player {
       )
   }
 
+  /** 字幕偏移档位按钮。ms 为 0 显示「同步」 */
+  @Builder
+  SubOffsetChip(ms: number) {
+    Text(ms === 0 ? '同步'
+      : ((ms > 0 ? '+' : '-') + Math.abs(ms / 1000) + 's'))
+      .fontSize(14)
+      .fontColor(this.subOffsetMs === ms ? T.SELECTED : T.PANEL_TXT)
+      .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+      .backgroundColor(this.subOffsetMs === ms ? T.PANEL_BTN_HI : T.WHITE_15)
+      .borderRadius(T.RADIUS_PILL)
+      .border({ width: T.BORDER, color: this.subOffsetMs === ms ? T.SELECTED : '#00000000' })
+      .margin({ right: 8, bottom: 8 })
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .onHover((hv: boolean) => this.hoverTo('so' + ms, hv))
+      .onClick(() => this.tap('so' + ms, () => {
+        this.pickSubOffset(ms);
+      }))
+      .onMouse(this.ptr('so' + ms, () => {
+        this.pickSubOffset(ms);
+      }))
+  }
+
+  /**
+   * 设置字幕时间轴偏移，并立即按新偏移重算当前该显示的字幕。
+   * 按影片保存（与倍速、片头片尾同一条记录）。
+   */
+  private async pickSubOffset(ms: number): Promise<void> {
+    this.subOffsetMs = ms;
+    const k: string[] = this.skipKey();
+    await Store.setSkipPrefSub(k[0], k[1], ms);
+    // 立刻重算：否则要等下一次 timeUpdate 才变，用户点完看不到反应
+    this.tickSubtitle(this.posMs);
+    this.showTip(ms === 0 ? '字幕已对齐'
+      : ('字幕' + (ms > 0 ? '延后 ' : '提前 ') + Math.abs(ms / 1000) + ' 秒（仅本片）'));
+  }
+
   @Builder
   SubChip(i: number, label: string) {
     Text(label)
@@ -2521,7 +2659,7 @@ struct Player {
     }
     // 只写当前这部片，不影响其他视频（键的合成规则见 skipKey()）
     const k1: string[] = this.skipKey();
-    await Store.setSkipPref(k1[0], k1[1], this.introSkipSec, this.outroSkipSec, this.speed);
+    await Store.setSkipPref(k1[0], k1[1], this.introSkipSec, this.outroSkipSec, this.speed, this.subOffsetMs);
     if (kind === 'intro') {
       this.showTip(sec > 0 ? ('已设片头跳过 ' + sec + ' 秒，本片起播自动生效') : '已关闭片头跳过');
     } else {
@@ -2700,7 +2838,7 @@ struct Player {
     }
     // 同样只写当前这部片
     const k2: string[] = this.skipKey();
-    await Store.setSkipPref(k2[0], k2[1], this.introSkipSec, this.outroSkipSec, this.speed);
+    await Store.setSkipPref(k2[0], k2[1], this.introSkipSec, this.outroSkipSec, this.speed, this.subOffsetMs);
     if (this.skipEditKind === 'intro') {
       this.showTip(this.skipEditVal > 0
         ? ('已设片头跳过 ' + this.fmtSec(this.skipEditVal) + '（仅本片）')
@@ -2999,6 +3137,36 @@ struct Player {
           .margin({ top: 6 })
         }
 
+        // 字幕时间轴微调：只在选中某条字幕轨时出现（没字幕调了也没意义）
+        if (this.subTrackIdx >= 0) {
+          Row() {
+            Text('字幕时间轴')
+              .fontSize(14).fontColor(T.PANEL_DIM)
+            Text(this.subOffsetMs === 0 ? '同步'
+              : ((this.subOffsetMs > 0 ? '延后 ' : '提前 ') + Math.abs(this.subOffsetMs / 1000).toFixed(1) + ' 秒'))
+              .fontSize(13)
+              .fontColor(this.subOffsetMs === 0 ? T.PANEL_DIM : T.SELECTED)
+              .margin({ left: 10 })
+          }
+          .width('100%')
+          .margin({ top: 14 })
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+            this.SubOffsetChip(-2000)
+            this.SubOffsetChip(-1000)
+            this.SubOffsetChip(-500)
+            this.SubOffsetChip(0)
+            this.SubOffsetChip(500)
+            this.SubOffsetChip(1000)
+            this.SubOffsetChip(2000)
+          }
+          .width('100%')
+          .margin({ top: 6 })
+          Text('字幕比画面早（出现太快）就选「延后」，比画面晚就选「提前」。按当前这部片记住。')
+            .fontSize(12).fontColor(T.PANEL_DIM)
+            .width('100%').lineHeight(18)
+            .margin({ top: 4 })
+        }
+
         // 跳过片头片尾：起播自动跳片头，播到片尾自动切下一集（或结束）
         Row() {
           Text('跳过片头')
@@ -3143,6 +3311,34 @@ struct Player {
         onHoverRetry: (on: boolean) => this.hoverTo('rt', on),
         onHoverBack: (on: boolean) => this.hoverTo('bk', on)
       })
+
+      /**
+       * 自定义字幕层。
+       *
+       * 选中字幕轨后，原生字幕会被关掉（selectTrack 只用来触发 subtitleUpdate），
+       * 由这里按 subOffsetMs 渲染 —— 这样才有「字幕快/慢半秒」可调。
+       */
+      if (this.subText.length > 0) {
+        Column() {
+          Text(this.subText)
+            .fontSize(this.isPhone ? 18 : 26)
+            .fontColor('#FFFFFF')
+            .textAlign(TextAlign.Center)
+            .lineHeight(this.isPhone ? 28 : 38)
+            .maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+            .borderRadius(6)
+            .backgroundColor('#80000000')
+            .constraintSize({ maxWidth: '84%' })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.End)
+        .alignItems(HorizontalAlign.Center)
+        .padding({ bottom: this.showOsd ? 150 : 60 })
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
 
       /**
        * 音量 / 亮度指示条。

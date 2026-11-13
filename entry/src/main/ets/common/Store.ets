@@ -74,6 +74,8 @@ export class SkipPref {
   outro: number = 0;
   /** 播放倍速，1 = 正常。0 视为「没设过」，读出来按 1 处理 */
   speed: number = 1;
+  /** 字幕时间轴偏移（毫秒，正 = 字幕延后），0 = 同步 */
+  subOffset: number = 0;
   /** 最后修改时间，用于淘汰最旧的记录 */
   t: number = 0;
 }
@@ -1442,12 +1444,18 @@ export class Store {
   /** 写入某部片的倍速（与跳过设置共用一条记录，先读后写保住其他字段） */
   static async setSkipPrefSpeed(siteKey: string, vodId: string, speed: number): Promise<void> {
     const cur: SkipPref = await Store.skipPref(siteKey, vodId);
-    await Store.setSkipPref(siteKey, vodId, cur.intro, cur.outro, speed);
+    await Store.setSkipPref(siteKey, vodId, cur.intro, cur.outro, speed, cur.subOffset);
+  }
+
+  /** 写入某部片的字幕时间轴偏移（毫秒） */
+  static async setSkipPrefSub(siteKey: string, vodId: string, subOffset: number): Promise<void> {
+    const cur: SkipPref = await Store.skipPref(siteKey, vodId);
+    await Store.setSkipPref(siteKey, vodId, cur.intro, cur.outro, cur.speed, subOffset);
   }
 
   /** 写入某部片的跳过设置（两个值一起写，避免半更新） */
   static async setSkipPref(siteKey: string, vodId: string, intro: number, outro: number,
-    speed: number = 1): Promise<void> {
+    speed: number = 1, subOffset: number = 0): Promise<void> {
     if (Store.prefs === null) {
       return;
     }
@@ -1459,11 +1467,12 @@ export class Store {
     mine.intro = intro;
     mine.outro = outro;
     mine.speed = speed > 0 ? speed : 1;
+    mine.subOffset = subOffset;
     mine.t = Date.now();
     out.push(mine);
     // 三项都是默认值才不必留这条记录。
     // 注意不能只看 intro/outro —— 那样「只设了倍速」会被立刻删掉。
-    if (intro === 0 && outro === 0 && mine.speed === 1) {
+    if (intro === 0 && outro === 0 && mine.speed === 1 && mine.subOffset === 0) {
       out.shift();
     }
     for (let i = 0; i < all.length && out.length < Store.SKIP_MAX; i++) {
