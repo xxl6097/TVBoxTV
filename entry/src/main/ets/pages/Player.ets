@@ -448,8 +448,9 @@ struct Player {
     }
     // 画质偏好是全局的：上次选了 720P，这次进来自动还是 720P
     this.qCap = await Store.qualityPref();
-    // 倍速同理：整部剧一般都用同一个速度看
-    this.speed = await Store.speedPref();
+    // 倍速**不要**在这里再读一次全局值：上面参数块已经按影片取过 sp.speed，
+    // 这里再赋一次会用全局旧键把按片的值覆盖掉 —— 表现为
+    // 「设了 1.5x，重新进来又变回正常」。
     this.syncEpLabel();
 
     await this.resolveUrl();
@@ -2520,7 +2521,7 @@ struct Player {
     }
     // 只写当前这部片，不影响其他视频（键的合成规则见 skipKey()）
     const k1: string[] = this.skipKey();
-    await Store.setSkipPref(k1[0], k1[1], this.introSkipSec, this.outroSkipSec);
+    await Store.setSkipPref(k1[0], k1[1], this.introSkipSec, this.outroSkipSec, this.speed);
     if (kind === 'intro') {
       this.showTip(sec > 0 ? ('已设片头跳过 ' + sec + ' 秒，本片起播自动生效') : '已关闭片头跳过');
     } else {
@@ -2699,7 +2700,7 @@ struct Player {
     }
     // 同样只写当前这部片
     const k2: string[] = this.skipKey();
-    await Store.setSkipPref(k2[0], k2[1], this.introSkipSec, this.outroSkipSec);
+    await Store.setSkipPref(k2[0], k2[1], this.introSkipSec, this.outroSkipSec, this.speed);
     if (this.skipEditKind === 'intro') {
       this.showTip(this.skipEditVal > 0
         ? ('已设片头跳过 ' + this.fmtSec(this.skipEditVal) + '（仅本片）')
