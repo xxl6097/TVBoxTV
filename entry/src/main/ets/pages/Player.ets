@@ -3143,6 +3143,54 @@ struct Player {
         onHoverBack: (on: boolean) => this.hoverTo('bk', on)
       })
 
+      /**
+       * 音量 / 亮度指示条。
+       *
+       * 这两个状态（showVol / showBrightness）在手势里一直在赋值，
+       * **但 build 里从来没有渲染过** —— 用户上下滑动时数值确实变了，
+       * 屏幕上却什么也看不到，只能靠听声音/看画面亮度自己猜，
+       * 很容易以为「滑动没反应」。
+       */
+      if (this.showVol || this.showBrightness) {
+        Column() {
+          Column() {
+            Text(this.showBrightness ? '☀' : '🔊')
+              .fontSize(30)
+              .fontColor('#FFFFFF')
+            // 进度条：横向填充表示 0~100%
+            Stack({ alignContent: Alignment.Start }) {
+              Row()
+                .width('100%')
+                .height(4)
+                .borderRadius(2)
+                .backgroundColor('#4DFFFFFF')
+              Row()
+                .width(Math.round((this.showBrightness ? this.brightnessVal : this.volume) * 100) + '%')
+                .height(4)
+                .borderRadius(2)
+                .backgroundColor('#FFFFFF')
+            }
+            .width(160)
+            .height(4)
+            .margin({ top: 12 })
+            Text(Math.round((this.showBrightness ? this.brightnessVal : this.volume) * 100) + '%')
+              .fontSize(14)
+              .fontColor('#FFFFFF')
+              .margin({ top: 8 })
+          }
+          .width(220)
+          .padding({ top: 20, bottom: 20 })
+          .borderRadius(16)
+          .backgroundColor('#B3000000')
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+
       // 播放/暂停中央图标：全屏居中，不拦截点击
       if (this.playFlash.length > 0 && this.seekPreview < 0) {
         Column() {
