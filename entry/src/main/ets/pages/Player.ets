@@ -1466,8 +1466,20 @@ struct Player {
                 // 状态不允许就放弃这次续播
               }
             }, 120);
-          } else if (this.introSkipSec > 0 && !this.introDone && !this.isLive) {
-            // 跳过片头：起播浮现 Apple TV 式「跳过片头」按钮，点一下或倒计时结束即跳过
+          }
+          /**
+           * 跳过片头。
+           *
+           * 到这里是**独立判断**，不是续播的 else 分支 —— 原来两者互斥，
+           * 只要 pendingSeek > 0 就完全不审视片头，续播进来的人永远看不到
+           * 「跳过片头」。但也不能无条件弹：续播到 4 分钟时提示跳片头毫无意义。
+           *
+           * 判据：只有当前进度还落在片头区间内（小于片头秒数）才值得提示。
+           * 续播位置 pendingSeek 尚未消费时以它为准，否则用当前 posMs。
+           */
+          const atMs: number = this.pendingSeek > 0 ? this.pendingSeek : this.posMs;
+          if (this.introSkipSec > 0 && !this.introDone && !this.isLive &&
+            atMs < this.introSkipSec * 1000) {
             const skipMs: number = this.introSkipSec * 1000;
             if (this.durMs <= 0 || skipMs < this.durMs - 30000) {
               this.showSkipBtn('intro', 5);
@@ -2854,6 +2866,15 @@ struct Player {
     if (this.outroSkipSec > 0 && this.durMs > 0 &&
       this.outroSkipSec * 1000 < this.durMs - 30000) {
       this.outroFired = t >= this.durMs - this.outroSkipSec * 1000;
+    } else {
+      /**
+       * 片尾跳过没启用时也要把标记放开。
+       *
+       * 原来这个 else 不存在：一旦某次把 outroFired 置成 true（比如片尾按钮
+       * 弹出来后用户又拖回中间、或者中途关掉了片尾跳过），标记就永远卡在 true，
+       * 本集再怎么播到片尾也不会提示 —— 用户会觉得「片尾跳过时灵时不灵」。
+       */
+      this.outroFired = false;
     }
   }
 
@@ -2865,22 +2886,49 @@ struct Player {
     this.skipShow = '';
     this.stopSkipTimer();
     if (kind === 'intro') {
-      this.introDone = true;
       const skipMs: number = this.introSkipSec * 1000;
+      /**
+       * introDone 必须在 seek **成功之后**才置位。
+       *
+       * 原来先置位、再 try/catch 里 seek（catch 静默吞掉），结果是：
+       * seek 因状态不允许而失败时，位置没动、按钮也不再出现，
+       * 但界面照样提示「已跳过片头」—— 用户看到提示、画面还在片头，
+       * 会认为功能坏了，而且这一集再也没法跳了。
+       */
+      let ok: boolean = false;
       try {
         if (this.player !== null && this.prepared && skipMs > 0) {
           this.player.seek(skipMs);
           this.posMs = skipMs;
           this.curMs = skipMs;
           this.markSeek(skipMs);
+          ok = true;
         }
       } catch (e) {
-        // 状态不允许就放弃这次跳过
+        ok = false;
       }
-      this.showTip('已跳过片头 ' + this.fmtSec(this.introSkipSec));
+      if (ok) {
+        this.introDone = true;
+        this.showTip('已跳过片头 ' + this.fmtSec(this.introSkipSec));
+      } else {
+        // 没跳成就别锁死，允许用户再点一次（按钮由下一次起播/prepared 重新浮现）
+        hilog.info(0x1000, 'BOXN', 'intro skip failed player=%{public}s prepared=%{public}s',
+          '' + (this.player !== null), '' + this.prepared);
+        this.showTip('暂时跳不了片头，稍后再点或拖动进度条');
+        // 把按钮放回去，用户不用等下一次机会
+        this.showSkipBtn('intro', 5);
+      }
     } else {
       this.outroFired = true;
       if (Playlist.hasNext()) {
+        /**
+         * 有下一集：这一集按「已看完」处理，别把片尾位置当成进度存下来。
+         *
+         * switchEpisode 里会先 savePos()，此时 posMs 已走到片尾（如 18:45/18:48）。
+         * 存成续播记录的后果：下次从这集续播，进去就是片尾，等于「一打开就结束」。
+         * 各处的 dur-15000 保护能挡住，但那是补救；这里直接把位置记 0 更干净。
+         */
+        this.posMs = 0;
         this.showTip('片尾，跳下一集');
         this.switchEpisode(1);
       } else {

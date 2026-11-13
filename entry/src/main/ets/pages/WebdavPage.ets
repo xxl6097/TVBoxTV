@@ -278,6 +278,19 @@ struct WebdavPage {
       return;
     }
 
+    /**
+     * 续播进度要过两道筛，与点播侧（Detail.ets）保持一致：
+     *  - 太靠前（<5 秒）没意义，等于从头播
+     *  - 太靠后（离结尾 <15 秒）续播进去立刻结束，用户只会看到黑屏和一个"播完"
+     *
+     * 网盘这边原来直接把 h.pos 塞给播放页，看到 18:40/18:48 时点「继续播放」
+     * 进去就结束了，得自己再拖回来。
+     */
+    let resume: number = 0;
+    if (h.pos > 5000 && (h.dur <= 0 || h.pos < h.dur - 15000)) {
+      resume = h.pos;
+    }
+
     // 尝试从识别缓存重建整部剧的选集，续播时也能切上/下一集
     let eps: Episode[] = [];
     let startIdx: number = 0;
@@ -298,9 +311,33 @@ struct WebdavPage {
         e.url = vod.eps[i].url;
         eps.push(e);
       }
-      startIdx = (h.epIndex >= 0 && h.epIndex < vod.eps.length) ? h.epIndex : 0;
-      playUrl = vod.eps[startIdx].url;
-      title = vod.name + (vod.eps.length > 1 ? (' ' + eps[startIdx].name) : '');
+      /**
+       * 定位上次那一集，**以 url 为准**，epIndex 只作退路。
+       *
+       * 识别缓存是重新扫描得到的新列表，顺序未必和历史记录形成时一致
+       * （文件被移动、改名、目录里新增/删除了几集）。这时按 epIndex 取
+       * 会落到**别的集**上：点「继续播放」播的不是上次那集，进度自然也对不上。
+       *
+       * url 是那一集的身份，最可靠；只有 url 在新列表里找不到（文件改名了）
+       * 才退回 epIndex，并把播放地址用 h.url（至少还能播上次那个文件）。
+       */
+      let found: number = -1;
+      for (let i = 0; i < eps.length; i++) {
+        if (eps[i].url === h.url) {
+          found = i;
+          break;
+        }
+      }
+      if (found >= 0) {
+        startIdx = found;
+        playUrl = eps[found].url;
+      } else {
+        startIdx = (h.epIndex >= 0 && h.epIndex < vod.eps.length) ? h.epIndex : 0;
+        // 缓存里找不到这一集的 url：仍按记录里的地址播，别把用户带到别的集
+        playUrl = h.url.length > 0 ? h.url : eps[startIdx].url;
+      }
+      title = vod.name + (vod.eps.length > 1 && eps[startIdx] !== undefined
+        ? (' ' + eps[startIdx].name) : '');
       Playlist.set(eps, startIdx, vod.name);
     } else {
       /**
@@ -324,7 +361,7 @@ struct WebdavPage {
     p.from = 'direct';
     p.epIndex = startIdx;
     p.header = Webdav.authHeader(src);
-    p.seek = h.pos;
+    p.seek = resume;
     p.wdSrcId = src.id;
     p.wdSrcName = src.name;
     p.wdVod = h.vodName;
