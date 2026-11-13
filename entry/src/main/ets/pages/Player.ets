@@ -246,6 +246,8 @@ struct Player {
   private flashTimer: number = -1;
   /** 进度条实际宽度（vp），用于把点击位置换算成播放进度 */
   private barW: number = 0;
+  /** 播放页宽度（vp），用于左右半屏手势判定；0 表示还没测到 */
+  private winW: number = 0;
   /** 已选中的字幕轨道号（AVPlayer 里的轨道号，不是 subs 下标）；-1 表示没选 */
   private subTrackIdx: number = -1;
 
@@ -431,6 +433,9 @@ struct Player {
       const sp: SkipPref = await Store.skipPref(kh[0], kh[1]);
       this.introSkipSec = sp.intro;
       this.outroSkipSec = sp.outro;
+      // 倍速也按影片存（用户确认按片保存，与片头跳过一致）：
+      // 给某部剧设了 1.5x 不该让纪录片也跟着 1.5x
+      this.speed = sp.speed > 0 ? sp.speed : 1;
       this.wdDir = p.wdDir.length > 0 ? p.wdDir : '';
       this.wdSeries = p.wdSeries;
       // 直连（手动填地址）是一个孤立地址，没有剧集概念。
@@ -707,12 +712,12 @@ struct Player {
     this.syncQLabel();
   }
 
-  /** 从 Store 恢复播放器全局偏好（画面比例、清晰度、倍速、音量） */
+  /** 从 Store 恢复播放器全局偏好（画面比例、清晰度、音量）。
+   *  倍速**不在这里**：它按影片存，必须在读到 siteKey/vodId 之后才取。 */
   private async restorePreferences(): Promise<void> {
     try {
       this.scaleMode = await Store.scaleModePref();
       this.qCap = await Store.qualityPref();
-      this.speed = await Store.speedPref();
       // 音量恢复后面，需要播放器准备好
     } catch (e) {
       // 偏好读取失败用默认值，但记一条：否则「为什么每次都是 1.0 倍速」无从查起
@@ -1369,6 +1374,26 @@ struct Player {
       });
 
       /**
+       * 时长补正。
+       *
+       * 原来只在 prepared 回调里读一次 p.duration，但部分 HLS 源那时还是 -1，
+       * 之后系统算出了时长也不会再通知我们 —— 结果是 durMs 恒为 0，
+       * 片尾跳过、进度条拖动、片尾倒计时全部失效（而且只在部分源上复现，
+       * 看起来像「有些视频片尾不跳」）。
+       * 这里监听 durationUpdate，拿到有效值就补上。
+       */
+      p.on('durationUpdate', (d: number) => {
+        if (this.isLive || d <= 0) {
+          return;
+        }
+        if (Math.abs(d - this.durMs) < 1000) {
+          return;
+        }
+        this.durMs = d;
+        hilog.info(0x1000, 'BOXN', 'duration corrected to %{public}d', d);
+      });
+
+      /**
        * 进度只在显示时同步到 UI。
        * 以前每秒都写 @State curMs，控制条收起时也在刷新整棵组件树，
        * 大屏上一卡一卡的观感有一部分就是这么来的。
@@ -1376,7 +1401,15 @@ struct Player {
       p.on('timeUpdate', (t: number) => {
         this.posMs = t;
         // 片尾跳过：播到片尾起点，浮现 Apple TV 式「下一集/跳过片尾」按钮，点一下或倒计时结束即跳
+        //
+        // 两道保护（原来都没有）：
+        //  1. 片尾秒数必须明显小于总时长（至少留 30 秒正常内容）。
+        //     片头那侧一直有这个判断，片尾漏了 —— 一集 60 秒、片尾设 90 秒时，
+        //     起播瞬间就满足 t >= dur - 90s，直接弹「跳下一集」。
+        //  2. 当前不能已经处在片尾区间之前太久：t 从 0 起算时，上面的式子会退化成
+        //     「负数也成立」，靠第 1 条兜住。
         if (!this.isLive && this.outroSkipSec > 0 && this.durMs > 0 && !this.outroFired &&
+          this.outroSkipSec * 1000 < this.durMs - 30000 &&
           t >= this.durMs - this.outroSkipSec * 1000) {
           this.outroFired = true;
           this.showSkipBtn('outro', 8);
@@ -2201,6 +2234,24 @@ struct Player {
     this.showTip('画面比例：' + name);
   }
 
+  /**
+   * 设置项的作用范围标签。
+   *
+   * 播放设置里混着两种范围：画面比例是全局的（换片也沿用），
+   * 倍速/片头/片尾是按影片存的。界面不标出来，用户根本分不清
+   * 「这个改动会影响谁」—— 之前片头跳过串到别的视频，一半原因就是这里没交代。
+   */
+  @Builder
+  ScopeTag(text: string) {
+    Text(text)
+      .fontSize(10)
+      .fontColor(T.PANEL_DIM)
+      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+      .margin({ left: 8 })
+      .borderRadius(4)
+      .border({ width: 1, color: '#33FFFFFF' })
+  }
+
   /** 点画面唤出控制条等隐藏手势的说明文案 */
   private handTipText(): string {
     const lines: string[] = [
@@ -2312,12 +2363,14 @@ struct Player {
 
   private async pickSpeed(v: number): Promise<void> {
     this.speed = v;
-    await Store.setSpeedPref(v);
+    // 按影片保存（不再写全局 playerSpeed，否则又会串到其他视频）
+    const k: string[] = this.skipKey();
+    await Store.setSkipPrefSpeed(k[0], k[1], v);
     if (this.player !== null && this.prepared) {
       this.applySpeed(this.player);
       hilog.info(0x1000, 'BOXN', 'speed apply %{public}s state=%{public}s',
         '' + v, PlayState.label(this.playState));
-      this.showTip(v === 1 ? '已恢复 1.0 倍速' : ('已切到 ' + v + ' 倍速'));
+      this.showTip(v === 1 ? '已恢复 1.0 倍速（仅本片）' : ('已切到 ' + v + ' 倍速（仅本片）'));
     } else {
       // 以前无论有没有真正生效都弹「已切到 1.5 倍速」，用户看到提示却听不出变化。
       hilog.info(0x1000, 'BOXN', 'speed skip player=%{public}s prepared=%{public}s state=%{public}s',
@@ -2540,7 +2593,10 @@ struct Player {
    * 修复「一拉进度条就倒计时切下一集」的问题。
    */
   private updateOutroAfterSeek(t: number): void {
-    if (this.outroSkipSec > 0 && this.durMs > 0) {
+    // 与 timeUpdate 里的判断保持一致：片尾秒数不小于总时长时视为「不启用」，
+    // 否则拖动进度条会立刻被判成「已进入片尾」而触发跳集
+    if (this.outroSkipSec > 0 && this.durMs > 0 &&
+      this.outroSkipSec * 1000 < this.durMs - 30000) {
       this.outroFired = t >= this.durMs - this.outroSkipSec * 1000;
     }
   }
@@ -2884,10 +2940,13 @@ struct Player {
         // 画面显示模式：不依赖源是否多码率，直播/点播都可用，
         // 解决直播常见的「4:3 画面被拉宽变形」或「四周黑边」问题。
         // 手机竖屏默认「等比适应」；电视端默认「拉伸铺满」。
-        Text('画面比例')
-          .fontSize(14).fontColor(T.PANEL_DIM)
-          .width('100%')
-          .margin({ top: 16 })
+        Row() {
+          Text('画面比例')
+            .fontSize(14).fontColor(T.PANEL_DIM)
+          this.ScopeTag('全局')
+        }
+        .width('100%')
+        .margin({ top: 16 })
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
           this.ScaleChip(2, '等比适应（留黑边）')
           this.ScaleChip(1, '裁剪铺满')
@@ -2896,10 +2955,11 @@ struct Player {
         .width('100%')
         .margin({ top: 6 })
 
-        // 倍速：追剧常用 1.25/1.5，一次设定整部都生效（全局偏好）
+        // 倍速：按**当前这部片**保存（点播改了不影响其他剧/电影）
         Row() {
           Text('倍速')
             .fontSize(14).fontColor(T.PANEL_DIM)
+          this.ScopeTag('仅本片')
           Text(this.speed === 1 ? '正常' : (this.speed + ' 倍'))
             .fontSize(13).fontColor(this.speed === 1 ? T.PANEL_DIM : T.SELECTED)
             .margin({ left: 10 })
@@ -2942,6 +3002,7 @@ struct Player {
         Row() {
           Text('跳过片头')
             .fontSize(14).fontColor(T.PANEL_DIM)
+          this.ScopeTag('仅本片')
           if (this.introSkipSec > 0) {
             Text('当前 ' + this.fmtSec(this.introSkipSec))
               .fontSize(13).fontColor(T.SELECTED)
@@ -2969,6 +3030,7 @@ struct Player {
         Row() {
           Text('跳过片尾')
             .fontSize(14).fontColor(T.PANEL_DIM)
+          this.ScopeTag('仅本片')
           if (this.outroSkipSec > 0) {
             Text('当前 ' + this.fmtSec(this.outroSkipSec))
               .fontSize(13).fontColor(T.SELECTED)
@@ -3400,6 +3462,11 @@ struct Player {
     .height('100%')
     .backgroundColor('#000000')
     .id('playerRoot')
+    // 记下实际宽度，给「左半屏调亮度 / 右半屏调音量」用（见纵向手势处）
+    .onAreaChange((oldV: Area, newV: Area) => {
+      const w = newV.width;
+      this.winW = typeof w === 'number' ? w : parseFloat(w.toString());
+    })
     .focusable(true)
     .defaultFocus(true)
     .onFocus(() => {
@@ -3456,7 +3523,12 @@ struct Player {
           
           // 纵向手势：左半屏调亮度，右半屏调音量（仅手机）
           if (absY > absX && absY > 20 && this.isPhone) {
-            const isLeftHalf: boolean = this.panStartX < 200;
+            // 以前这里写死 `panStartX < 200`，注释却说「左半屏」——
+            // 手机横屏宽 1320vp，200 只占最左 15%，于是中间到右边缘 85%
+            // 的区域全在调音量，用户几乎调不了亮度。
+            // 现在按实际窗口宽度取中点；拿不到宽度时退回 200 保守处理。
+            const halfW: number = this.winW > 0 ? this.winW / 2 : 200;
+            const isLeftHalf: boolean = this.panStartX < halfW;
             if (isLeftHalf) {
               // 左半屏：调亮度
               const bDelta: number = e.offsetY > 0 ? -0.05 : 0.05;

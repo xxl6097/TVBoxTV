@@ -64,7 +64,7 @@ export class FavItem {
   groupId: string = '';
 }
 
-/** 一部片的片头/片尾跳过设置 */
+/** 一部片的片头/片尾跳过 + 倍速设置（都按影片独立保存） */
 export class SkipPref {
   /** siteKey|vodId */
   k: string = '';
@@ -72,6 +72,8 @@ export class SkipPref {
   intro: number = 0;
   /** 片尾跳过秒数，0 = 不跳 */
   outro: number = 0;
+  /** 播放倍速，1 = 正常。0 视为「没设过」，读出来按 1 处理 */
+  speed: number = 1;
   /** 最后修改时间，用于淘汰最旧的记录 */
   t: number = 0;
 }
@@ -1426,14 +1428,26 @@ export class Store {
     const k: string = siteKey + '|' + vodId;
     for (let i = 0; i < all.length; i++) {
       if (all[i].k === k) {
-        return all[i];
+        const hit: SkipPref = all[i];
+        // 老记录没有 speed 字段：补成 1.0，避免 NaN 传到 setSpeed
+        if (typeof hit.speed !== 'number' || !(hit.speed > 0)) {
+          hit.speed = 1;
+        }
+        return hit;
       }
     }
     return new SkipPref();
   }
 
+  /** 写入某部片的倍速（与跳过设置共用一条记录，先读后写保住其他字段） */
+  static async setSkipPrefSpeed(siteKey: string, vodId: string, speed: number): Promise<void> {
+    const cur: SkipPref = await Store.skipPref(siteKey, vodId);
+    await Store.setSkipPref(siteKey, vodId, cur.intro, cur.outro, speed);
+  }
+
   /** 写入某部片的跳过设置（两个值一起写，避免半更新） */
-  static async setSkipPref(siteKey: string, vodId: string, intro: number, outro: number): Promise<void> {
+  static async setSkipPref(siteKey: string, vodId: string, intro: number, outro: number,
+    speed: number = 1): Promise<void> {
     if (Store.prefs === null) {
       return;
     }
@@ -1444,10 +1458,12 @@ export class Store {
     mine.k = k;
     mine.intro = intro;
     mine.outro = outro;
+    mine.speed = speed > 0 ? speed : 1;
     mine.t = Date.now();
     out.push(mine);
-    // 两个都是 0 就不必留着这条记录（等于恢复默认）
-    if (intro === 0 && outro === 0) {
+    // 三项都是默认值才不必留这条记录。
+    // 注意不能只看 intro/outro —— 那样「只设了倍速」会被立刻删掉。
+    if (intro === 0 && outro === 0 && mine.speed === 1) {
       out.shift();
     }
     for (let i = 0; i < all.length && out.length < Store.SKIP_MAX; i++) {
