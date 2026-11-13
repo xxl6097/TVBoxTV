@@ -1451,8 +1451,10 @@ struct Player {
           this.applyEv(PlayState.EV_PLAY);
           this.popOsd();
           // 换档/重载后把位置接回去，用户看到的是「顿一下继续」
+          let seekBack: number = 0;
           if (this.pendingSeek > 0) {
             const back: number = this.pendingSeek;
+            seekBack = back;
             this.pendingSeek = 0;
             setTimeout(() => {
               try {
@@ -1475,9 +1477,14 @@ struct Player {
            * 「跳过片头」。但也不能无条件弹：续播到 4 分钟时提示跳片头毫无意义。
            *
            * 判据：只有当前进度还落在片头区间内（小于片头秒数）才值得提示。
-           * 续播位置 pendingSeek 尚未消费时以它为准，否则用当前 posMs。
+           *
+           * ⚠️ 必须用 seekBack 而不是 pendingSeek：上面那段已经把 pendingSeek
+           * 清零了，这里再读永远是 0。而 posMs 此刻还是 0（播放器刚 prepared，
+           * 位置还没回报），于是 atMs=0 恒小于片头秒数 —— 结果就是**任何续播
+           * 都会弹出「跳过片头」，5 秒倒计时一到把位置拉回片头结束点**，
+           * 用户看到的正是「续播跳到一半又被弹回开头」。
            */
-          const atMs: number = this.pendingSeek > 0 ? this.pendingSeek : this.posMs;
+          const atMs: number = seekBack > 0 ? seekBack : this.posMs;
           if (this.introSkipSec > 0 && !this.introDone && !this.isLive &&
             atMs < this.introSkipSec * 1000) {
             const skipMs: number = this.introSkipSec * 1000;
@@ -2823,7 +2830,18 @@ struct Player {
     return PlayerFmt.sec(sec);
   }
 
-  /** 浮现 Apple TV 式跳过按钮并启动倒计时。kind = 'intro' | 'outro' */
+  /**
+   * 浮现 Apple TV 式跳过按钮并启动倒计时。kind = 'intro' | 'outro'
+   *
+   * 两种按钮的收尾行为**不一样**，这是有意区分的：
+   *  - 片尾（outro）：倒计时结束自动跳下一集。用户已经在片尾了，
+   *    不跳也只是停在演职员表，自动接续更符合追剧场景。
+   *  - 片头（intro）：倒计时结束**只把按钮收起来，不自动跳**。
+   *    片头跳过是「提供一个便捷入口」，不是「替用户决定跳过」。
+   *    之前两者都自动执行，后果很严重 —— 续播到 4:44 的用户，
+   *    只要片头按钮误弹，5 秒后就会被硬拉回 0:60，等于进度倒流。
+   *    手动点按钮的行为不受影响，照样会跳。
+   */
   private showSkipBtn(kind: string, totalSec: number): void {
     this.skipShow = kind;
     this.skipTotal = totalSec > 0 ? totalSec : 1;
@@ -2835,7 +2853,12 @@ struct Player {
       this.skipLeft -= 0.1;
       if (this.skipLeft <= 0) {
         this.stopSkipTimer();
-        this.doSkip(kind);
+        if (kind === 'outro') {
+          this.doSkip(kind);
+        } else {
+          // 片头：倒计时走完就淡出，位置保持不动
+          this.skipShow = '';
+        }
       }
     }, 100);
   }
