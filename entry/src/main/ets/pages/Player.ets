@@ -1189,10 +1189,16 @@ struct Player {
     h.vodName = this.wdVod;
     h.dir = this.wdDir;
     h.epIndex = this.epIndex;
-    // 集标签按「是否剧集」动态生成：剧集记「第 N 集」，电影留空（显示为「电影」）。
-    // 不能复用 this.epName —— 那是从标题空格切割出来的，电影名带空格（如「异星战境 Atlas」）
-    // 会被误切成集名，剧集名则被切集逻辑覆盖成脏值。
-    h.epName = this.wdSeries ? ('第 ' + (this.epIndex + 1) + ' 集') : '';
+    /**
+     * 集标签：优先用播放列表里的真实集名，其次才退回「第 N 集」。
+     *
+     * 原来固定写 '第 ' + (epIndex+1) + ' 集' —— 这个假设只在「列表第一个
+     * 正好是第一集」时成立。网盘剧集常见的 S01E05、或目录里只放了第 3~8 集，
+     * 下标和集号就对不上，续播卡片会显示错误的集号。
+     * 也不能用 this.epName：那是从标题里按空格切出来的，脏值（见下方原注释）。
+     */
+    const realEp: string = Playlist.currentName();
+    h.epName = this.wdSeries ? (realEp.length > 0 ? realEp : ('第 ' + (this.epIndex + 1) + ' 集')) : '';
     h.url = this.rawUrl;
     h.pos = this.posMs;
     h.dur = this.durMs > 0 ? this.durMs : 0;

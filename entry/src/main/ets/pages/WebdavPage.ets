@@ -302,8 +302,18 @@ struct WebdavPage {
       playUrl = vod.eps[startIdx].url;
       title = vod.name + (vod.eps.length > 1 ? (' ' + eps[startIdx].name) : '');
       Playlist.set(eps, startIdx, vod.name);
-    } else if (h.epName.length > 0) {
-      title = h.vodName + ' ' + h.epName;
+    } else {
+      /**
+       * 重建不出选集（识别缓存被清过 / 换过网盘 / 剧集改名）。
+       *
+       * 这时必须**清空播放列表**：否则里面还留着上一部剧的剧集，
+       * 用户点「下一集」会直接串到别的片子上 —— 而界面上完全看不出来。
+       * 清空后点下一集会正常提示「当前没有可切换的剧集」。
+       */
+      Playlist.clear();
+      if (h.epName.length > 0) {
+        title = h.vodName + ' ' + h.epName;
+      }
     }
 
     const p = new PlayParam();

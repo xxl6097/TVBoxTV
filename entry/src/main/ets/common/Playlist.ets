@@ -47,6 +47,19 @@ export class Playlist {
     return Playlist.vodTitle;
   }
 
+  /**
+   * 当前这一集的集名（如「S01E05」「第 5 集」）。
+   *
+   * 续播记录需要它：不能按「下标+1」推算集号 —— 网盘剧集常有
+   * S01E05 这种命名，或者目录里只放了中间几集，下标和集号对不上。
+   */
+  static currentName(): string {
+    if (Playlist.idx < 0 || Playlist.idx >= Playlist.eps.length) {
+      return '';
+    }
+    return Playlist.eps[Playlist.idx].name;
+  }
+
   static current(): Episode | null {
     if (Playlist.idx < 0 || Playlist.idx >= Playlist.eps.length) {
       return null;
