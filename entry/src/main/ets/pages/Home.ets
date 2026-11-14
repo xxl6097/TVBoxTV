@@ -850,11 +850,20 @@ struct Home {
                 .width('100%')
                 .height(74)
                 .justifyContent(FlexAlign.Center)
-                // shape_item_normal：black_20 底 + 4dp 圆角；焦点 shape_item_focused：black_40 + 1.5dp 白描边
+                /**
+                 * 焦点/悬停与「最近访问」用两种不同的视觉，别混成一种：
+                 *  - 焦点：主题色描边 + 提亮背景 + 轻微放大 —— 表示「遥控器现在停在这里」
+                 *  - 最近：右上角一个小圆点 —— 表示「上次是从这里进去的」，静态不动
+                 *
+                 * 原来只有背景变化（#33000000 → #66000000），而这是在深色背景上
+                 * 继续叠黑，高亮反而更暗，8 个按钮在 4K 电视上几乎一模一样。
+                 */
                 .backgroundColor(this.hi('f_' + f.label) ? T.CARD_HI : T.CARD)
                 .borderRadius(T.RADIUS_SM)
                 .border({
-                  width: T.BORDER,
+                  // 焦点用「加粗 + 白描边」而不是主题色：这排是并列入口，
+                  // 黄色描边在 8 格上过于跳，白色细边 + 提亮背景已足够指示焦点
+                  width: this.hi('f_' + f.label) ? 3 : T.BORDER,
                   color: this.hi('f_' + f.label) ? T.TXT : '#00000000'
                 })
                 .scale({
