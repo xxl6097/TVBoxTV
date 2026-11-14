@@ -1987,12 +1987,9 @@ export class Store {
     await Store.prefs.flush();
   }
 
-  /** 收藏同步文件的 URL（放在和历史同一个目录） */
+  /** 收藏同步文件的 URL（与历史同一个目录、同样加 夜帧影视_ 前缀） */
   private static favSyncUrl(src: WebdavSource): string {
-    const origin: string = Webdav.originOf(src.url);
-    const base: string = Webdav.mountHref(src);
-    const dir: string = base === '/' ? '' : base;
-    return origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86/favorites.json';
+    return Store.syncFileUrl(src, 'favorites.json');
   }
 
   /**
@@ -2011,7 +2008,9 @@ export class Store {
     try {
       const url: string = Store.favSyncUrl(sources[0]);
       const body: string = JSON.stringify({ time: Date.now(), items: list });
-      await Http.put(url, body, Webdav.authHeader(sources[0]), 10000);
+      const ok: boolean = await Http.put(url, body, Webdav.authHeader(sources[0]), 10000);
+      hilog.info(0x1000, 'BOXN', 'fav upload %{public}s n=%{public}d',
+        ok ? 'ok' : 'fail', list.length);
     } catch (e) {
       // 静默失败
     }
@@ -2074,6 +2073,39 @@ export class Store {
    * 存为 /夜帧影视/history.json，用 PUT 方法上传 JSON 文本。
    * 失败静默忽略——同步是后台行为，不能打扰用户看片。
    */
+  /**
+   * 同步文件的可写前缀。
+   *
+   * 背景（踩过的坑，别再走一遍）：原来往 `.../迅雷下载/夜帧影视/history.json`
+   * 直接 PUT，但那个 `夜帧影视` 子目录从来没建过。WebDAV 对「PUT 到不存在的
+   * 集合」返回 409 Conflict（本地实测：PUT→409，先 MKCOL→201），而同步是
+   * 静默失败的，结果就是「开关打开了，网盘里永远没有文件」。
+   *
+   * 想先 MKCOL 建目录也不行：鸿蒙的 http.RequestMethod 只有
+   * OPTIONS/GET/HEAD/POST/PUT/DELETE/TRACE/CONNECT/PATCH，
+   * **没有 MKCOL**（WebDAV 扩展方法），method 参数类型就是那个枚举，
+   * 传字符串会被运行时拒绝。
+   *
+   * 所以改成：直接写在用户配置的那个目录下（它一定存在，否则连不上），
+   * 文件名带 `夜帧影视_` 前缀区分。实测 PUT 到 迅雷下载/夜帧影视_history.json
+   * 返回 201、能读回。
+   *
+   * 注意 URL 里的中文文件名必须百分号编码，否则部分服务端会 400。
+   */
+  private static syncFileUrl(src: WebdavSource, fileName: string): string {
+    const origin: string = Webdav.originOf(src.url);
+    const base: string = Webdav.mountHref(src);
+    const dir: string = base === '/' ? '' : base;
+    // '夜帧影视_' = %E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86_
+    return origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86_' + fileName;
+  }
+
+  /**
+   * 把本地播放历史上传到第一个 WebDAV 源。
+   *
+   * 存为 <网盘目录>/夜帧影视_history.json，用 PUT 上传 JSON 文本。
+   * 失败静默忽略——同步是后台行为，不能打扰用户看片。
+   */
   static async syncHistToWebDAV(): Promise<void> {
     if (!await Store.histSyncEnabled()) {
       return;
@@ -2088,12 +2120,11 @@ export class Store {
       return;
     }
     try {
-      const origin = Webdav.originOf(src.url);
-      const base = Webdav.mountHref(src);
-      const dir = base === '/' ? '' : base;
-      const url = origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86/history.json';
+      const url = Store.syncFileUrl(src, 'history.json');
       const body = JSON.stringify({ time: Date.now(), items: list });
-      await Http.put(url, body, Webdav.authHeader(src), 10000);
+      const ok = await Http.put(url, body, Webdav.authHeader(src), 15000);
+      hilog.info(0x1000, 'BOXN', 'hist upload %{public}s n=%{public}d url=%{public}s',
+        ok ? 'ok' : 'fail', list.length, url);
     } catch (e) {
       // 静默失败
     }
@@ -2116,7 +2147,7 @@ export class Store {
       const origin = Webdav.originOf(src.url);
       const base = Webdav.mountHref(src);
       const dir = base === '/' ? '' : base;
-      const url = origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86/history.json';
+      const url = Store.syncFileUrl(src, 'history.json');
       const txt = await Http.text(url, Webdav.authHeader(src), 8000);
       if (txt.length === 0) {
         return;
