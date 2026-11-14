@@ -25,9 +25,12 @@
         "description": "$string:EntryAbility_desc",
         "icon": "$media:app_icon",
         "label": "$string:EntryAbility_label",
-        // 声明为 auto_rotation：让手机可竖屏浏览、横屏播放；电视的横屏由
-        // EntryAbility 运行时 setPreferredOrientation(LANDSCAPE) 锁定，见 Device.isTv()。
-        "orientation": "auto_rotation",
+        // auto_rotation_restricted：跟随传感器转，但**受系统「旋转锁定」开关约束**。
+        // 不能用 auto_rotation —— 那个对应 window.Orientation.AUTO_ROTATION，
+        // 官方文档明确写着「not controlled by the rotation switch in Control Panel」，
+        // 也就是系统锁了竖屏它照样横过来（用户实测到的问题）。
+        // 电视的横屏由 EntryAbility 运行时 setPreferredOrientation(LANDSCAPE) 锁定。
+        "orientation": "auto_rotation_restricted",
         "startWindowIcon": "$media:app_icon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,

@@ -68,6 +68,26 @@ export default class EntryAbility extends UIAbility {
           } catch (e) {
             // 个别系统不支持状态栏配色，忽略
           }
+          /**
+           * 手机跟随系统方向 —— 用的是 RESTRICTED 这一档。
+           *
+           * 关键区别（window.Orientation）：
+           *   AUTO_ROTATION = 5           跟着传感器转，**不受**控制面板的旋转开关约束
+           *   AUTO_ROTATION_RESTRICTED = 8 同样跟传感器转，但**受**旋转开关约束
+           *
+           * 之前配置写的是 auto_rotation，对应用第 5 档：用户明明在系统里
+           * 锁了竖屏（下拉快捷开关），把手机横过来应用还是横过去了 —— 这正是
+           * AUTO_ROTATION 的既定行为，不是 bug。
+           *
+           * 这里显式设成第 8 档：系统锁竖屏时就不转，解锁后才跟随传感器。
+           * module.json5 也同步改成了 auto_rotation_restricted，两处一致；
+           * 运行时再设一次是保险 —— 部分机型上 manifest 的取值会被系统覆盖。
+           */
+          try {
+            win.setPreferredOrientation(window.Orientation.AUTO_ROTATION_RESTRICTED);
+          } catch (e) {
+            // 个别系统不支持运行时设方向，回退到 manifest 的声明
+          }
         }
       } catch (e) {
         // 部分电视系统不支持这些窗口能力，忽略
