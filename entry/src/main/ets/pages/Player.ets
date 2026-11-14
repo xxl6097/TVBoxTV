@@ -60,6 +60,10 @@ const ADAPT_GAP: number = 15000;
 const SPEED_BYTES: number = 384 * 1024;
 /** 可选倍速档位。系统枚举只认固定几档，这里只列常用的 */
 const SPEEDS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
+/** 长按屏幕时临时加速到几倍（松手还原成按住前的倍速） */
+const HOLD_SPEED: number = 3;
+/** 长按多久算「按住加速」（毫秒）。太短会跟横向滑动抢手势 */
+const HOLD_SPEED_DELAY: number = 350;
 
 /** 一条字幕（自己接管渲染用） */
 class SubCue {
@@ -182,6 +186,18 @@ struct Player {
   private panBaseMs: number = 0;
   /** 本次手势锁定的轴：'' 未定 / 'x' 快进 / 'y' 亮度音量。防止斜滑时来回切 */
   private panAxis: string = '';
+  /**
+   * 长按倍速状态。
+   *  - longSpeedOn：当前是否处于「按住加速」中
+   *  - speedBeforeHold：按住前的倍速，松手要还原成它
+   *
+   * 为什么不直接用 this.speed 记：用户可能本来就设了 1.5 倍速，
+   * 按住加速到 3 倍、松手必须回到 1.5 而不是 1。所以单独存一份。
+   */
+  private longSpeedOn: boolean = false;
+  private speedBeforeHold: number = 1;
+  /** 按住加速中：画面角落显示「3× 加速中」提示 */
+  @State speedBoostHint: boolean = false;
   
   // ===== 下一集预加载缓存 =====
   /**
@@ -396,6 +412,8 @@ struct Player {
   onPageHide(): void {
     this.leaving = true;
     hilog.info(0x1000, 'BOXN', 'onPageHide live=%{public}s', this.isLive ? 'y' : 'n');
+    // 离开页面前把长按加速还原，否则 3 倍速会一直留在 this.speed 上
+    this.endHoldSpeed();
     // 直播流不能「续播」，而用户返回列表的诉求就是立刻没声音：
     // 直接放掉播放器（pause 对部分 HLS 直播只是停止拉流，已解码的音频仍会播完缓冲）。
     // 回到前台时走 onPageShow 的重建分支重新连当前台。
@@ -1800,16 +1818,69 @@ struct Player {
       return;
     }
     this.lastCenterAt = now;
-    hilog.info(0x1000, 'BOXN', 'center hit');
+    hilog.info(0x1000, 'BOXN', 'center hit osd=%{public}s', '' + this.showOsd);
     this.clearHold();
-    // 控制条收着时，第一下点击只负责把它唤出来。
-    // 以前是直接切播放/暂停：控制条 8 秒自动收起，用户想点个按钮，结果画面先停了，
-    // 还得再点一下恢复 —— 电视盒子的通行做法也是「先出条、再操作」。
-    if (!this.showOsd) {
+    /**
+     * 点击屏幕只负责「显示 / 隐藏控制条」，**不再切换播放暂停**。
+     *
+     * 之前的逻辑是：控制条收着 → 唤出；控制条开着 → 切播放/暂停。
+     * 问题在于控制条开着的时候，用户多半是想点某个按钮（音量、选集、下一集），
+     * 手一抖点空了画面就直接暂停 —— 追剧时非常烦。
+     *
+     * 现在统一成纯切换：点一下开、再点一下关。播放/暂停只由中间那颗
+     * 「暂停 / 播放」按钮（act=2）和遥控器确定键（键盘通道，另算）负责。
+     */
+    this.showOsd = !this.showOsd;
+    if (this.showOsd) {
       this.popOsd();
+    } else {
+      // 收起时把进度条的悬停预览一起清掉，否则会在收起后留一条黄线
+      this.hoverMs = -1;
+    }
+  }
+
+  /**
+   * 开始「按住屏幕加速」。
+   *
+   * 注意三件事：
+   *  1 只在真正在播的时候加速。暂停中长按不该把播放拉起来 ——
+   *    用户可能只是想唤出菜单。
+   *  2 记住按住前的倍速。用户本来设了 1.5x，松手要回到 1.5x 而不是 1x。
+   *  3 加速期间不写偏好。pickSpeed 会落盘「按影片保存的倍速」，
+   *    按住一下就把 3x 存进去，下次进来就是 3 倍速了，属于污染。
+   */
+  private beginHoldSpeed(): void {
+    if (this.longSpeedOn || !this.playing || this.prepared === false) {
       return;
     }
-    this.togglePlay();
+    if (this.player === null) {
+      return;
+    }
+    this.speedBeforeHold = this.speed;
+    if (this.speed >= HOLD_SPEED) {
+      // 已经是 3 倍或更高，不用再加速，但也别当成失败
+      return;
+    }
+    this.longSpeedOn = true;
+    this.speed = HOLD_SPEED;
+    this.applySpeed(this.player);
+    this.speedBoostHint = true;
+    hilog.info(0x1000, 'BOXN', 'hold speed ON %{public}sx (was %{public}s)',
+      '' + HOLD_SPEED, '' + this.speedBeforeHold);
+  }
+
+  /** 松开屏幕：还原按住前的倍速 */
+  private endHoldSpeed(): void {
+    if (!this.longSpeedOn) {
+      return;
+    }
+    this.longSpeedOn = false;
+    this.speedBoostHint = false;
+    this.speed = this.speedBeforeHold;
+    if (this.player !== null) {
+      this.applySpeed(this.player);
+    }
+    hilog.info(0x1000, 'BOXN', 'hold speed OFF -> %{public}sx', '' + this.speed);
   }
 
   /** 音量 0~1，muted 时实际下发 0 */
@@ -1854,8 +1925,7 @@ struct Player {
     this.muted = !this.muted;
     this.applyVolume();
     this.showVol = true;
-    if (this.volTimer >= 0) {
-      clearTimeout(this.volTimer);
+    if (this.volTimer >= 0) {      clearTimeout(this.volTimer);
     }
     this.volTimer = setTimeout(() => {
       this.showVol = false;
@@ -2142,6 +2212,8 @@ struct Player {
     this.introDone = false;
     this.outroFired = false;
     this.preloadFired80 = false;
+    // 切集时若正按着加速，把倍速还原 —— 否则 3 倍速会带到下一集
+    this.endHoldSpeed();
     this.epName = ep.name;
     this.epIndex = Playlist.index();
     if (this.isLive) {
@@ -3907,8 +3979,7 @@ struct Player {
       }
 
       // 快进快退浮层：全屏容器居中，且不拦截点击
-      if (this.seekPreview >= 0) {
-        Column() {
+      if (this.seekPreview >= 0) {        Column() {
           Column() {
             Text(this.seekTip).fontSize(24).fontColor('#FFFFFF')
             Text(this.fmt(this.seekPreview) + '  /  ' + this.fmt(this.durMs))
@@ -3922,6 +3993,31 @@ struct Player {
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.Center)
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      /**
+       * 按住加速提示：右上角一个小胶囊。
+       *
+       * 松手会还原倍速，用户必须能立刻看到「现在正在 3 倍速」，
+       * 否则会觉得「画面怎么快了」或者「松手怎么没反应」。
+       * 放右上角而不是正中央：加速时用户还在看画面，别挡住主体。
+       */
+      if (this.speedBoostHint) {
+        Column() {
+          Text('» ' + HOLD_SPEED + '× 加速中')
+            .fontSize(20)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(T.SELECTED)
+            .padding({ left: 20, right: 20, top: 10, bottom: 10 })
+            .backgroundColor(T.BLACK_70)
+            .borderRadius(T.RADIUS_PILL)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Start)
+        .alignItems(HorizontalAlign.End)
+        .padding({ top: 120, right: 48 })
         .hitTestBehavior(HitTestMode.Transparent)
       }
 
@@ -4244,8 +4340,29 @@ struct Player {
         this.popOsd();
       }
     })
-    // 手势交互：左右滑快进快退、上下滑调音量/亮度
+    /**
+     * 手势交互：
+     *  - 左右滑 → 快进快退
+     *  - 上下滑 → 音量 / 亮度
+     *  - 按住不动 → 临时 3 倍速，松手还原
+     *
+     * 用 GestureGroup(Parallel) 而不是把长按塞给 PanGesture：
+     * PanGesture 的 distance 阈值是 10，手指只要动 10vp 就触发滑动，
+     * 而长按要求「基本不动」。两者放同一个组里平行识别，谁先满足谁生效，
+     * 各管各的，不会出现「想按住加速结果走了快进」。
+     */
     .gesture(
+      GestureGroup(GestureMode.Parallel,
+        LongPressGesture({ repeat: false, duration: HOLD_SPEED_DELAY })
+          .onAction(() => {
+            this.beginHoldSpeed();
+          })
+          .onActionEnd(() => {
+            this.endHoldSpeed();
+          })
+          .onActionCancel(() => {
+            this.endHoldSpeed();
+          }),
       PanGesture({ direction: PanDirection.All, distance: 10 })
         .onActionStart((e: GestureEvent) => {
           // 进度条正在被拖动时，禁止其它手势
@@ -4376,6 +4493,7 @@ struct Player {
         .onActionCancel(() => {
           this.seekPreview = -1;
         })
+      )
     )
     .onKeyEvent((e: KeyEvent) => {
       this.onKey(e);
