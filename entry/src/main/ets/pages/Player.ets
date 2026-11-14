@@ -148,6 +148,8 @@ struct Player {
   @State qLabel: string = '自动';
   /** 画质选择面板是否展开 */
   @State showQ: boolean = false;
+  /** 选集面板（独立于播放设置，两者的内容互不相干） */
+  @State showEp: boolean = false;
   /** 实测网速文案，如「3.4 MB/s」 */
   @State netTxt: string = '';
   /** 画面显示模式：SCALE_STRETCH=0 / SCALE_CROP=1 / SCALE_FIT=2 */
@@ -1453,6 +1455,14 @@ struct Player {
           }
           p.prepare();
         } else if (state === 'prepared') {
+          /**
+           * 状态机可能还停在 ERROR（上一次播放报错、自动重试刚刚把它重新拉起来）。
+           * 转移表规定 ERROR 只能靠 EV_LOAD / EV_RESET 离开，直接发 EV_PREPARED
+           * 会被挡掉、一直卡在错误态。所以先补一个 EV_LOAD 把它带回 LOADING。
+           */
+          if (this.playState === PlayState.ERROR) {
+            this.applyEv(PlayState.EV_LOAD);
+          }
           this.applyEv(PlayState.EV_PREPARED);
           // prepared 是播放器的物理事实，直接置位（不经状态机推导）：
           // seek / 倍速 / 选轨都以它为前提，任何「推导不到」都会让这些功能静默失效
@@ -1462,6 +1472,18 @@ struct Player {
           // 成功 prepared 说明这一次播放正常，重置失败计数
           this.vodFail = 0;
           this.liveFail = 0;
+          /**
+           * 同时清掉错误遮罩。
+           *
+           * 自动重试的路径是：报错 → 置 errMsg 显示「无法播放」→ releasePlayer
+           * → 1 秒后 initPlayer() 重新起播。initPlayer 内部并不清 errMsg，
+           * 于是重试成功、画面已经在放，那层「无法播放 / 视频数据读取失败」
+           * 还死死盖在上面 —— 用户只能看到错误页，以为没播起来。
+           *
+           * prepared 是「这次真的起来了」的确凿信号，在这里收掉遮罩最准确。
+           */
+          this.errMsg = '';
+          this.stallN = 0;
           // prepared 时恢复音量偏好（异步，不挡起播）
           Store.volumePref().then((volPref: number) => {
             this.volume = volPref / 15; // 从 0-15 映射回 0-1
@@ -2044,6 +2066,39 @@ struct Player {
     }
     hilog.info(0x1000, 'BOXN', 'switchEpisode go: idx=%{public}d/%{public}d ep=%{public}s',
       Playlist.index(), Playlist.count(), ep.name);
+    this.loadEpisode(ep);
+  }
+
+  /**
+   * 选集面板：直接跳到第 idx 集。
+   *
+   * 和 switchEpisode 的区别只在「怎么拿到 ep」：那边是游标 ±1，
+   * 这里是任意下标。拿到之后同样走 loadEpisode，保证切集逻辑只有一份 ——
+   * 否则选集这条路很容易漏掉切集时要清的那些状态（跳片按钮、seek 防抖、
+   * 续播位置……），表现为「选集进去还是上一集的声音」之类的怪问题。
+   */
+  private playAt(idx: number): void {
+    if (this.closed) {
+      return;
+    }
+    if (Playlist.count() === 0) {
+      this.showTip('当前没有可切换的剧集');
+      return;
+    }
+    const ep: Episode | null = Playlist.jump(idx);
+    if (ep === null) {
+      // 点的是正在播的这一集：收起面板即可，不必重载播放器
+      this.showEp = false;
+      return;
+    }
+    hilog.info(0x1000, 'BOXN', 'playAt idx=%{public}d/%{public}d ep=%{public}s',
+      idx, Playlist.count(), ep.name);
+    this.showEp = false;
+    this.loadEpisode(ep);
+  }
+
+  /** 换到指定剧集：清状态、换地址、重新解析。switchEpisode 与选集面板共用 */
+  private async loadEpisode(ep: Episode): Promise<void> {
     /**
      * 顺序很重要：先 savePos()，再动 rawUrl / epIndex。
      *
@@ -2445,6 +2500,10 @@ struct Player {
     if (act === 7) {
       return this.muted ? '取消静音' : '静音';
     }
+    if (act === 9) {
+      // 直播没有「集」，这条入口只在点播时出现
+      return '选集';
+    }
     // act === 8：面板已升级为「播放设置」（画质 + 画面比例 + 跳过片头片尾），入口名跟着改
     return '播放设置';
   }
@@ -2469,9 +2528,17 @@ struct Player {
       this.toggleMute();
     } else if (act === 8) {
       this.showQ = !this.showQ;
+      // 两个面板互斥：叠在一起会互相遮挡，也分不清点的是哪个
+      this.showEp = false;
       hilog.info(0x1000, 'BOXN', 'showQ=%{public}s lv=%{public}d osd=%{public}s',
         '' + this.showQ, this.levels.length, '' + this.showOsd);
       this.popOsd();
+    } else if (act === 9) {
+      // 选集：与播放设置互斥，避免两个面板叠在一起
+      this.showEp = !this.showEp;
+      this.showQ = false;
+      hilog.info(0x1000, 'BOXN', 'showEp=%{public}s ep=%{public}d/%{public}d',
+        '' + this.showEp, this.epIndex, Playlist.count());
     }
   }
 
@@ -3561,6 +3628,130 @@ struct Player {
     .height('100%')
   }
 
+  /**
+   * 选集面板。
+   *
+   * 追剧时「跳到第 37 集」比连续点 30 次下一页实在得多。数据来自 Playlist
+   * （进播放页时整条线路的剧集都已放进去），所以这里不需要再解析。
+   *
+   * 排版用 Flex 自动换行而不是固定列数的 Grid：集数从 1 到几百不等，
+   * Grid 要么列数写死、要么空白一大片，Flex 能自然收尾。
+   */
+  @Builder
+  EpPanel() {
+    Stack() {
+      // 点空白处关闭
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(T.BLACK_50)
+        .onClick(() => this.tap('epmask', () => {
+          this.showEp = false;
+        }))
+        .onMouse(this.ptr('epmask', () => {
+          this.showEp = false;
+        }))
+
+      Column() {
+        Row() {
+          Text('选集').fontSize(21).fontColor(T.PANEL_TXT)
+          Text('  第 ' + (this.epIndex + 1) + ' / ' + Playlist.count() + ' 集')
+            .fontSize(15).fontColor(T.PANEL_DIM)
+          Blank()
+          Text('关闭')
+            .fontSize(15)
+            .fontColor(this.hi('epclose') ? T.SELECTED : T.PANEL_SUB)
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .borderRadius(T.RADIUS_SM)
+            .backgroundColor(this.hi('epclose') ? T.PANEL_BTN_HI : '#00000000')
+            .border({ width: T.BORDER, color: this.hi('epclose') ? T.PANEL_TXT : '#00000000' })
+            .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+            .onHover((hv: boolean) => this.hoverTo('epclose', hv))
+            .onClick(() => this.tap('epclose', () => {
+              this.showEp = false;
+            }))
+            .onMouse(this.ptr('epclose', () => {
+              this.showEp = false;
+            }))
+        }
+        .width('100%')
+        .margin({ bottom: 14 })
+
+        Scroll() {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+            ForEach(this.epChips(), (i: number) => {
+              this.EpChip(i)
+            }, (i: number) => 'ep_' + i)
+          }
+          .width('100%')
+        }
+        .scrollBar(BarState.Auto)
+        .constraintSize({ maxHeight: Device.isPhone() ? 440 : 560 })
+      }
+      .width(Device.panelW(760))
+      .padding(24)
+      .backgroundColor(T.PANEL_SURFACE)
+      .borderRadius(20)
+      .alignItems(HorizontalAlign.Start)
+      .shadow({ radius: 40, color: T.BLACK_80 })
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /**
+   * 选集的条目列表（0..count-1）。
+   *
+   * 不能直接 ForEach(Playlist) —— Playlist 是普通静态类，不是 @State，
+   * ArkUI 观察不到它；用这个方法返回一个全新的数字数组，ForEach 才会
+   * 在面板打开时重新求值。
+   */
+  private epChips(): number[] {
+    const n: number = Playlist.count();
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push(i);
+    }
+    return out;
+  }
+
+  /** 单个剧集按钮：正在播的那一集用高亮色 + 实心底，一眼能认出来 */
+  @Builder
+  EpChip(i: number) {
+    Text(this.epChipLabel(i))
+      .fontSize(14)
+      .fontColor(this.epIndex === i ? T.BG : (this.hi('epc' + i) ? T.SELECTED : T.PANEL_TXT))
+      .padding({ left: 14, right: 14, top: 9, bottom: 9 })
+      .backgroundColor(this.epIndex === i
+        ? T.TXT
+        : (this.hi('epc' + i) ? T.PANEL_BTN_HI : T.PANEL_BTN))
+      .borderRadius(T.RADIUS_SM)
+      .border({
+        width: T.BORDER,
+        color: this.epIndex === i ? T.TXT : (this.hi('epc' + i) ? T.PANEL_TXT : '#00000000')
+      })
+      .margin({ right: 8, bottom: 8 })
+      .textAlign(TextAlign.Center)
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .onHover((hv: boolean) => this.hoverTo('epc' + i, hv))
+      .onFocus(() => this.hoverTo('epc' + i, true))
+      .onBlur(() => this.hoverTo('epc' + i, false))
+      .onClick(() => this.tap('epc' + i, () => {
+        Feedback.tap();
+        this.playAt(i);
+      }))
+      .onMouse(this.ptr('epc' + i, () => {
+        Feedback.tap();
+        this.playAt(i);
+      }))
+  }
+
+  /** 集按钮文案：优先用片源自带的集名，没有就用序号 */
+  private epChipLabel(i: number): string {
+    const name: string = Playlist.nameAt(i);
+    return name.length > 0 ? name : String(i + 1);
+  }
+
   build() {
     Stack() {
       XComponent({
@@ -3959,6 +4150,10 @@ struct Player {
                 this.CtlBtn(5)
                 this.CtlBtn(6)
                 this.CtlBtn(7)
+                // 选集放在「播放设置」前面：追剧时这个用得比设置频繁得多
+                if (Playlist.count() > 1) {
+                  this.CtlBtn(9)
+                }
                 this.CtlBtn(8)
               }
             }
@@ -4003,6 +4198,11 @@ struct Player {
       // 画质浮层必须在 OSD 之外：跟着 OSD 一起长会把面板顶出屏幕
       if (this.showQ) {
         this.QPanel()
+      }
+
+      // 选集面板：同样在 OSD 之外，整屏可滚，集数多也不会被裁
+      if (this.showEp) {
+        this.EpPanel()
       }
 
       // Apple TV 式跳过按钮：独立于 OSD，播放中浮现（OSD 收起时最上层）

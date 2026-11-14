@@ -85,6 +85,29 @@ export class Playlist {
     return Playlist.eps[t];
   }
 
+  /**
+   * 直接跳到指定下标（选集面板用）。
+   * 越界或就是当前这一集时返回 null，调用方据此决定要不要真的重载播放器。
+   */
+  static jump(idx: number): Episode | null {
+    if (idx < 0 || idx >= Playlist.eps.length) {
+      return null;
+    }
+    if (idx === Playlist.idx) {
+      return null;
+    }
+    Playlist.idx = idx;
+    return Playlist.eps[idx];
+  }
+
+  /** 第 i 集的集名（选集面板要按顺序列出来） */
+  static nameAt(i: number): string {
+    if (i < 0 || i >= Playlist.eps.length) {
+      return '';
+    }
+    return Playlist.eps[i].name;
+  }
+
   /** 获取下一集（不改游标） */
   static nextEpisode(): Episode | null {
     const t: number = Playlist.idx + 1;
