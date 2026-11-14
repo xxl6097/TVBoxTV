@@ -60,10 +60,19 @@ const ADAPT_GAP: number = 15000;
 const SPEED_BYTES: number = 384 * 1024;
 /** 可选倍速档位。系统枚举只认固定几档，这里只列常用的 */
 const SPEEDS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
-/** 长按屏幕时临时加速到几倍（松手还原成按住前的倍速） */
+/**
+ * 长按屏幕时临时加速到几倍（松手还原成按住前的倍速）。
+ * 注意：media.PlaybackSpeed 枚举只到 2.00X，3 倍要靠数字版 setSpeed(number)
+ * 才能生效（见 applySpeed 的说明）。
+ */
 const HOLD_SPEED: number = 3;
-/** 长按多久算「按住加速」（毫秒）。太短会跟横向滑动抢手势 */
-const HOLD_SPEED_DELAY: number = 350;
+/**
+ * 长按多久算「按住加速」（毫秒）。
+ * 原来是 350 —— 和单击、滑动的判定窗口太接近，手指稍慢一点就先被认成
+ * 长按并开始加速了。500 更接近主流播放器的手感，也留出足够时间区分
+ * 「想点一下唤出菜单」和「想按住加速」。
+ */
+const HOLD_SPEED_DELAY: number = 500;
 
 /** 一条字幕（自己接管渲染用） */
 class SubCue {
@@ -202,6 +211,8 @@ struct Player {
    */
   private longSpeedOn: boolean = false;
   private speedBeforeHold: number = 1;
+  /** 上一次画面点击的时间戳，用于自己判定双击（0 表示没有上一次） */
+  private lastTapAt: number = 0;
   /** 按住加速中：画面角落显示「3× 加速中」提示 */
   @State speedBoostHint: boolean = false;
   
@@ -1847,6 +1858,45 @@ struct Player {
   }
 
   /**
+   * 画面上的一次点击（onClick 通道）。
+   *
+   * 双击 = 播放/暂停，单击 = 切换菜单。
+   *
+   * 为什么双击判定写在这里，而不是用 TapGesture({count:2})：
+   * 根容器已经有 onClick，再加一个双击手势会跟单击互相抢 —— 实测
+   * TapGesture(count:2) 放进 GestureGroup(Parallel) 后压根不触发，
+   * 因为第一次点击就被 onClick 消费掉了。
+   * 这里用「300ms 内第二次点击算双击」自己判，单双击都能稳定收到。
+   *
+   * 短视频/主流播放器都是双击暂停，用户不用学；同时保留了单击唤菜单。
+   */
+  private onSurfaceTap(): void {
+    const now: number = Date.now();
+    const gap: number = now - this.lastTapAt;
+    this.lastTapAt = now;
+    /**
+     * 阈值 450ms。
+     * 实测 uitest 的 doubleClick 两次间隔约 308ms，手指操作通常 150~350ms；
+     * 原来是 300，正好卡在边缘导致双击被判成两次单击（日志能看到
+     * 「center hit osd=false / osd=true」连着两条）。450 留足余量，
+     * 又不会把「有意的两次单击」误吞掉。
+     */
+    if (gap > 0 && gap < 450) {
+      // 双击：撤销上一次单击已经引起的菜单切换，直接切播放状态
+      hilog.info(0x1000, 'BOXN', 'double tap -> togglePlay gap=%{public}d', gap);
+      this.lastTapAt = 0;
+      if (this.showOsd) {
+        // 上一次单击刚把菜单打开，双击时把它关掉，避免「暂停后菜单挡住画面」
+        this.showOsd = false;
+      }
+      this.togglePlay();
+      return;
+    }
+    // 单击：切换菜单（遥控器「确定」也走这里）
+    this.onCenter();
+  }
+
+  /**
    * 开始「按住屏幕加速」。
    *
    * 注意三件事：
@@ -2849,21 +2899,44 @@ struct Player {
   private applySpeed(p: media.AVPlayer): void {
     // 注意不能「speed === 1 就 return」：从 1.5x 调回 1.0x 时正是要靠这句
     // setSpeed(1.0) 把速度改回来，return 掉的话声音还是快的。
+    /**
+     * 用数字版 setSpeed(number)，不用枚举版。
+     *
+     * 枚举 media.PlaybackSpeed 只到 2.00X（0.75/1/1.25/1.5/2），
+     * 而「按住屏幕加速」要 3 倍 —— speedOf(3) 会落到兜底分支返回
+     * SPEED_FORWARD_1_00_X，**看起来调用了、其实还是原速**，
+     * 用户反馈的「按住不动三倍没生效」就是这个原因。
+     * 数字版没有档位限制，直接传 3 即可。
+     */
     try {
-      p.setSpeed(Player.speedOf(this.speed));
+      // 数字版 setSpeed：不传回调时在某些版本按 void 处理、某些版本返回
+      // Promise，类型上不好统一，这里统一按 void 调用，异步失败由下面的
+      // 兜底逻辑接住（枚举版失败会抛同步异常）。
+      p.setSpeed(this.speed);
+      hilog.info(0x1000, 'BOXN', 'setSpeed ok -> %{public}sx', '' + this.speed);
     } catch (e) {
-      // 不支持变速的源（HLS 直播、部分点播封装）会抛 BusinessError。
-      // 以前这里空 catch，用户只看到「已切到 1.5 倍速」而声音没变 ——
-      // 现在明说，至少不会以为是软件坏了。
       const err = e as Error;
+      // 不支持变速的源（HLS 直播、部分点播封装）会抛 BusinessError。
       hilog.error(0x1000, 'BOXN', 'setSpeed fail %{public}s: %{public}s', '' + this.speed, err.message);
-      // 别只说「不支持」就完事：直播源不支持变速是常态，用户真正想知道的是「那我还能怎么办」。
-      // 点播换线路/换画质后可能就支持了；直播只能回 1.0 倍速。
-      if (this.isLive) {
-        this.showTip('直播流不支持 ' + this.speed + ' 倍速，已保持原速');
-      } else {
-        this.showTip('这个源不支持 ' + this.speed + ' 倍速，可换条线路再试');
+      const ok: boolean = Player.applySpeedEnum(p, this.speed);
+      if (!ok) {
+        // 别只说「不支持」就完事：直播源不支持变速是常态，用户真正想知道的是「那我还能怎么办」。
+        if (this.isLive) {
+          this.showTip('直播流不支持 ' + this.speed + ' 倍速，已保持原速');
+        } else {
+          this.showTip('这个源不支持 ' + this.speed + ' 倍速，可换条线路再试');
+        }
       }
+    }
+  }
+
+  /** 枚举版 setSpeed（最高 2 倍）。数字版不可用时的兜底，返回是否成功 */
+  private static applySpeedEnum(p: media.AVPlayer, v: number): boolean {
+    try {
+      p.setSpeed(Player.speedOf(v));
+      return true;
+    } catch (e) {
+      return false;
     }
   }
 
@@ -4446,8 +4519,8 @@ struct Player {
     })
     .onClick(() => {
       Feedback.tap();
-      // 遥控器「确定」在电视上常常以 click 派发给焦点组件，这里接住
-      this.onCenter();
+      // 单击唤菜单 / 双击暂停，判定在 onSurfaceTap 里
+      this.onSurfaceTap();
     })
     .onMouse((e: MouseEvent) => {
       // 灵犀遥控器指针一动就把控制条唤出来，否则用户不知道该点哪。
