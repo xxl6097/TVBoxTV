@@ -176,6 +176,10 @@ struct Player {
   private brightTimer: number = -1;
   /** 手势起始 X（用于判断左/右半屏） */
   private panStartX: number = 0;
+  /** 横滑快进的基准位置：手势按下那一刻的播放位置，全程不再变 */
+  private panBaseMs: number = 0;
+  /** 本次手势锁定的轴：'' 未定 / 'x' 快进 / 'y' 亮度音量。防止斜滑时来回切 */
+  private panAxis: string = '';
   
   // ===== 下一集预加载缓存 =====
   /**
@@ -224,6 +228,8 @@ struct Player {
   private holdCode: number = -1;
   private holdCount: number = 0;
   private seekCommitTimer: number = -1;
+  /** 自上次提交以来累计了几次 seekBy（长按强制落地的计数器） */
+  private seekBurst: number = 0;
   /**
    * seek 后短暂抑制 timeUpdate 把进度条往回拉。
    * HLS 一次 seek 要重新拉分片，播放器在真正跳过去之前会先回报一个比目标旧的位置，
@@ -1174,6 +1180,10 @@ struct Player {
     h.from = this.from;
     h.pos = this.posMs;
     h.dur = this.durMs > 0 ? this.durMs : 0;
+    // 与网盘侧同一套语义：快看完了就不把片尾位置记成进度（见 saveWdPos 的说明）
+    if (h.dur > 0 && h.pos >= h.dur - 15000) {
+      h.pos = 0;
+    }
     h.time = Date.now();
     Store.updateHistoryPos(h);
   }
@@ -1202,6 +1212,16 @@ struct Player {
     h.url = this.rawUrl;
     h.pos = this.posMs;
     h.dur = this.durMs > 0 ? this.durMs : 0;
+    /**
+     * 快看完了就别再把「片尾位置」记成进度。
+     *
+     * 读取侧有 pos < dur-15000 的保护不会去续播，但卡片本身是脏的：
+     * 用户看到「已看 18:00 / 18:04」会以为还差 4 秒没看完，很别扭。
+     * 这里直接把 pos 归零，卡片只显示「看到 第 N 集」，语义才对。
+     */
+    if (h.dur > 0 && h.pos >= h.dur - 15000) {
+      h.pos = 0;
+    }
     h.time = Date.now();
     Store.updateWdHistory(h);
   }
@@ -1831,13 +1851,35 @@ struct Player {
     this.seekTip = (dir > 0 ? '快进 +' : '快退 -') + diff + ' 秒';
     hilog.info(0x1000, 'BOXN', 'seek dir=%{public}d step=%{public}d target=%{public}d', dir, step, target);
 
-    if (this.seekCommitTimer >= 0) {
-      clearTimeout(this.seekCommitTimer);
-    }
-    this.seekCommitTimer = setTimeout(() => {
-      this.seekCommitTimer = -1;
+    /**
+     * 长按连续快进不能只攒不提交。
+     *
+     * 长按每 HOLD_GAP(110ms) 触发一次 seekBy，而下面每次都会 clearTimeout
+     * 并重新等 SEEK_COMMIT_DELAY(260ms) —— 永远等不到那个 260ms 空档，
+     * 整段长按期间一次都不提交，画面完全不动，松手才「啪」地跳一大段。
+     *
+     * 所以长按（repeat）时按次数强制提交：每 6 次（约 0.6~0.7 秒）落地一次，
+     * 画面跟着走；短按仍然走 260ms 防抖，避免连点时 HLS 反复拉分片。
+     */
+    this.seekBurst++;
+    const burstLimit: number = repeat ? 6 : 1;
+    if (this.seekBurst >= burstLimit) {
+      this.seekBurst = 0;
+      if (this.seekCommitTimer >= 0) {
+        clearTimeout(this.seekCommitTimer);
+        this.seekCommitTimer = -1;
+      }
       this.commitSeek();
-    }, SEEK_COMMIT_DELAY);
+    } else {
+      if (this.seekCommitTimer >= 0) {
+        clearTimeout(this.seekCommitTimer);
+      }
+      this.seekCommitTimer = setTimeout(() => {
+        this.seekCommitTimer = -1;
+        this.seekBurst = 0;
+        this.commitSeek();
+      }, SEEK_COMMIT_DELAY);
+    }
     this.popOsd();
   }
 
@@ -1911,14 +1953,14 @@ struct Player {
     }
   }
 
-  /** 点进度条定位。ratio 为 0~1 */
-  seekToRatio(ratio: number): void {
+  /** 点进度条定位。ratio 为 0~1。返回 false 表示这次没能定位（供调用方决定是否提示） */
+  seekToRatio(ratio: number): boolean {
     if (this.player === null || !this.prepared || this.durMs <= 0) {
       // 这条以前是静默 return，真机上表现为「拖了有预览、松手没反应」。
       // 记一条日志，至少能从 hilog 看出是哪一项没满足。
       hilog.info(0x1000, 'BOXN', 'seek skip player=%{public}s prepared=%{public}s dur=%{public}d',
         '' + (this.player !== null), '' + this.prepared, this.durMs);
-      return;
+      return false;
     }
     // 点进度条定位同样撤掉跳过按钮
     this.cancelSkipBtn();
@@ -1936,6 +1978,7 @@ struct Player {
     this.seekPreview = -1;
     this.applySeek(Math.floor(this.durMs * r));
     this.popOsd();
+    return true;
   }
 
   /** 切集 / 换台。delta 为 +1 / -1 */
@@ -1997,6 +2040,20 @@ struct Player {
     this.errMsg = '';
     this.stallN = 0;
     this.pendingSeek = 0;
+    this.seekBurst = 0;
+    /**
+     * 切集必须把「上一个跳过的残留」清干净：
+     *  - skipShow / skipTimer：片尾按钮可能正显示着并倒计时，带到新集就会
+     *    在新集刚起播时自动跳下一集（连跳两集）。
+     *  - seekCommitTimer：快进的 260ms 防抖还没落地就切了集，那个定时器
+     *    会在新集上执行 applySeek，把新集拉到旧集的位置。
+     */
+    this.skipShow = '';
+    this.stopSkipTimer();
+    if (this.seekCommitTimer >= 0) {
+      clearTimeout(this.seekCommitTimer);
+      this.seekCommitTimer = -1;
+    }
     this.introDone = false;
     this.outroFired = false;
     this.preloadFired80 = false;
@@ -2053,6 +2110,7 @@ struct Player {
     this.seekPreview = -1;
     this.stallN = 0;
     this.pendingSeek = 0;
+    this.seekBurst = 0;
     this.introDone = false;
     this.outroFired = false;
     this.preloadFired80 = false;
@@ -2957,11 +3015,20 @@ struct Player {
       } else {
         this.showTip('已跳过片尾');
         try {
-          if (this.player !== null) {
-            this.player.seek(this.durMs);
+          if (this.player !== null && this.durMs > 0) {
+            /**
+             * 不能直接 seek(durMs)：正好落在 duration 会让播放器立刻进 completed，
+             * 表现为黑屏/卡死。applySeek 里同样的道理已经钳到 dur-800。
+             * 这里是最后一集，跳到片尾末尾即可（随后播完自然结束）。
+             */
+            const endMs: number = this.durMs - 800 > 0 ? this.durMs - 800 : 0;
+            this.player.seek(endMs);
+            this.posMs = endMs;
+            this.curMs = endMs;
+            this.markSeek(endMs);
           }
         } catch (e) {
-          // ignore
+          // 状态不允许就保持原样
         }
       }
     }
@@ -3799,9 +3866,11 @@ struct Player {
                     }
                     if (endMs >= 0 && this.durMs > 0) {
                       const shown: string = this.fmt(endMs);
-                      // 复用点击定位的同一条路径，保证拖动与点击落到同一时刻
-                      this.seekToRatio(endMs / this.durMs);
-                      Tip.show('已定位到 ' + shown);
+                      // 复用点击定位的同一条路径，保证拖动与点击落到同一时刻。
+                      // 同样只在真正定位成功时才提示。
+                      if (this.seekToRatio(endMs / this.durMs)) {
+                        Tip.show('已定位到 ' + shown);
+                      }
                     }
                     this.seekPreview = -1;
                   })
@@ -3935,6 +4004,15 @@ struct Player {
           }
           // 记录手势起始 X，用于后续判断左/右半屏
           this.panStartX = e.fingerList.length > 0 ? e.fingerList[0].localX : 0;
+          /**
+           * 记住横滑起点的播放位置。
+           *
+           * 快进快退必须按「起点 + 手指总位移」算，不能每帧在当前位置上加 10 秒：
+           * onActionUpdate 一次滑动会触发几十次，累加的结果是「轻轻一滑跳几分钟」，
+           * 而且手指往左挪一点又往右挪回来，位置会一路往上涨，跟手指完全脱钩。
+           */
+          this.panBaseMs = this.displayMs();
+          this.panAxis = '';
         })
         .onActionUpdate((e: GestureEvent) => {
           if (this.dragSeeking || this.durMs <= 0) {
@@ -3942,24 +4020,51 @@ struct Player {
           }
           const absX = Math.abs(e.offsetX);
           const absY = Math.abs(e.offsetY);
-          
+
           // 横向手势：快进快退
           if (absX > absY && absX > 20) {
-            const deltaMs = (e.offsetX > 0 ? 1 : -1) * SEEK_STEP;
-            let target = this.displayMs() + deltaMs;
-            target = target < 0 ? 0 : (target > this.durMs ? this.durMs : target);
+            // 轴锁定：一次手势里只认第一次确定的方向，避免斜着滑时左右上下乱切
+            if (this.panAxis === '') {
+              this.panAxis = 'x';
+            }
+            if (this.panAxis !== 'x') {
+              return;
+            }
+            /**
+             * 位移 → 时间：整条进度条宽度对应剩余时长，再用 0.5 的系数放慢，
+             * 这样横滑一屏大约走半部片，命中「想跳到中段」的常见需求。
+             * 关键是**只依赖 e.offsetX**（相对起点的总位移），不累加。
+             */
+            const span: number = this.winW > 0 ? this.winW : 660;
+            const raw: number = this.panBaseMs + (e.offsetX / span) * this.durMs * 0.5;
+            let target: number = Math.floor(raw);
+            if (target < 0) {
+              target = 0;
+            }
+            if (target > this.durMs - 1000) {
+              target = this.durMs - 1000;
+            }
             this.seekPreview = target;
-            this.seekTip = (deltaMs > 0 ? '+' : '') + (deltaMs / 1000) + 's';
+            const diff: number = Math.floor((target - this.panBaseMs) / 1000);
+            this.seekTip = (diff >= 0 ? '快进 +' : '快退 ') + diff + ' 秒';
             this.popOsd();
             return;
           }
-          
+
           // 纵向手势：左半屏调亮度，右半屏调音量（仅手机）
           if (absY > absX && absY > 20 && this.isPhone) {
-            // 以前这里写死 `panStartX < 200`，注释却说「左半屏」——
-            // 手机横屏宽 1320vp，200 只占最左 15%，于是中间到右边缘 85%
-            // 的区域全在调音量，用户几乎调不了亮度。
-            // 现在按实际窗口宽度取中点；拿不到宽度时退回 200 保守处理。
+            if (this.panAxis === '') {
+              this.panAxis = 'y';
+            }
+            if (this.panAxis !== 'y') {
+              return;
+            }
+            /**
+             * 左半屏调亮度、右半屏调音量。
+             * 以前写死 `panStartX < 200`，注释却说「左半屏」—— 手机横屏宽 1320vp，
+             * 200 只占最左 15%，中间到右边缘 85% 全在调音量，用户几乎调不了亮度。
+             * 现在按实际窗口宽度取中点；拿不到宽度时退回 200 保守处理。
+             */
             const halfW: number = this.winW > 0 ? this.winW / 2 : 200;
             const isLeftHalf: boolean = this.panStartX < halfW;
             if (isLeftHalf) {
@@ -4005,8 +4110,12 @@ struct Player {
         .onActionEnd(() => {
           // 松手时确认 seek（如果在预览中）
           if (this.seekPreview >= 0 && this.durMs > 0) {
-            this.seekToRatio(this.seekPreview / this.durMs);
-            Tip.show(this.fmt(this.seekPreview));
+            const target: number = this.seekPreview;
+            // 只在真的定位成功时才提示：seekToRatio 在未 prepared 时会返回 false，
+            // 原来不管成败都弹「已定位到 xx:xx」，用户看到提示但画面没动。
+            if (this.seekToRatio(target / this.durMs)) {
+              Tip.show(this.fmt(target));
+            }
             this.seekPreview = -1;
           }
         })
