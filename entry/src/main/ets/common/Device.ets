@@ -29,6 +29,8 @@ export const KEY_IS_TV: string = 'isTv';
 export const KEY_LANDSCAPE: string = 'isLandscape';
 /** 当前窗口宽度（vp），需要按宽度分档排版的地方读它 */
 export const KEY_WIN_W: string = 'winW';
+/** 当前窗口高度（vp）。横竖屏切换后高度变化很大，面板限高要用它 */
+export const KEY_WIN_H: string = 'winH';
 
 export class Device {
   /** 入口初始化，必须在 EntryAbility.onCreate 里最先调用 */
@@ -72,9 +74,11 @@ export class Device {
       const hVp: number = px2vp(d.height);
       AppStorage.setOrCreate<boolean>(KEY_LANDSCAPE, wVp > hVp);
       AppStorage.setOrCreate<number>(KEY_WIN_W, Math.min(wVp, hVp) > 0 ? wVp : 360);
+      AppStorage.setOrCreate<number>(KEY_WIN_H, Math.min(wVp, hVp) > 0 ? hVp : 744);
     } catch (e) {
       AppStorage.setOrCreate<boolean>(KEY_LANDSCAPE, false);
       AppStorage.setOrCreate<number>(KEY_WIN_W, 360);
+      AppStorage.setOrCreate<number>(KEY_WIN_H, 744);
     }
   }
 
@@ -120,6 +124,10 @@ export class Device {
       const w: number = Math.round(wVp);
       if (AppStorage.get<number>(KEY_WIN_W) !== w) {
         AppStorage.setOrCreate<number>(KEY_WIN_W, w);
+      }
+      const hh: number = Math.round(hVp);
+      if (AppStorage.get<number>(KEY_WIN_H) !== hh) {
+        AppStorage.setOrCreate<number>(KEY_WIN_H, hh);
       }
     };
 

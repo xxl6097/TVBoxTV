@@ -14,7 +14,7 @@ import { Live } from '../common/Live';
 import { Resolver, Resolved } from '../common/Resolve';
 import { QLevel, QSpeed, Quality } from '../common/Quality';
 import { Tip } from '../common/Tip';
-import { Device, KEY_IS_PHONE } from '../common/Device';
+import { Device, KEY_IS_PHONE, KEY_LANDSCAPE, KEY_WIN_W, KEY_WIN_H } from '../common/Device';
 import { Theme, KEY_THEME, THEME_DARK } from '../common/Theme';
 import { PlayGuard } from '../common/PlayGuard';
 import { Pointer } from '../common/Pointer';
@@ -166,6 +166,12 @@ struct Player {
   @State subSel: number = -1;
   /** 设备形态：手机竖屏默认等比适应，避免横屏视频被拉伸变形 */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 是否横屏：控制条按钮横屏排一行、竖屏排两行（见 CtlBtn 布局说明） */
+  @StorageProp(KEY_LANDSCAPE) landscape: boolean = false;
+  /** 窗口宽度（vp）：横滑快进换算、面板宽度都靠它，转屏后要跟着变 */
+  @StorageProp(KEY_WIN_W) winW: number = 660;
+  /** 窗口高度（vp）：面板限高按它算，横屏时高度骤降 */
+  @StorageProp(KEY_WIN_H) winH: number = 744;
   /**
    * 当前主题。播放页自己不跟着换色（面板恒深色，见 T.PANEL_*），
    * 这里只用于让 build 依赖主题状态、保证从设置页切主题回来后能重建。
@@ -277,8 +283,9 @@ struct Player {
   private flashTimer: number = -1;
   /** 进度条实际宽度（vp），用于把点击位置换算成播放进度 */
   private barW: number = 0;
-  /** 播放页宽度（vp），用于左右半屏手势判定；0 表示还没测到 */
-  private winW: number = 0;
+  // 注意：winW 已改成上面那个 @StorageProp(KEY_WIN_W) 的字段（由 Device 监听
+  // 窗口尺寸统一写入），原来这里还有一个 private winW + onAreaChange 自己赋值，
+  // 两者互不同步；转屏后手势换算会用到过期的宽度。
   /** 已选中的字幕轨道号（AVPlayer 里的轨道号，不是 subs 下标）；-1 表示没选 */
   private subTrackIdx: number = -1;
   /**
@@ -2521,25 +2528,52 @@ struct Player {
   }
 
   /**
+   * 设置/选集面板的高度上限（vp）。
+   *
+   * 直接用真实窗口高度算，不写死 470/440：
+   * 手机竖屏约 744 → 470；横屏约 440 → 350；分屏/悬浮窗也能自适应。
+   * 电视固定 580（大屏，不需要算）。
+   * 下限 260 兜底：别把面板压成一条缝，内容照样能滚。
+   */
+  panelMaxH(): number {
+    if (!this.isPhone) {
+      return 580;
+    }
+    const h: number = this.winH > 0 ? this.winH : 744;
+    // 竖屏留状态栏和底部安全区多些（0.63），横屏可以给到 0.72
+    const cap: number = Math.round(h * (this.landscape ? 0.72 : 0.63));
+    return cap < 260 ? 260 : cap;
+  }
+
+  /**
    * 控制条上的按钮。华为智慧屏灵犀遥控器在指针模式下只产生点击事件，
    * 所以所有操作都必须有一个「能用指针点到」的入口。
    *
    * 注意：文字不能当参数传进来。@Builder 是值传递，传进来的字符串不会跟着
    * this.playing / this.muted 变（踩过：一直显示「播放」）。只能让 builder
    * 内部直接读状态，ArkUI 才会建立依赖。
+   *
+   * 布局：用 layoutWeight(1) 均分整行，而不是「文字 + 左右 padding」的
+   * 自适应宽度。后者的问题在竖屏特别明显 —— 「− 10 秒」「播放设置」这些
+   * 长短不一，一排排下去右边留一大块空白，换行位置也很随机（之前竖屏
+   * 是 5 个 + 4 个，第二排只占半行，看着很散）。
+   * 均分之后横屏一排放得下、竖屏自动换成整齐的两三排，两边都对齐。
    */
   @Builder
   CtlBtn(act: number) {
-    // styles.xml 的 <style name="Control">：selector_chip(4dp) + textColor=@color/text + 14sp
     Text(this.ctlText(act))
       .fontSize(14)
       .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      // 左右 padding 收窄到 6：均分宽度固定，padding 太大会把文字挤没了
+      .padding({ left: 6, right: 6, top: 10, bottom: 10 })
       .backgroundColor(this.hi('ctl' + act) ? T.PANEL_BTN_HI : '#00000000')
       .borderRadius(T.RADIUS_SM)
       .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
-      .margin({ right: 8, bottom: 8 })
       .textAlign(TextAlign.Center)
+      // 文字绝不截断成省略号：宁可缩小字号也要完整显示（见下方 maxFontScale）
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .layoutWeight(1)
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('ctl' + act, hv))
       .onClick(() => this.tap('ctl' + act, () => this.doCtrl(act)))
@@ -3687,7 +3721,14 @@ struct Player {
           .alignItems(HorizontalAlign.Start)
         }
         .scrollBar(BarState.Off)
-        .constraintSize({ maxHeight: Device.isPhone() ? 470 : 580 })
+        /**
+         * 高度上限必须按「当前屏幕高度」算，不能写死 470。
+         *
+         * 手机竖屏高 744vp，470 没问题；但横屏只剩 440vp，
+         * 面板一旦超过就顶出屏幕上下，用户看不到底部的「跳过片尾」。
+         * 取窗口高度的一半偏上（留出上下边距），并给个下限避免太扁。
+         */
+        .constraintSize({ maxHeight: this.panelMaxH() })
       }
       .width(Device.panelW(700))
       .padding(24)
@@ -3758,7 +3799,7 @@ struct Player {
           .width('100%')
         }
         .scrollBar(BarState.Auto)
-        .constraintSize({ maxHeight: Device.isPhone() ? 440 : 560 })
+        .constraintSize({ maxHeight: this.panelMaxH() })
       }
       .width(Device.panelW(760))
       .padding(24)
@@ -4227,9 +4268,22 @@ struct Player {
             .margin({ top: 10 })
             }
 
-            // 控制按钮：遥控器是「指针 + 确定」模式时全靠这里操作
-            Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-              if (this.isLive) {
+            /**
+             * 控制按钮：遥控器是「指针 + 确定」模式时全靠这里操作。
+             *
+             * 横竖屏用两套布局，不再一个 Flex(wrap) 通吃：
+             *
+             *  横屏：9 个按钮一排放得下，用 Row 均分 + 8vp 间距，一行到底。
+             *  竖屏：宽度只有 ~330vp，9 个挤一行每个不到 37vp，
+             *        「播放设置」四个字根本放不下。改成 Grid 分两排
+             *        （点播 5 + 4），每格约 66vp，文字完整、左右也齐。
+             *
+             * 之前是一个 Flex(wrap) 左对齐：竖屏会随机在中间某个按钮处
+             * 换行、第二排只占半行，右边一大块空白 —— 看着就是「没排布」。
+             */
+            if (this.isLive) {
+              // 直播只有 7 个，横竖屏都能一行放下
+              Row({ space: 8 }) {
                 this.CtlBtn(0)
                 this.CtlBtn(2)
                 this.CtlBtn(4)
@@ -4237,7 +4291,12 @@ struct Player {
                 this.CtlBtn(6)
                 this.CtlBtn(7)
                 this.CtlBtn(8)
-              } else {
+              }
+              .width('100%')
+              .margin({ top: 12 })
+            } else if (this.landscape) {
+              // 横屏：一行铺满
+              Row({ space: 8 }) {
                 this.CtlBtn(0)
                 this.CtlBtn(1)
                 this.CtlBtn(2)
@@ -4246,15 +4305,55 @@ struct Player {
                 this.CtlBtn(5)
                 this.CtlBtn(6)
                 this.CtlBtn(7)
-                // 选集放在「播放设置」前面：追剧时这个用得比设置频繁得多
                 if (Playlist.count() > 1) {
                   this.CtlBtn(9)
                 }
                 this.CtlBtn(8)
               }
+              .width('100%')
+              .margin({ top: 12 })
+            } else {
+              // 竖屏：Grid 均分，两排各 5/4 格，宽度一致、左边对齐
+              Grid() {
+                GridItem() {
+                  this.CtlBtn(0)
+                }
+                GridItem() {
+                  this.CtlBtn(1)
+                }
+                GridItem() {
+                  this.CtlBtn(2)
+                }
+                GridItem() {
+                  this.CtlBtn(3)
+                }
+                GridItem() {
+                  this.CtlBtn(4)
+                }
+                GridItem() {
+                  this.CtlBtn(5)
+                }
+                GridItem() {
+                  this.CtlBtn(6)
+                }
+                GridItem() {
+                  this.CtlBtn(7)
+                }
+                if (Playlist.count() > 1) {
+                  GridItem() {
+                    this.CtlBtn(9)
+                  }
+                }
+                GridItem() {
+                  this.CtlBtn(8)
+                }
+              }
+              .columnsTemplate('1fr 1fr 1fr 1fr 1fr')
+              .columnsGap(8)
+              .rowsGap(8)
+              .width('100%')
+              .margin({ top: 12 })
             }
-            .width('100%')
-            .margin({ top: 12 })
 
             Row() {
               Text(this.isLive ? '频道地址直连播放，不经过解析' : ('解析：' + this.via))
@@ -4310,11 +4409,8 @@ struct Player {
     .height('100%')
     .backgroundColor('#000000')
     .id('playerRoot')
-    // 记下实际宽度，给「左半屏调亮度 / 右半屏调音量」用（见纵向手势处）
-    .onAreaChange((oldV: Area, newV: Area) => {
-      const w = newV.width;
-      this.winW = typeof w === 'number' ? w : parseFloat(w.toString());
-    })
+    // 宽度不再在这里自己量：改为读 Device.watchWindow 写进 AppStorage 的
+    // KEY_WIN_W（@StorageProp），和首页共用同一份，转屏后两边同时更新。
     .focusable(true)
     .defaultFocus(true)
     .onFocus(() => {
