@@ -1854,29 +1854,40 @@ struct Player {
     /**
      * 长按连续快进不能只攒不提交。
      *
-     * 长按每 HOLD_GAP(110ms) 触发一次 seekBy，而下面每次都会 clearTimeout
+     * 长按每 HOLD_GAP(110ms) 触发一次 seekBy，而防抖每次都 clearTimeout
      * 并重新等 SEEK_COMMIT_DELAY(260ms) —— 永远等不到那个 260ms 空档，
      * 整段长按期间一次都不提交，画面完全不动，松手才「啪」地跳一大段。
      *
-     * 所以长按（repeat）时按次数强制提交：每 6 次（约 0.6~0.7 秒）落地一次，
-     * 画面跟着走；短按仍然走 260ms 防抖，避免连点时 HLS 反复拉分片。
+     * 两种节奏分开：
+     *  - 长按（repeat）：每 6 次（约 0.6~0.7 秒）强制落地一次，画面跟着走
+     *  - 短按：仍走 260ms 防抖，连点时只提交最后一次，避免 HLS 反复拉分片
      */
-    this.seekBurst++;
-    const burstLimit: number = repeat ? 6 : 1;
-    if (this.seekBurst >= burstLimit) {
-      this.seekBurst = 0;
-      if (this.seekCommitTimer >= 0) {
-        clearTimeout(this.seekCommitTimer);
-        this.seekCommitTimer = -1;
+    if (repeat) {
+      this.seekBurst++;
+      if (this.seekBurst >= 6) {
+        this.seekBurst = 0;
+        if (this.seekCommitTimer >= 0) {
+          clearTimeout(this.seekCommitTimer);
+          this.seekCommitTimer = -1;
+        }
+        this.commitSeek();
+      } else {
+        if (this.seekCommitTimer >= 0) {
+          clearTimeout(this.seekCommitTimer);
+        }
+        this.seekCommitTimer = setTimeout(() => {
+          this.seekCommitTimer = -1;
+          this.seekBurst = 0;
+          this.commitSeek();
+        }, SEEK_COMMIT_DELAY);
       }
-      this.commitSeek();
     } else {
+      // 短按：纯防抖，连点只落地最后一次
       if (this.seekCommitTimer >= 0) {
         clearTimeout(this.seekCommitTimer);
       }
       this.seekCommitTimer = setTimeout(() => {
         this.seekCommitTimer = -1;
-        this.seekBurst = 0;
         this.commitSeek();
       }, SEEK_COMMIT_DELAY);
     }
@@ -4010,8 +4021,12 @@ struct Player {
            * 快进快退必须按「起点 + 手指总位移」算，不能每帧在当前位置上加 10 秒：
            * onActionUpdate 一次滑动会触发几十次，累加的结果是「轻轻一滑跳几分钟」，
            * 而且手指往左挪一点又往右挪回来，位置会一路往上涨，跟手指完全脱钩。
+           *
+           * 基准用 posMs 而不是 displayMs()：curMs 只在控制条展开时同步，
+           * 而横滑通常发生在控制条收起时 —— 那时 curMs 停在上次展开的旧位置，
+           * 拿它当基准会让整段跳转偏掉。
            */
-          this.panBaseMs = this.displayMs();
+          this.panBaseMs = this.posMs;
           this.panAxis = '';
         })
         .onActionUpdate((e: GestureEvent) => {
