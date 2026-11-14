@@ -186,6 +186,106 @@ export class Device {
   }
 
   /**
+   * 同步用的设备名（人能认出来的那种），如「HUAWEI-Mate60」「智慧屏」。
+   *
+   * 优先级：marketName（市场名）> productModel > brand。
+   * 注意 deviceInfo 里**没有 deviceName** 这个字段（那是「用户改的机名」，
+   * 需要另外的 API），这里只用系统内置的型号信息，保证不去申请额外权限。
+   *
+   * 一定要做过清洗：这些字段可能带空格、斜杠、括号，
+   * 直接拼进 URL 路径会让请求 404/400，拼进文件名在 Windows 网盘上会失败。
+   */
+  static deviceLabel(): string {
+    let raw: string = '';
+    try {
+      raw = deviceInfo.marketName || deviceInfo.productModel || deviceInfo.brand || '';
+    } catch (e) {
+      raw = '';
+    }
+    const clean: string = Device.safeName(raw);
+    return clean.length > 0 ? clean : 'device';
+  }
+
+  /**
+   * 同步用的设备唯一标识（短）。
+   *
+   * 用 udid 的短哈希：udid 本身就可能是 64 位串，直接放文件名太长；
+   * 取 FNV-1a 32 位再转 8 位十六进制，碰撞概率对「几台设备」这个量级足够。
+   * 拿不到 udid 时退回 随机数 + 时间戳 —— 至少保证不同设备不会撞车。
+   */
+  static deviceKey(): string {
+    let seed: string = '';
+    try {
+      seed = deviceInfo.udid || '';
+    } catch (e) {
+      seed = '';
+    }
+    if (seed.length === 0) {
+      try {
+        seed = deviceInfo.serial || deviceInfo.productModel || '';
+      } catch (e) {
+        seed = '';
+      }
+    }
+    if (seed.length === 0) {
+      // 真拿不到就生成一次并存下来，保证同一台机器多次运行一致
+      const cached: string | undefined = AppStorage.get<string>('syncDeviceSeed');
+      if (cached !== undefined && cached.length > 0) {
+        seed = cached;
+      } else {
+        seed = 'rnd-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
+        AppStorage.setOrCreate<string>('syncDeviceSeed', seed);
+      }
+    }
+    return Device.hash8(seed);
+  }
+
+  /** 文件名清洗：只留字母数字和 - _，其余替换成下划线，压缩连续下划线 */
+  private static safeName(s: string): string {
+    let out: string = '';
+    for (let i = 0; i < s.length; i++) {
+      const c: string = s.charAt(i);
+      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+        c === '-' || c === '_' || c === '.') {
+        out += c;
+      } else if (c === ' ' || c === '/') {
+        out += '_';
+      }
+      // 中文等其他字符直接丢弃：路径里带非 ASCII 需要百分号编码，
+      // 各家 WebDAV 实现处理不一致，容易 404
+    }
+    // 压缩连续下划线
+    while (out.indexOf('__') >= 0) {
+      out = out.replace('__', '_');
+    }
+    out = out.replace(/^_+/, '').replace(/_+$/, '');
+    return out;
+  }
+
+  /** FNV-1a 32bit → 8 位十六进制 */
+  private static hash8(s: string): string {
+    let h: number = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h = h ^ s.charCodeAt(i);
+      // 乘 16777619，用移位避免精度问题
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    let hex: string = h.toString(16);
+    while (hex.length < 8) {
+      hex = '0' + hex;
+    }
+    return hex.substring(0, 8);
+  }
+
+  /**
+   * 本设备的同步标识，如 `HUAWEI-Mate60_a1b2c3d4`。
+   * 网盘里每个设备一份文件，换设备不会互相覆盖。
+   */
+  static syncTag(): string {
+    return Device.deviceLabel() + '_' + Device.deviceKey();
+  }
+
+  /**
    * 弹窗/浮层/面板宽度。
    *
    *  - 手机竖屏：用相对宽度留边（固定宽度会超出屏宽被裁切）

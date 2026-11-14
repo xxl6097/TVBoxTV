@@ -6,6 +6,7 @@ import { RawConfig, RawSite, RawParse, RawLive, Site, ParseRule, Vod, WebdavSour
 import { Http } from './Http';
 import { Cms } from './Cms';
 import { Webdav } from './Webdav';
+import { Device } from './Device';
 
 const STORE: string = 'boxtv_store_v1';
 
@@ -2074,30 +2075,34 @@ export class Store {
    * 失败静默忽略——同步是后台行为，不能打扰用户看片。
    */
   /**
-   * 同步文件的可写前缀。
+   * 同步文件的可写前缀（按设备隔离）。
    *
-   * 背景（踩过的坑，别再走一遍）：原来往 `.../迅雷下载/夜帧影视/history.json`
-   * 直接 PUT，但那个 `夜帧影视` 子目录从来没建过。WebDAV 对「PUT 到不存在的
-   * 集合」返回 409 Conflict（本地实测：PUT→409，先 MKCOL→201），而同步是
-   * 静默失败的，结果就是「开关打开了，网盘里永远没有文件」。
+   * 背景一：原来往 `.../迅雷下载/夜帧影视/history.json` 直接 PUT，但那个
+   * `夜帧影视` 子目录从来没建过。WebDAV 对「PUT 到不存在的集合」返回
+   * 409 Conflict（实测：PUT→409，先 MKCOL→201），而同步是静默失败的，
+   * 结果就是「开关打开了，网盘里永远没有文件」。
    *
-   * 想先 MKCOL 建目录也不行：鸿蒙的 http.RequestMethod 只有
-   * OPTIONS/GET/HEAD/POST/PUT/DELETE/TRACE/CONNECT/PATCH，
-   * **没有 MKCOL**（WebDAV 扩展方法），method 参数类型就是那个枚举，
-   * 传字符串会被运行时拒绝。
+   * 背景二：想先 MKCOL 建目录也不行 —— 鸿蒙的 http.RequestMethod 只有
+   * OPTIONS/GET/HEAD/POST/PUT/DELETE/TRACE/CONNECT/PATCH，**没有 MKCOL**
+   * （WebDAV 扩展方法），method 参数类型就是那个枚举，传字符串会被运行时拒绝。
    *
-   * 所以改成：直接写在用户配置的那个目录下（它一定存在，否则连不上），
-   * 文件名带 `夜帧影视_` 前缀区分。实测 PUT 到 迅雷下载/夜帧影视_history.json
-   * 返回 201、能读回。
+   * 所以改成「不新建目录，用文件名区分设备和类型」：
+   *   <用户配的目录>/夜帧影视_<设备名>_<设备ID>_history.json
+   *   <用户配的目录>/夜帧影视_<设备名>_<设备ID>_favorites.json
    *
-   * 注意 URL 里的中文文件名必须百分号编码，否则部分服务端会 400。
+   * 设备名是给人看的（HUAWEI-Mate60 / 智慧屏），设备ID 是 udid 的 8 位哈希
+   * ——光有设备名不行：两台同名设备会互相覆盖；光有哈希也不行：看不出是谁。
+   *
+   * 注意：中文前缀「夜帧影视」必须百分号编码，且设备名在 Device.syncTag()
+   * 里已经清过非 ASCII 字符（各家 WebDAV 对非 ASCII 路径处理不一致）。
    */
   private static syncFileUrl(src: WebdavSource, fileName: string): string {
     const origin: string = Webdav.originOf(src.url);
     const base: string = Webdav.mountHref(src);
     const dir: string = base === '/' ? '' : base;
     // '夜帧影视_' = %E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86_
-    return origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86_' + fileName;
+    const tag: string = Device.syncTag();
+    return origin + dir + '/%E5%A4%9C%E5%B8%A7%E5%BD%B1%E8%A7%86_' + tag + '_' + fileName;
   }
 
   /**
