@@ -152,6 +152,59 @@ struct Detail {
     }
   }
 
+  /**
+   * 「继续播放」按钮。
+   *
+   * 实心白底 + 深色字，是详情页里唯一的强按钮 —— 用户进详情页八成就是想接着看，
+   * 这个动作应该一眼可见、一下就能点到，而不是在浮层里找。
+   */
+  @Builder
+  ResumeBtn() {
+    Row() {
+      Text('▶')
+        .fontSize(15)
+        .fontColor(T.BG)
+        .margin({ right: 8 })
+      Text('继续播放')
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(T.BG)
+    }
+    .padding({ left: 22, right: 22, top: 12, bottom: 12 })
+    .borderRadius(T.RADIUS_PILL)
+    .backgroundColor(this.hi('res_go') ? T.SELECTED : T.TXT)
+    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+    .focusable(true)
+    .onFocus(() => this.hoverTo('res_go', true))
+    .onBlur(() => this.hoverTo('res_go', false))
+    .onHover((hv: boolean) => this.hoverTo('res_go', hv))
+    .onClick(() => Pointer.fire('res_go', () => {
+      Feedback.tap();
+      this.doResume();
+    }))
+    .onMouse(Pointer.on('res_go', () => {
+      Feedback.tap();
+      this.doResume();
+    }))
+  }
+
+  /** 执行续播：跳到上次那一集，play() 内部会按历史里的位置接着播 */
+  private doResume(): void {
+    if (this.lines.length === 0) {
+      return;
+    }
+    const eps: Episode[] = this.lines[this.lineIdx].eps;
+    if (this.seen < 0 || this.seen >= eps.length) {
+      Tip.show('上次那一集已经不在这条线路里了，请手动选集');
+      return;
+    }
+    hilog.info(0x1000, 'BOXN', 'detail resume ep=%{public}d pos=%{public}d',
+      this.seen, this.seenPos);
+    // 收起浮层，避免和刚刚的操作重复
+    this.showResume = false;
+    this.play(eps[this.seen], this.seen);
+  }
+
   /** 续播提示的百分比字符串（如「67%」）；进度未知时返回空串 */
   private resumePercent(): string {
     if (this.seenDur <= 0 || this.seenPos <= 0) {
@@ -159,6 +212,47 @@ struct Detail {
     }
     const pct: number = Math.round((this.seenPos / this.seenDur) * 100);
     return pct + '%';
+  }
+
+  /**
+   * 是否可以续播（决定详情页顶部那条「继续播放」是否出现）。
+   *
+   * 判据和 triggerResumePrompt 保持一致：看过、进度 > 5 秒、且没到片尾。
+   * 到片尾（距结尾 15 秒内）说明这集看完了，再给续播没意义，
+   * 应该直接开始下一集。
+   */
+  private canResume(): boolean {
+    if (this.seen < 0 || this.seenPos <= 5000) {
+      return false;
+    }
+    if (this.seenDur > 0 && this.seenPos >= this.seenDur - 15000) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * 续播按钮右侧的位置信息，如「第 6 集 · 23:45 / 25:10 · 94%」。
+   *
+   * 用户要的是「一眼知道上次停在哪」，所以三样都给：
+   * 哪一集、具体时间点、以及占比。只有百分比的话，25 分钟的片子里
+   * 「94%」远不如「23:45」直观。
+   */
+  private resumeSummary(): string {
+    const parts: string[] = [];
+    parts.push('第 ' + (this.seen + 1) + ' 集');
+    if (this.seenPos > 0) {
+      if (this.seenDur > 0) {
+        parts.push(this.fmtMs(this.seenPos) + ' / ' + this.fmtMs(this.seenDur));
+      } else {
+        parts.push(this.fmtMs(this.seenPos));
+      }
+    }
+    const pct: string = this.resumePercent();
+    if (pct.length > 0) {
+      parts.push(pct);
+    }
+    return parts.join('  ·  ');
   }
 
   /** 格式化毫秒为 mm:ss */
@@ -499,6 +593,46 @@ struct Detail {
 
                   if (this.err.length > 0) {
                     Text(this.err).fontSize(17).fontColor(T.WARN).margin({ top: 14 })
+                  }
+
+                  /**
+                   * 续播行：一颗「继续播放」按钮 + 上次看到的位置。
+                   *
+                   * 放在简介下面、线路上面 —— 这是进入详情页后视线自然落到的位置，
+                   * 比原来那个左下角的浮层显眼得多（浮层还常被简介/选集挤到看不见）。
+                   *
+                   * 手机上按钮和信息分两行：竖屏宽度只有 360vp 左右，
+                   * 「继续播放」+「第 6 集 · 23:45 / 25:10 · 94%」并排会挤成一团。
+                   * 电视横屏空间够，按钮和信息左右并排更紧凑。
+                   */
+                  if (this.canResume()) {
+                    if (this.isPhone) {
+                      Column() {
+                        this.ResumeBtn()
+                        Text(this.resumeSummary())
+                          .fontSize(13).fontColor(T.DIM)
+                          .width('100%')
+                          .margin({ top: 8 })
+                          .maxLines(2)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      }
+                      .width('100%')
+                      .alignItems(HorizontalAlign.Start)
+                      .margin({ top: 16 })
+                    } else {
+                      Row() {
+                        this.ResumeBtn()
+                        Text(this.resumeSummary())
+                          .fontSize(14).fontColor(T.DIM)
+                          .layoutWeight(1)
+                          .margin({ left: 14 })
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      }
+                      .width('100%')
+                      .alignItems(VerticalAlign.Center)
+                      .margin({ top: 16 })
+                    }
                   }
 
                   // 线路
