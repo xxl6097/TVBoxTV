@@ -2560,7 +2560,7 @@ struct Player {
    * 均分之后横屏一排放得下、竖屏自动换成整齐的两三排，两边都对齐。
    */
   @Builder
-  CtlBtn(act: number) {
+  CtlBtn(act: number, weight: boolean = true) {
     Text(this.ctlText(act))
       .fontSize(14)
       .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
@@ -2570,10 +2570,16 @@ struct Player {
       .borderRadius(T.RADIUS_SM)
       .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
       .textAlign(TextAlign.Center)
-      // 文字绝不截断成省略号：宁可缩小字号也要完整显示（见下方 maxFontScale）
+      // 文字绝不截断成省略号：宁可缩小字号也要完整显示
       .maxLines(1)
       .textOverflow({ overflow: TextOverflow.Ellipsis })
-      .layoutWeight(1)
+      /**
+       * 只在 Row 里均分（weight=true）。放 Grid 的 GridItem 里必须关掉：
+       * GridItem 本身已经是等分的格子，里面的 Text 再 layoutWeight(1)
+       * 会去撑满纵向，把整个控制面板的高度顶飞 —— 实测面板被撑成全屏、
+       * 背景色被挤没，只剩白字浮在黑色画面上。
+       */
+      .layoutWeight(weight ? 1 : 0)
       .animation({ duration: T.ANIM, curve: Curve.EaseOut })
       .onHover((hv: boolean) => this.hoverTo('ctl' + act, hv))
       .onClick(() => this.tap('ctl' + act, () => this.doCtrl(act)))
@@ -3866,7 +3872,16 @@ struct Player {
   }
 
   build() {
-    Stack() {
+    /**
+     * 必须显式指定 alignContent: TopStart。
+     *
+     * Stack 不写这个参数时默认是 **Center**，于是每个 .width('100%').height('100%')
+     * 的子层虽然自己撑满，但「基准点」被摆到了容器正中；底部控制条那层
+     * 内部用的是 justifyContent(FlexAlign.End) 贴底，结果整块被 Stack 居中后
+     * 面板跑到了屏幕上方（实测 y 198~684，竖屏高 2232，等于悬在顶部）。
+     * 指定 TopStart 后子层与容器左上角对齐，贴底才是真的贴屏幕底。
+     */
+    Stack({ alignContent: Alignment.TopStart }) {
       XComponent({
         id: 'videoSurface',
         type: XComponentType.SURFACE,
@@ -4316,42 +4331,48 @@ struct Player {
               // 竖屏：Grid 均分，两排各 5/4 格，宽度一致、左边对齐
               Grid() {
                 GridItem() {
-                  this.CtlBtn(0)
+                  this.CtlBtn(0, false)
                 }
                 GridItem() {
-                  this.CtlBtn(1)
+                  this.CtlBtn(1, false)
                 }
                 GridItem() {
-                  this.CtlBtn(2)
+                  this.CtlBtn(2, false)
                 }
                 GridItem() {
-                  this.CtlBtn(3)
+                  this.CtlBtn(3, false)
                 }
                 GridItem() {
-                  this.CtlBtn(4)
+                  this.CtlBtn(4, false)
                 }
                 GridItem() {
-                  this.CtlBtn(5)
+                  this.CtlBtn(5, false)
                 }
                 GridItem() {
-                  this.CtlBtn(6)
+                  this.CtlBtn(6, false)
                 }
                 GridItem() {
-                  this.CtlBtn(7)
+                  this.CtlBtn(7, false)
                 }
                 if (Playlist.count() > 1) {
                   GridItem() {
-                    this.CtlBtn(9)
+                    this.CtlBtn(9, false)
                   }
                 }
                 GridItem() {
-                  this.CtlBtn(8)
+                  this.CtlBtn(8, false)
                 }
               }
               .columnsTemplate('1fr 1fr 1fr 1fr 1fr')
               .columnsGap(8)
               .rowsGap(8)
               .width('100%')
+              /**
+               * 高度必须收死。Grid 不写高度时会按可用空间伸展，
+               * 两排按钮会被拉成两行巨高的格子，整个控制面板跟着变高。
+               * 每格 40vp 文字 + 上下 10 padding ≈ 60，两排 + 8 间距 = 128。
+               */
+              .height(128)
               .margin({ top: 12 })
             }
 
