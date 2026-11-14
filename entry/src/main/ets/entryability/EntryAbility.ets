@@ -35,6 +35,15 @@ export default class EntryAbility extends UIAbility {
         // 与 FongMi 的 splash_background 同色，避免启动瞬间白闪
         win.setWindowBackgroundColor('#141218');
 
+        /**
+         * 监听窗口尺寸变化 → 横竖屏状态。
+         *
+         * module.json5 声明的 auto_rotation 只负责「系统允许转」，
+         * 转过去之后布局要不要重排是应用自己的事。此前没有这层监听，
+         * 手机横过来界面仍是竖屏那套窄布局。
+         */
+        Device.watchWindow(win);
+
         if (Device.isTv()) {
           // 电视：沉浸式全屏 + 隐藏系统栏 + 强制横屏
           win.setWindowLayoutFullScreen(true);

@@ -21,7 +21,7 @@ import { Net, NET_ONLINE } from '../common/Net';
 import { Vod, DetailParam, T } from '../common/Model';
 import { Crawler, CrawlResult } from '../common/Crawler';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
-import { KEY_IS_PHONE } from '../common/Device';
+import { KEY_IS_PHONE, KEY_LANDSCAPE, KEY_WIN_W } from '../common/Device';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
 import { Poster } from '../common/Poster';
@@ -291,6 +291,10 @@ struct FeedCard {
 struct Home {
   /** 设备形态：true=手机（底部 Tab + 网格 + 触摸），false=电视（顶部功能行 + 横向轨道 + 焦点） */
   @StorageProp(KEY_IS_PHONE) isPhone: boolean = false;
+  /** 是否横屏。由 Device.watchWindow 监听窗口尺寸实时更新，转屏后布局才会重排 */
+  @StorageProp(KEY_LANDSCAPE) landscape: boolean = false;
+  /** 当前窗口宽度（vp），横屏时用来决定网格列数 */
+  @StorageProp(KEY_WIN_W) winW: number = 360;
   /** 当前主题。build 里必须用到（见 .id(...)），否则换了色板不会重绘 */
   @StorageProp(KEY_THEME) themeMode: string = 'dark';
   @State hist: HistItem[] = [];
@@ -1458,17 +1462,20 @@ struct Home {
     .alignItems(HorizontalAlign.Start)
   }
 
-  /** 手机「最近更新」网格列数：竖屏 3 列、横屏（折叠屏展开）5 列 */
+  /**
+   * 手机「最近更新」网格列数：竖屏 3 列，横屏按宽度 5~6 列。
+   *
+   * 这里必须读响应式的 this.landscape / this.winW，不能调
+   * display.getDefaultDisplaySync() —— 那个值在转屏后虽然是对的，
+   * 但它是普通方法调用，ArkUI 建立不了依赖，build 不会因为转屏而重跑，
+   * 用户看到的就是「横过来了但还是一行 3 个、右边空一大块」。
+   */
   phoneFeedCols(): string {
-    try {
-      const d = display.getDefaultDisplaySync();
-      if (d.width > d.height) {
-        return '1fr 1fr 1fr 1fr 1fr';
-      }
-    } catch (e) {
-      // 读不到屏幕就按竖屏 3 列
+    if (!this.landscape) {
+      return '1fr 1fr 1fr';
     }
-    return '1fr 1fr 1fr';
+    // 横屏：大屏手机/折叠屏展开给 6 列，小屏横过来 5 列就够宽了
+    return this.winW >= 900 ? '1fr 1fr 1fr 1fr 1fr 1fr' : '1fr 1fr 1fr 1fr 1fr';
   }
 
   build() {
