@@ -139,13 +139,17 @@ struct Detail {
       return; // 接近结尾，不提示续播（下次应该看新集）
     }
     this.showResume = true;
+    /**
+     * 不再自动消失（原来 5 秒后 setTimeout 关掉）。
+     *
+     * 用户从「继续观看」进来，往往还在看简介/选集，5 秒一到续播入口就没了，
+     * 只能自己去选集里找到看过的那一集 —— 等于这个功能白做。
+     * 现在一直留着，靠「取消」或直接点某一集关掉。
+     */
     if (this.resumeTimer >= 0) {
       clearTimeout(this.resumeTimer);
-    }
-    this.resumeTimer = setTimeout(() => {
-      this.showResume = false;
       this.resumeTimer = -1;
-    }, 5000);
+    }
   }
 
   /** 续播提示的百分比字符串（如「67%」）；进度未知时返回空串 */
@@ -838,9 +842,15 @@ struct Detail {
         }
         .width('100%')
         .height('100%')
+        /**
+         * 续播卡片钉在右下角，而不是底部居中。
+         *
+         * 底部居中的浮层会压住选集/简介；既然它现在不再自动消失，
+         * 就得放到不挡内容的位置。右下角在详情页通常是空白区。
+         */
         .justifyContent(FlexAlign.End)
-        .alignItems(HorizontalAlign.Center)
-        .padding({ bottom: 40 })
+        .alignItems(HorizontalAlign.End)
+        .padding({ bottom: 40, right: 40 })
         .animation({ duration: 280, curve: Curve.FastOutSlowIn })
       }
     }
