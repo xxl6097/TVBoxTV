@@ -765,10 +765,19 @@ struct Home {
     router.pushUrl({ url: 'pages/Detail', params: p });
   }
 
-  /** 功能块的 36dp 图标（FongMi 用 VectorDrawable，这里换成同尺寸 SVG） */
+  /** 功能块的 34dp 图标，每个功能一个专属图形（不能再有兜底共用） */
   iconOf(label: string): Resource {
+    if (label === '点播') {
+      return $r('app.media.ic_vod');
+    }
     if (label === '直播') {
       return $r('app.media.ic_live');
+    }
+    if (label === '直连') {
+      return $r('app.media.ic_direct');
+    }
+    if (label === '网盘') {
+      return $r('app.media.ic_webdav');
     }
     if (label === '搜索') {
       return $r('app.media.ic_search');
@@ -782,7 +791,34 @@ struct Home {
     if (label === '设置') {
       return $r('app.media.ic_setting');
     }
-    return $r('app.media.ic_vod');
+    // 新增功能忘记配图标时才落到这里：用搜索图标顶替，比全挤成播放三角好辨认
+    return $r('app.media.ic_search');
+  }
+
+  /** 功能块的图标颜色：每个功能一个色调，便于在深色卡片上快速区分 */
+  iconColorOf(label: string): string {
+    if (label === '点播') {
+      return T.ICON_VOD;
+    }
+    if (label === '直播') {
+      return T.ICON_LIVE;
+    }
+    if (label === '直连') {
+      return T.ICON_DIRECT;
+    }
+    if (label === '网盘') {
+      return T.ICON_DAV;
+    }
+    if (label === '搜索') {
+      return T.ICON_SEARCH;
+    }
+    if (label === '收藏') {
+      return T.ICON_FAV;
+    }
+    if (label === '历史') {
+      return T.ICON_HIST;
+    }
+    return T.ICON_SET;
   }
 
   hi(key: string): boolean {
@@ -831,45 +867,72 @@ struct Home {
           // 7×100 + 6×16 = 796vp，而 744vp 宽的屏幕上可用只有 696vp，
           // 最后一格「设置」会被挤出屏幕外——遥控器够不到，等于功能消失。
           // 改成 1fr × 7 后每格约 89vp，7 个都能完整显示，换屏幕宽度也不再溢出。
-          Grid() {
+          /**
+           * 功能行用 Row + layoutWeight(1) 均分，不用 Grid。
+           *
+           * Grid/GridItem 会把子项裁在自己那一格里 —— 焦点描边的上边正好压在
+           * 格子的上边界，被裁掉了，真机上表现为「只有左右和下面三条边、
+           * 顶边消失」（用户反馈的「不是四个边框」）。Row 不做这种裁剪，
+           * 四边都能完整画出来。
+           *
+           * 均分仍然成立：8 格 × layoutWeight(1) + 7 个 12vp 间隔，
+           * 任何屏宽下都等分且不会溢出（原 Grid 的 1fr 就是为了这个）。
+           */
+          Row({ space: 12 }) {
             ForEach(this.items, (f: Func) => {
-              GridItem() {
-                Column() {
-                  Image(this.iconOf(f.label))
-                    .width(34)
-                    .height(34)
-                    .objectFit(ImageFit.Contain)
-                    // 图标是白色单色 svg，浅色主题下必须染色，否则白图标压在白卡上
-                    .fillColor(T.TXT)
-                  Text(f.label)
-                    .fontSize(17)
-                    .fontColor(T.TXT)
-                    .margin({ top: 4 })
-                    .maxLines(1)
+              Column() {
+                Stack() {
+                  Column() {
+                    Image(this.iconOf(f.label))
+                      .width(34)
+                      .height(34)
+                      .objectFit(ImageFit.Contain)
+                      /**
+                       * 图标按功能染色。SVG 源文件统一是 #FFFFFF，
+                       * fillColor 会覆盖它，所以不用为每个颜色另存一份图标。
+                       */
+                      .fillColor(this.iconColorOf(f.label))
+                    Text(f.label)
+                      .fontSize(17)
+                      .fontColor(T.TXT)
+                      .margin({ top: 4 })
+                      .maxLines(1)
+                  }
+                  .width('100%')
+                  .height('100%')
+                  .justifyContent(FlexAlign.Center)
+
+                  /**
+                   * 焦点描边：用四块实心细条拼出来，**不用 `.border()`**。
+                   *
+                   * 这个 SDK 上 border 的顶边怎么都画不出来（已试过：
+                   * 画在带 scale 的卡片上 → 被 Grid 裁剪只剩左右；
+                   * 画在 Stack 上四边同宽 → 左右和下都有、唯独顶边缺失；
+                   * 用 if 叠一层 Row → Builder 内 if 不随 @State 重算）。
+                   * 真机截图逐行统计白像素确认过：顶边始终是 0。
+                   *
+                   * 四条 Row 用 position 绝对定位，不参与 border 那套绘制逻辑，
+                   * 四条边一定都在。
+                   */
+                  if (this.hi('f_' + f.label)) {
+                    // 上
+                    Row().width('100%').height(3).backgroundColor(T.TXT)
+                      .position({ x: 0, y: 0 })
+                    // 下
+                    Row().width('100%').height(3).backgroundColor(T.TXT)
+                      .position({ x: 0, y: '100%' }).translate({ y: -3 })
+                    // 左
+                    Row().width(3).height('100%').backgroundColor(T.TXT)
+                      .position({ x: 0, y: 0 })
+                    // 右
+                    Row().width(3).height('100%').backgroundColor(T.TXT)
+                      .position({ x: '100%', y: 0 }).translate({ x: -3 })
+                  }
                 }
                 .width('100%')
-                .height(74)
-                .justifyContent(FlexAlign.Center)
-                /**
-                 * 焦点/悬停与「最近访问」用两种不同的视觉，别混成一种：
-                 *  - 焦点：主题色描边 + 提亮背景 + 轻微放大 —— 表示「遥控器现在停在这里」
-                 *  - 最近：右上角一个小圆点 —— 表示「上次是从这里进去的」，静态不动
-                 *
-                 * 原来只有背景变化（#33000000 → #66000000），而这是在深色背景上
-                 * 继续叠黑，高亮反而更暗，8 个按钮在 4K 电视上几乎一模一样。
-                 */
+                .height('100%')
                 .backgroundColor(this.hi('f_' + f.label) ? T.CARD_HI : T.CARD)
                 .borderRadius(T.RADIUS_SM)
-                .border({
-                  // 焦点用「加粗 + 白描边」而不是主题色：这排是并列入口，
-                  // 黄色描边在 8 格上过于跳，白色细边 + 提亮背景已足够指示焦点
-                  width: this.hi('f_' + f.label) ? 3 : T.BORDER,
-                  color: this.hi('f_' + f.label) ? T.TXT : '#00000000'
-                })
-                .scale({
-                  x: this.hi('f_' + f.label) ? T.HOVER_SCALE : 1,
-                  y: this.hi('f_' + f.label) ? T.HOVER_SCALE : 1
-                })
                 .animation({ duration: T.ANIM, curve: Curve.EaseOut })
                 // 遥控器焦点：聚焦高亮与鼠标悬停共用同一套 hi() 状态。
                 // defaultFocus 只落在「点播」这一格（且仅在同意隐私、非引导期），
@@ -888,12 +951,14 @@ struct Home {
                     this.open(f.page);
                 }))
               }
+              // 均分：8 格各占 1 份，格子之间由 Row 的 space:12 隔开
+              .layoutWeight(1)
+              .height(74)
             }, (f: Func) => 'func' + f.label)
           }
-          .columnsTemplate(FUNC_COLS)
-          .columnsGap(12)
           .height(74)
           .width('100%')
+          .alignItems(VerticalAlign.Center)
 
           // ② 继续观看（tvOS 轨道：标题行 + 海报墙）
           if (this.hist.length > 0) {

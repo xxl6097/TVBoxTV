@@ -91,6 +91,18 @@ export class Theme {
       T.LIVE = '#D32F2F';
       // 失效频道的文字：深色下是「白 35%」，浅色下要反过来用浅灰，否则看不见
       T.DEAD = '#BDBDBD';
+      /**
+       * 功能图标色（浅色主题）：深色下那套亮色放在暖白底上会发虚，
+       * 统一压深一档、提饱和，保证白底上的对比度。
+       */
+      T.ICON_VOD = '#C2410C';
+      T.ICON_LIVE = '#B91C1C';
+      T.ICON_DIRECT = '#0E7490';
+      T.ICON_DAV = '#1D4ED8';
+      T.ICON_SEARCH = '#4D7C0F';
+      T.ICON_FAV = '#BE185D';
+      T.ICON_HIST = '#6D28D9';
+      T.ICON_SET = '#475569';
       return;
     }
     // ---- 深色：FongMi leanback 原色板 ----
@@ -121,5 +133,18 @@ export class Theme {
     T.ERR = '#FFB4AB';
     T.LIVE = '#F44336';
     T.DEAD = '#5AFFFFFF';
+    /**
+     * 功能图标色（深色主题）：每个功能一个色调，让 8 个方块的图标一眼能区分。
+     * 都取偏亮的 400/500 档，压在这块深底上才够透；饱和度不用拉太满，
+     * 免得 8 个彩色图标在电视上显得花。
+     */
+    T.ICON_VOD = '#FF9F43';     // 点播 · 橙
+    T.ICON_LIVE = '#FF6B6B';    // 直播 · 红
+    T.ICON_DIRECT = '#4ECDC4';  // 直连 · 青
+    T.ICON_DAV = '#54A0FF';     // 网盘 · 蓝
+    T.ICON_SEARCH = '#A3CB38';  // 搜索 · 绿
+    T.ICON_FAV = '#FD79A8';     // 收藏 · 粉
+    T.ICON_HIST = '#B39DDB';    // 历史 · 紫
+    T.ICON_SET = '#B2BEC3';     // 设置 · 灰
   }
 }

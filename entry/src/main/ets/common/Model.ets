@@ -385,6 +385,15 @@ export class T {
    * 浅色主题下必须反过来（由 Theme 覆盖），所以单独给个字段，别在页面里写死。
    */
   static DEAD: string = '#5AFFFFFF';
+  // 首页功能图标配色（每个功能一个色调，深浅主题各一套，见 Theme.paint）
+  static ICON_VOD: string = '#FF9F43';
+  static ICON_LIVE: string = '#FF6B6B';
+  static ICON_DIRECT: string = '#4ECDC4';
+  static ICON_DAV: string = '#54A0FF';
+  static ICON_SEARCH: string = '#A3CB38';
+  static ICON_FAV: string = '#FD79A8';
+  static ICON_HIST: string = '#B39DDB';
+  static ICON_SET: string = '#B2BEC3';
   static WARN: string = '#FFB4AB';
   static ERR: string = '#FFB4AB';
   /** 直播标记点。取 FongMi values/colors.xml 的 red_500 */
