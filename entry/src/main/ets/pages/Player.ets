@@ -2620,8 +2620,17 @@ struct Player {
       .borderRadius(T.RADIUS_SM)
       .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
       .textAlign(TextAlign.Center)
-      // 文字绝不截断成省略号：宁可缩小字号也要完整显示
-      .maxLines(1)
+      /**
+       * 文字要完整显示，不能被压成省略号。
+       *
+       * 原来写的是 maxLines(1) + Ellipsis —— 和上面那句注释正好相反：
+       * 手机竖屏格子窄的时候，「播放设置」会被截成「播放设…」。
+       * 现在按屏幕宽度定字号，并允许折成两行：
+       * 竖屏 13sp（每格约 66~76vp，四个字横排放得下），
+       * 横屏 14sp。真到极端窄窗口也会折行而不是省略号。
+       */
+      .fontSize(this.landscape ? 14 : 13)
+      .maxLines(2)
       .textOverflow({ overflow: TextOverflow.Ellipsis })
       /**
        * 只在 Row 里均分（weight=true）。放 Grid 的 GridItem 里必须关掉：
@@ -4369,8 +4378,48 @@ struct Player {
              * 之前是一个 Flex(wrap) 左对齐：竖屏会随机在中间某个按钮处
              * 换行、第二排只占半行，右边一大块空白 —— 看着就是「没排布」。
              */
-            if (this.isLive) {
-              // 直播只有 7 个，横竖屏都能一行放下
+            if (this.isLive && !this.landscape) {
+              /**
+               * 直播 + 竖屏：同样用 Grid 分两排（4 + 3）。
+               *
+               * 这里原本判断「直播只有 7 个，横竖屏都能一行放下」——
+               * 是按横屏宽度估的。手机竖屏只有 ~330vp，7 个按钮减去
+               * 6 个 8vp 间距后每个约 40vp，扣掉左右各 6 的 padding
+               * 只剩 28vp，「换台」「播放设置」四个字压根放不下，
+               * 全被压成省略号。7 个按钮两排是 4 + 3，每格 76vp。
+               */
+              Grid() {
+                GridItem() {
+                  this.CtlBtn(0, false)
+                }
+                GridItem() {
+                  this.CtlBtn(2, false)
+                }
+                GridItem() {
+                  this.CtlBtn(4, false)
+                }
+                GridItem() {
+                  this.CtlBtn(5, false)
+                }
+                GridItem() {
+                  this.CtlBtn(6, false)
+                }
+                GridItem() {
+                  this.CtlBtn(7, false)
+                }
+                GridItem() {
+                  this.CtlBtn(8, false)
+                }
+              }
+              .columnsTemplate('1fr 1fr 1fr 1fr')
+              .columnsGap(8)
+              .rowsGap(8)
+              .width('100%')
+              // 与点播竖屏一致：不写高度 Grid 会被拉满，两排变两行巨高的格子
+              .height(128)
+              .margin({ top: 12 })
+            } else if (this.isLive) {
+              // 直播 + 横屏（或电视）：7 个一排放得下
               Row({ space: 8 }) {
                 this.CtlBtn(0)
                 this.CtlBtn(2)
@@ -4443,7 +4492,8 @@ struct Player {
               /**
                * 高度必须收死。Grid 不写高度时会按可用空间伸展，
                * 两排按钮会被拉成两行巨高的格子，整个控制面板跟着变高。
-               * 每格 40vp 文字 + 上下 10 padding ≈ 60，两排 + 8 间距 = 128。
+               * 13sp 文字行高约 18 + 上下 padding 各 10 = 38，允许两行则 56；
+               * 两排 + 8 间距 = 120。留一点余量给字体缩放。
                */
               .height(128)
               .margin({ top: 12 })
