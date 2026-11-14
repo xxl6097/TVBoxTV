@@ -153,6 +153,222 @@ struct Detail {
   }
 
   /**
+   * 剧集排序切换按钮（正序 / 倒序）。
+   * 抽成 Builder 是因为手机两行布局和电视一行布局都要用同一颗，
+   * 复制两份的话改样式容易漏。
+   */
+  @Builder
+  EpOrderBtn() {
+    Text(this.epDesc ? '倒序' : '正序')
+      .fontSize(15).fontColor(this.hi('ord') ? T.SELECTED : T.SUB)
+      .backgroundColor(this.hi('ord') ? T.CARD_HI : T.CARD)
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .borderRadius(T.RADIUS_SM)
+      .border({ width: T.BORDER, color: this.hi('ord') ? T.TXT : '#00000000' })
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .focusable(true)
+      .flexShrink(0)
+      .onFocus(() => this.hoverTo('ord', true))
+      .onBlur(() => this.hoverTo('ord', false))
+      .onHover((hv: boolean) => this.hoverTo('ord', hv))
+      .onClick(() => Pointer.fire('d_epdesc', () => {
+        Feedback.tap();
+        this.epDesc = !this.epDesc;
+        this.syncEps();
+      }))
+      .onMouse(Pointer.on('d_epdesc', () => {
+        Feedback.tap();
+        this.epDesc = !this.epDesc;
+        this.syncEps();
+      }))
+  }
+
+  /** 手机端剧集标题的第二行：上次看到第几集 / 可滚动提示，用 · 连起来 */
+  private epHeaderSub(): string {
+    const parts: string[] = [];
+    if (this.seen >= 0) {
+      parts.push('上次看到第 ' + (this.seen + 1) + ' 集');
+    }
+    if (this.epsScrollable()) {
+      parts.push('可上下滚动查看更多');
+    }
+    return parts.join('  ·  ');
+  }
+
+
+  /**
+   * 海报 + 站点名。手机竖排时单独占一行，电视与元信息左右并排。
+   * 手机把尺寸收到 108×152：竖屏一行放得下，也不会把下方的信息推得太远。
+   */
+  @Builder
+  PosterBlock() {
+  Column() {
+    Poster({ url: this.vod.pic, w: this.isPhone ? 108 : 200, h: this.isPhone ? 152 : 282, radius: 12 })
+    Text(this.vod.siteName).fontSize(13).fontColor(T.DIM).margin({ top: 10 })
+  }
+  .width(this.isPhone ? 128 : 232)
+  .alignItems(HorizontalAlign.Start)
+  }
+
+  /**
+   * 元信息 + 简介 + 续播 + 线路。
+   * 手机竖排时 margin-left 归零、顶部留 16 —— 贴在上一块海报下面，
+   * 不再像原来那样被挤在屏幕右半边只有 684px 宽。
+   */
+  @Builder
+  MetaBlock() {
+  // 右：元信息 + 简介 + 线路
+  Column() {
+    Text(this.metaLine()).fontSize(16).fontColor(T.SUB)
+      .width('100%').maxLines(this.isPhone ? 4 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
+    // 演员可点击标签（点击搜索该演员）
+    if (this.vod.actor.length > 0) {
+      Row() {
+        Text('主演').fontSize(14).fontColor(T.DIM).margin({ right: 8 })
+          .flexShrink(0)
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.actors(), (a: string) => {
+            Text(a)
+              .fontSize(14)
+              .fontColor(this.hi('act_' + a) ? T.SELECTED : T.ACCENT)
+              .backgroundColor(this.hi('act_' + a) ? T.CARD_HI : T.CARD)
+              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+              .borderRadius(T.RADIUS_SM)
+              .margin({ right: 8, bottom: 6 })
+              .onHover((hv: boolean) => this.hoverTo('act_' + a, hv))
+              .onClick(() => Pointer.fire('act_' + a, () => {
+                Feedback.tap();
+                this.searchActor(a);
+              }))
+              .onMouse(Pointer.on('act_' + a, () => {
+                Feedback.tap();
+                this.searchActor(a);
+              }))
+          }, (a: string) => a)
+        }
+        .layoutWeight(1)
+      }
+      .width('100%').margin({ top: 6 }).alignItems(VerticalAlign.Top)
+    }
+    Text(this.vod.content.length > 0 ? this.vod.content : '暂无简介')
+      .fontSize(16).fontColor(T.SUB).lineHeight(25)
+      .width('100%')
+      // 展开后不再靠 maxLines 截断，交给外层 Scroll 滚动
+      .maxLines(this.fullIntro ? 200 : (this.isPhone ? 5 : 3))
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .margin({ top: 10 })
+    if (this.vod.content.length > 60) {
+      Text(this.fullIntro ? '收起' : '展开全部')
+        .fontSize(15).fontColor(this.hi('intro') ? T.TXT : T.ACCENT)
+        .padding({ top: 4, bottom: 4 })
+        .focusable(true)
+        .onFocus(() => this.hoverTo('intro', true))
+        .onBlur(() => this.hoverTo('intro', false))
+        .onHover((hv: boolean) => this.hoverTo('intro', hv))
+        .onClick(() => Pointer.fire('d_intro', () => {
+            Feedback.tap();
+            this.fullIntro = !this.fullIntro;
+            Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
+        }))
+        .onMouse(Pointer.on('d_intro', () => {
+            Feedback.tap();
+            this.fullIntro = !this.fullIntro;
+            Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
+        }))
+    }
+
+    if (this.err.length > 0) {
+      Text(this.err).fontSize(17).fontColor(T.WARN).margin({ top: 14 })
+    }
+
+    /**
+     * 续播行：一颗「继续播放」按钮 + 上次看到的位置。
+     *
+     * 放在简介下面、线路上面 —— 这是进入详情页后视线自然落到的位置，
+     * 比原来那个左下角的浮层显眼得多（浮层还常被简介/选集挤到看不见）。
+     *
+     * 手机上按钮和信息分两行：竖屏宽度只有 360vp 左右，
+     * 「继续播放」+「第 6 集 · 23:45 / 25:10 · 94%」并排会挤成一团。
+     * 电视横屏空间够，按钮和信息左右并排更紧凑。
+     */
+    if (this.canResume()) {
+      if (this.isPhone) {
+        Column() {
+          this.ResumeBtn()
+          Text(this.resumeSummary())
+            .fontSize(13).fontColor(T.DIM)
+            .width('100%')
+            .margin({ top: 8 })
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .margin({ top: 16 })
+      } else {
+        Row() {
+          this.ResumeBtn()
+          Text(this.resumeSummary())
+            .fontSize(14).fontColor(T.DIM)
+            .layoutWeight(1)
+            .margin({ left: 14 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        .margin({ top: 16 })
+      }
+    }
+
+    // 线路
+    if (this.lines.length > 1) {
+      Row() {
+        Text('线路').fontSize(16).fontColor(T.DIM).margin({ right: 12 })
+        List({ space: 10 }) {
+          ForEach(this.lines, (l: Line, i: number) => {
+            ListItem() {
+              Text(l.name + (l.direct ? '' : ' ·需解析'))
+                .fontSize(16)
+                // adapter_flag.xml：selector_item + color/text
+                .fontColor(this.lineIdx === i ? T.SELECTED : (l.direct ? T.TXT : T.WARN))
+                .backgroundColor(this.lineIdx === i || this.hi('ln' + i) ? T.CARD_HI : T.CARD)
+                .height(40).padding({ left: 12, right: 12 }).borderRadius(T.RADIUS_SM)
+                .border({
+                  width: T.BORDER,
+                  color: this.hi('ln' + i) ? T.TXT : '#00000000'
+                })
+                .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+                .onHover((hv: boolean) => this.hoverTo('ln' + i, hv))
+                .focusable(true)
+                .onFocus(() => this.hoverTo('ln' + i, true))
+                .onBlur(() => this.hoverTo('ln' + i, false))
+                .onClick(() => Pointer.fire('d_line' + i, () => {
+                    Feedback.tap();
+                    this.lineIdx = i;
+                    this.syncEps();
+                    Store.setLinePref(this.siteKey, this.vodId, i).catch(() => {});
+                    Tip.show('已切到线路：' + l.name);
+                }))
+                .onMouse(Pointer.on('d_line' + i, () => {
+                    Feedback.tap();
+                    this.lineIdx = i;
+                    this.syncEps();
+                    Store.setLinePref(this.siteKey, this.vodId, i).catch(() => {});
+                    Tip.show('已切到线路：' + l.name);
+                }))
+            }
+          }, (l: Line, i: number) => 'l' + i + l.name)
+        }
+        .listDirection(Axis.Horizontal)
+        .height(48).layoutWeight(1).scrollBar(BarState.Off)
+      }
+      .width('100%').margin({ top: 14 })
+    }
+  }
+  }
+
+  /**
    * 「继续播放」按钮。
    *
    * 实心白底 + 深色字，是详情页里唯一的强按钮 —— 用户进详情页八成就是想接着看，
@@ -522,201 +738,85 @@ struct Detail {
            */
           Scroll() {
             Column() {
-              Row() {
-                // 左：海报。屏幕只有 366vp 高，海报不能按 240×340 摆，否则一屏装不下
-                Column() {
-                  Poster({ url: this.vod.pic, w: this.isPhone ? 120 : 200, h: this.isPhone ? 169 : 282, radius: 12 })
-                  Text(this.vod.siteName).fontSize(13).fontColor(T.DIM).margin({ top: 10 })
+              /**
+               * 手机竖屏改成上下排（海报一行、信息一行），电视保持左右排。
+               *
+               * 原来是固定左右两列：手机竖屏只有 1320px 宽，海报列占 420、
+               * 右列只剩 684 —— 元信息、简介、续播按钮、线路全挤在这半屏里，
+               * 「正序」按钮被挤到屏幕边缘裁掉，简介也只能显示一两个字就换行。
+               * 竖排后每块都能用满整宽，阅读顺序也更符合手机习惯。
+               */
+              if (this.isPhone) {
+                Row() {
+                  // 手机：海报 + 站点名横排在左，右边留白（海报不做大，省纵向空间）
+                  this.PosterBlock()
                 }
-                .width(this.isPhone ? 140 : 232)
-                .alignItems(HorizontalAlign.Start)
+                .width('100%')
+                .alignItems(VerticalAlign.Top)
 
-                // 右：元信息 + 简介 + 线路
-                Column() {
-                  Text(this.metaLine()).fontSize(16).fontColor(T.SUB)
-                    .width('100%').maxLines(this.isPhone ? 4 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  // 演员可点击标签（点击搜索该演员）
-                  if (this.vod.actor.length > 0) {
-                    Row() {
-                      Text('主演').fontSize(14).fontColor(T.DIM).margin({ right: 8 })
-                        .flexShrink(0)
-                      Flex({ wrap: FlexWrap.Wrap }) {
-                        ForEach(this.actors(), (a: string) => {
-                          Text(a)
-                            .fontSize(14)
-                            .fontColor(this.hi('act_' + a) ? T.SELECTED : T.ACCENT)
-                            .backgroundColor(this.hi('act_' + a) ? T.CARD_HI : T.CARD)
-                            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-                            .borderRadius(T.RADIUS_SM)
-                            .margin({ right: 8, bottom: 6 })
-                            .onHover((hv: boolean) => this.hoverTo('act_' + a, hv))
-                            .onClick(() => Pointer.fire('act_' + a, () => {
-                              Feedback.tap();
-                              this.searchActor(a);
-                            }))
-                            .onMouse(Pointer.on('act_' + a, () => {
-                              Feedback.tap();
-                              this.searchActor(a);
-                            }))
-                        }, (a: string) => a)
-                      }
-                      .layoutWeight(1)
-                    }
-                    .width('100%').margin({ top: 6 }).alignItems(VerticalAlign.Top)
-                  }
-                  Text(this.vod.content.length > 0 ? this.vod.content : '暂无简介')
-                    .fontSize(16).fontColor(T.SUB).lineHeight(25)
-                    .width('100%')
-                    // 展开后不再靠 maxLines 截断，交给外层 Scroll 滚动
-                    .maxLines(this.fullIntro ? 200 : 3)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .margin({ top: 10 })
-                  if (this.vod.content.length > 60) {
-                    Text(this.fullIntro ? '收起' : '展开全部')
-                      .fontSize(15).fontColor(this.hi('intro') ? T.TXT : T.ACCENT)
-                      .padding({ top: 4, bottom: 4 })
-                      .focusable(true)
-                      .onFocus(() => this.hoverTo('intro', true))
-                      .onBlur(() => this.hoverTo('intro', false))
-                      .onHover((hv: boolean) => this.hoverTo('intro', hv))
-                      .onClick(() => Pointer.fire('d_intro', () => {
-                          Feedback.tap();
-                          this.fullIntro = !this.fullIntro;
-                          Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
-                      }))
-                      .onMouse(Pointer.on('d_intro', () => {
-                          Feedback.tap();
-                          this.fullIntro = !this.fullIntro;
-                          Tip.show(this.fullIntro ? '简介已展开，可上下滚动查看' : '简介已收起');
-                      }))
-                  }
-
-                  if (this.err.length > 0) {
-                    Text(this.err).fontSize(17).fontColor(T.WARN).margin({ top: 14 })
-                  }
-
-                  /**
-                   * 续播行：一颗「继续播放」按钮 + 上次看到的位置。
-                   *
-                   * 放在简介下面、线路上面 —— 这是进入详情页后视线自然落到的位置，
-                   * 比原来那个左下角的浮层显眼得多（浮层还常被简介/选集挤到看不见）。
-                   *
-                   * 手机上按钮和信息分两行：竖屏宽度只有 360vp 左右，
-                   * 「继续播放」+「第 6 集 · 23:45 / 25:10 · 94%」并排会挤成一团。
-                   * 电视横屏空间够，按钮和信息左右并排更紧凑。
-                   */
-                  if (this.canResume()) {
-                    if (this.isPhone) {
-                      Column() {
-                        this.ResumeBtn()
-                        Text(this.resumeSummary())
-                          .fontSize(13).fontColor(T.DIM)
-                          .width('100%')
-                          .margin({ top: 8 })
-                          .maxLines(2)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      }
-                      .width('100%')
-                      .alignItems(HorizontalAlign.Start)
-                      .margin({ top: 16 })
-                    } else {
-                      Row() {
-                        this.ResumeBtn()
-                        Text(this.resumeSummary())
-                          .fontSize(14).fontColor(T.DIM)
-                          .layoutWeight(1)
-                          .margin({ left: 14 })
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      }
-                      .width('100%')
-                      .alignItems(VerticalAlign.Center)
-                      .margin({ top: 16 })
-                    }
-                  }
-
-                  // 线路
-                  if (this.lines.length > 1) {
-                    Row() {
-                      Text('线路').fontSize(16).fontColor(T.DIM).margin({ right: 12 })
-                      List({ space: 10 }) {
-                        ForEach(this.lines, (l: Line, i: number) => {
-                          ListItem() {
-                            Text(l.name + (l.direct ? '' : ' ·需解析'))
-                              .fontSize(16)
-                              // adapter_flag.xml：selector_item + color/text
-                              .fontColor(this.lineIdx === i ? T.SELECTED : (l.direct ? T.TXT : T.WARN))
-                              .backgroundColor(this.lineIdx === i || this.hi('ln' + i) ? T.CARD_HI : T.CARD)
-                              .height(40).padding({ left: 12, right: 12 }).borderRadius(T.RADIUS_SM)
-                              .border({
-                                width: T.BORDER,
-                                color: this.hi('ln' + i) ? T.TXT : '#00000000'
-                              })
-                              .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-                              .onHover((hv: boolean) => this.hoverTo('ln' + i, hv))
-                              .focusable(true)
-                              .onFocus(() => this.hoverTo('ln' + i, true))
-                              .onBlur(() => this.hoverTo('ln' + i, false))
-                              .onClick(() => Pointer.fire('d_line' + i, () => {
-                                  Feedback.tap();
-                                  this.lineIdx = i;
-                                  this.syncEps();
-                                  Store.setLinePref(this.siteKey, this.vodId, i).catch(() => {});
-                                  Tip.show('已切到线路：' + l.name);
-                              }))
-                              .onMouse(Pointer.on('d_line' + i, () => {
-                                  Feedback.tap();
-                                  this.lineIdx = i;
-                                  this.syncEps();
-                                  Store.setLinePref(this.siteKey, this.vodId, i).catch(() => {});
-                                  Tip.show('已切到线路：' + l.name);
-                              }))
-                          }
-                        }, (l: Line, i: number) => 'l' + i + l.name)
-                      }
-                      .listDirection(Axis.Horizontal)
-                      .height(48).layoutWeight(1).scrollBar(BarState.Off)
-                    }
-                    .width('100%').margin({ top: 14 })
-                  }
+                this.MetaBlock()
+              } else {
+                Row() {
+                  this.PosterBlock()
+                  this.MetaBlock()
                 }
-                .layoutWeight(1)
-                .alignItems(HorizontalAlign.Start)
-                .margin({ left: 24 })
+                .width('100%')
+                .alignItems(VerticalAlign.Top)
               }
-              .width('100%')
-              .alignItems(VerticalAlign.Top)
 
               // 剧集：整宽 8 列，纵向空间比塞在右半边时省一半
               if (this.lines.length > 0) {
-                Row() {
-                  Text('剧集').fontSize(18).fontColor(T.TXT)
-                  Text('共 ' + this.lines[this.lineIdx].eps.length + ' 集')
-                    .fontSize(15).fontColor(T.DIM).margin({ left: 12 })
-                  if (this.epsScrollable()) {
-                    Text('· 可上下滚动查看更多')
-                      .fontSize(14).fontColor(T.DIM).margin({ left: 8 })
+                /**
+                 * 剧集标题行。
+                 *
+                 * 原来一行塞了 5 段：剧集 / 共 N 集 / ·可上下滚动查看更多 /
+                 * 上次看到第 N 集 / [Blank] / 正序 按钮。手机竖屏只有约 360vp 宽，
+                 * 前四段就把宽度吃光了，最后那个「正序」按钮被 Blank 顶到
+                 * x=1320 正好卡在屏幕右边缘、被裁掉半个。
+                 *
+                 * 现在手机上分两行：
+                 *   第一行：剧集 · 共 N 集   ……… [正序]   ← 按钮固定靠右，不会被挤走
+                 *   第二行：上次看到第 N 集 · 可上下滚动查看更多（次要信息，字号更小）
+                 * 电视横屏空间够，保持原来的一行。
+                 */
+                if (this.isPhone) {
+                  Row() {
+                    Text('剧集').fontSize(18).fontColor(T.TXT)
+                    Text('共 ' + this.lines[this.lineIdx].eps.length + ' 集')
+                      .fontSize(15).fontColor(T.DIM).margin({ left: 12 })
+                    Blank()
+                    this.EpOrderBtn()
                   }
-                  if (this.seen >= 0) {
-                    Text('上次看到第 ' + (this.seen + 1) + ' 集')
-                      .fontSize(15).fontColor(T.ACCENT).margin({ left: 12 })
+                  .width('100%')
+                  .alignItems(VerticalAlign.Center)
+                  .margin({ top: 20, bottom: 4 })
+
+                  if (this.seen >= 0 || this.epsScrollable()) {
+                    Text(this.epHeaderSub())
+                      .fontSize(13).fontColor(T.DIM)
+                      .width('100%')
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      .margin({ bottom: 8 })
                   }
-                  Blank()
-                  Text(this.epDesc ? '倒序' : '正序')
-                    .fontSize(15).fontColor(this.hi('ord') ? T.SELECTED : T.SUB)
-                    .backgroundColor(this.hi('ord') ? T.CARD_HI : T.CARD)
-                    .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-                    .borderRadius(T.RADIUS_SM)
-                    .border({ width: T.BORDER, color: this.hi('ord') ? T.TXT : '#00000000' })
-                    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-                    .focusable(true)
-                    .onFocus(() => this.hoverTo('ord', true))
-                    .onBlur(() => this.hoverTo('ord', false))
-                    .onHover((hv: boolean) => this.hoverTo('ord', hv))
-                    .onClick(() => Pointer.fire('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; this.syncEps(); }))
-                    .onMouse(Pointer.on('d_epdesc', () => { Feedback.tap(); this.epDesc = !this.epDesc; this.syncEps(); }))
+                } else {
+                  Row() {
+                    Text('剧集').fontSize(18).fontColor(T.TXT)
+                    Text('共 ' + this.lines[this.lineIdx].eps.length + ' 集')
+                      .fontSize(15).fontColor(T.DIM).margin({ left: 12 })
+                    if (this.epsScrollable()) {
+                      Text('· 可上下滚动查看更多')
+                        .fontSize(14).fontColor(T.DIM).margin({ left: 8 })
+                    }
+                    if (this.seen >= 0) {
+                      Text('上次看到第 ' + (this.seen + 1) + ' 集')
+                        .fontSize(15).fontColor(T.ACCENT).margin({ left: 12 })
+                    }
+                    Blank()
+                    this.EpOrderBtn()
+                  }
+                  .width('100%').margin({ top: 20, bottom: 10 })
                 }
-                .width('100%').margin({ top: 20, bottom: 10 })
 
                 Grid(this.epScroller) {
                   LazyForEach(this.epSrc, (ep: Episode) => {
