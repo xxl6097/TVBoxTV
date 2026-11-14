@@ -460,6 +460,25 @@ struct Player {
       const sp: SkipPref = await Store.skipPref(kh[0], kh[1]);
       this.introSkipSec = sp.intro;
       this.outroSkipSec = sp.outro;
+      /**
+       * 兼容旧数据：很久以前「标当前」误写到全局 introSkip/outroSkip，
+       * 按影片的记录里没有这两个值。若本片完全没有记录（intro 与 outro 都是 0），
+       * 就把全局值搬进本片一次，免得用户之前标的点白标了。
+       *
+       * 只在「本片零记录」时搬，搬完立刻落盘成按影片的记录 —— 不会把
+       * A 片的时间套到 B 片上（那正是按片存储要解决的问题）。
+       */
+      if (sp.intro === 0 && sp.outro === 0) {
+        const gIn: number = await Store.introSkipSec();
+        const gOut: number = await Store.outroSkipSec();
+        if (gIn > 0 || gOut > 0) {
+          this.introSkipSec = gIn;
+          this.outroSkipSec = gOut;
+          await Store.setSkipPref(kh[0], kh[1], gIn, gOut, this.speed, this.subOffsetMs);
+          hilog.info(0x1000, 'BOXN', 'migrated global skip -> %{public}s|%{public}s in=%{public}d out=%{public}d',
+            kh[0], kh[1], gIn, gOut);
+        }
+      }
       // 倍速也按影片存（用户确认按片保存，与片头跳过一致）：
       // 给某部剧设了 1.5x 不该让纪录片也跟着 1.5x
       this.speed = sp.speed > 0 ? sp.speed : 1;
@@ -3054,22 +3073,42 @@ struct Player {
     return p < 0 ? 0 : (p > 1 ? 1 : p);
   }
 
-  /** 标记当前位置：片头 = 当前播放位置（秒）；片尾 = 距结尾距离（秒） */
+  /**
+   * 标记当前位置：片头 = 当前播放位置（秒）；片尾 = 距结尾距离（秒）。
+   *
+   * ⚠️ 必须写**按影片**的那条记录（Store.setSkipPref），不能写全局键。
+   *
+   * 原来这里调的是 Store.setIntroSkipSec / setOutroSkipSec，那两个写的是
+   * 全局的 introSkip / outroSkip；而读取时走的是 Store.skipPref(siteKey, vodId)
+   * 只认按影片的记录 —— 于是「标当前」设了 3 分 53 秒，进播放页读到的还是
+   * 上次那个 60 秒，表现就是「怎么设都一直是一分钟」。
+   *
+   * 数字档位和自定义秒数走的是 applySkipEdit（写 skipPref），所以那两条路
+   * 一直正常，只有「标当前」失效 —— 这条线索也印证了上面的判断。
+   */
   private async markSkip(kind: string): Promise<void> {
     if (kind === 'intro') {
       const posSec: number = Math.max(0, Math.round(this.posMs / 1000));
+      if (posSec <= 0) {
+        this.showTip('当前位置是片头起点，无法标记');
+        return;
+      }
       this.introSkipSec = posSec;
-      await Store.setIntroSkipSec(posSec);
-      this.showTip(posSec > 0
-        ? ('已标记片头结束点 ' + this.fmtSec(posSec) + '，下次起播跳到这里')
-        : '当前位置是片头起点，无法标记');
+      const k: string[] = this.skipKey();
+      await Store.setSkipPref(k[0], k[1], this.introSkipSec, this.outroSkipSec,
+        this.speed, this.subOffsetMs);
+      this.showTip('已标记片头结束点 ' + this.fmtSec(posSec) + '（仅本片），下次起播跳到这里');
     } else {
       const leftSec: number = Math.max(0, Math.round((this.durMs - this.posMs) / 1000));
+      if (leftSec <= 0) {
+        this.showTip('已到片尾，无法标记');
+        return;
+      }
       this.outroSkipSec = leftSec;
-      await Store.setOutroSkipSec(leftSec);
-      this.showTip(leftSec > 0
-        ? ('已标记片尾起点（距结尾 ' + this.fmtSec(leftSec) + '），播到这里自动切')
-        : '已到片尾，无法标记');
+      const k: string[] = this.skipKey();
+      await Store.setSkipPref(k[0], k[1], this.introSkipSec, this.outroSkipSec,
+        this.speed, this.subOffsetMs);
+      this.showTip('已标记片尾起点（距结尾 ' + this.fmtSec(leftSec) + '，仅本片），播到这里自动切');
     }
   }
 
