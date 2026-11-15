@@ -280,6 +280,43 @@ struct Player {
   private seekCommitTimer: number = -1;
   /** 自上次提交以来累计了几次 seekBy（长按强制落地的计数器） */
   private seekBurst: number = 0;
+
+  // ==================== 底部常驻进度条 ====================
+  /**
+   * 控制条收起之后，画面上还需要一个「看到哪了」的常驻指示。
+   *
+   * 原来的进度条只长在控制面板里，面板一收就什么都没有 —— 追剧时想瞄一眼
+   * 「这集还剩多久」必须先点一下画面把面板唤出来，多一次交互。
+   *
+   * 这里在屏幕最下沿加一条细线，**播放中一直在**（这是它的意义所在），
+   * 只有在面板展开（面板自带完整进度条）或锁定时让位。
+   */
+  @State barMs: number = 0;
+  @State barDur: number = 0;
+  /** 底部进度条是否可见（面板收起、非直播、非锁定时为真） */
+  @State barVis: boolean = false;
+  /** 底部进度条区域宽度（vp） */
+  private bar2W: number = 0;
+  /** 画面容器实测高度（vp）。用于把底部进度条贴到画面真正的下缘 */
+  @State surfH: number = 0;
+  /** 画面容器在屏幕上的起始 y（vp） */
+  @State surfY: number = 0;
+  /**
+   * 视频原始宽高（像素）。
+   *
+   * 底部进度条要「贴着视频画面底边」，而不是贴着屏幕最下沿 ——
+   * 竖屏放 16:9 影片时上下各有一大块黑边，贴屏底的线离画面差着几百像素，
+   * 看着像「浮在屏幕上的装饰」，不像进度。有了原始宽高才能算出画面真实占位。
+   */
+  private vSrcW: number = 0;
+  private vSrcH: number = 0;
+  /** 底部进度条拖动中的比例，-1 表示没在拖 */
+  @State bar2Drag: number = -1;
+  /** 底部区域「点一下变可操作」的到期时间戳 */
+  private bar2Until: number = 0;
+  private bar2Timer: number = -1;
+  /** 常驻进度条的刷新节流（timeUpdate 每秒一次，够用但避免拖动中被覆盖） */
+  private bar2SyncAt: number = 0;
   /**
    * seek 后短暂抑制 timeUpdate 把进度条往回拉。
    * HLS 一次 seek 要重新拉分片，播放器在真正跳过去之前会先回报一个比目标旧的位置，
@@ -1413,6 +1450,10 @@ struct Player {
       clearTimeout(this.seekCommitTimer);
       this.seekCommitTimer = -1;
     }
+    if (this.bar2Timer >= 0) {
+      clearTimeout(this.bar2Timer);
+      this.bar2Timer = -1;
+    }
     // 停掉「跳过片头片尾」倒计时，防止页面销毁后定时器还在跑
     this.stopSkipTimer();
     this.skipShow = '';
@@ -1544,6 +1585,19 @@ struct Player {
           this.prepared = true;
           // 直播流没有总时长（duration 为 -1），置 0 让 UI 走「直播」分支
           this.durMs = this.isLive ? 0 : p.duration;
+          // 底部常驻进度条同步总长（timeUpdate 每秒才来一次，起播瞬间先用这个值把比例画对）
+          this.barDur = this.durMs;
+          // 记下视频原始宽高：底部进度条靠它算「画面底边在屏幕上的位置」。
+          // 取不到就退回均铺（进度条贴屏底），不影响播放。
+          try {
+            this.vSrcW = p.width > 0 ? p.width : 0;
+            this.vSrcH = p.height > 0 ? p.height : 0;
+            hilog.info(0x1000, 'BOXN', 'video size %{public}dx%{public}d scale=%{public}d',
+              this.vSrcW, this.vSrcH, this.scaleMode);
+          } catch (e) {
+            this.vSrcW = 0;
+            this.vSrcH = 0;
+          }
           // 成功 prepared 说明这一次播放正常，重置失败计数
           this.vodFail = 0;
           this.liveFail = 0;
@@ -1723,6 +1777,21 @@ struct Player {
        */
       p.on('timeUpdate', (t: number) => {
         this.posMs = t;
+        // 常驻底部进度条走独立的两个 @State：主进度条只在面板展开时刷新，
+        // 面板收起后 curMs 就不再更新了，不能复用它。
+        //
+        // barVis 也在这里置位而不是 syncFlags()：
+        // syncFlags 在 applyEv 里调，那一刻 durMs 还没从 prepared 里读出来（还是 0），
+        // 「时长已知」的判断永远不成立，线就永远不显示。timeUpdate 是「真的在播」的铁证。
+        if (this.isLive === false && this.durMs > 0) {
+          if (!this.barVis) {
+            this.barVis = true;
+          }
+        }
+        if (this.bar2Drag < 0) {
+          this.barMs = t;
+          this.barDur = this.durMs;
+        }
         // 自己接管字幕显示：按偏移量在本地缓存里挑当前该显示的那条
         this.tickSubtitle(t);
         // 片尾跳过：播到片尾起点，浮现 Apple TV 式「下一集/跳过片尾」按钮，点一下或倒计时结束即跳
@@ -1946,7 +2015,7 @@ struct Player {
     }
   }
 
-  private onSurfaceTap(): void {
+  private onSurfaceTap(tapY: number = -1): void {
     /**
      * 控制条上的按钮刚被点过 → 这次 onClick 是冒泡上来的，不是「点画面」，直接丢掉。
      *
@@ -2009,6 +2078,28 @@ struct Player {
       }
       this.togglePlay();
       return;
+    }
+    /**
+     * 点在底部进度带（画面下沿 28vp~36vp 那条）上：不弹面板，而是把进度条
+     * 切到「可拖动」状态。
+     *
+     * 为什么要分第一次和第二次：
+     *  - 第一次点：只是把线加粗、让手势能命中它（attainable）；
+     *  - 若这一下就当成定位，用户只是想看看，画面却跳了一大段，很惊吓；
+     *  - 但也不能只激活不定位 —— 再点一下（bar2Armed 为真）时就按位置跳。
+     *
+     * 这条分支必须放在 onCenter() 之前：否则点底部会先弹面板，
+     * 面板一弹就把进度条盖住了，用户根本点不到那条线。
+     */
+    if (!this.showOsd && this.bar2Show() && tapY > 0) {
+      const bandTop: number = this.videoBottom() - 36;
+      if (tapY >= bandTop) {
+        // 已激活时不再重复处理：热区自己的 onClick 已经按 x 比例跳好了
+        if (!this.bar2Armed()) {
+          this.armBar2();
+        }
+        return;
+      }
     }
     // 单击：切换菜单（遥控器「确定」也走这里）
     this.onCenter();
@@ -2417,6 +2508,11 @@ struct Player {
     this.curMs = 0;
     this.posMs = 0;
     this.durMs = 0;
+    // 换集时把常驻进度条归零，否则新集会先闪一下上一集的进度
+    this.barMs = 0;
+    this.barDur = 0;
+    this.bar2Drag = -1;
+    this.barVis = false;
     this.seekPreview = -1;
     this.errMsg = '';
     this.stallN = 0;
@@ -2489,6 +2585,10 @@ struct Player {
     this.curMs = 0;
     this.posMs = 0;
     this.durMs = 0;
+    this.barMs = 0;
+    this.barDur = 0;
+    this.bar2Drag = -1;
+    this.barVis = false;
     this.errMsg = '';
     this.seekPreview = -1;
     this.stallN = 0;
@@ -2757,6 +2857,148 @@ struct Player {
       }
       this.osdTimer = -1;
     }, 12000);
+  }
+
+  // ==================== 底部常驻进度条 ====================
+
+  /**
+   * 常驻进度条此刻要不要画。
+   *
+   * 播放中**始终**显示 —— 这就是「全屏状态下随时能看到播了多少」的答案。
+   * 让位的情况只有三种：
+   *  - 面板展开：面板里有完整可拖的进度条，同一屏两条线重复；
+   *  - 锁定：锁定的语义是「画面干净」，任何叠加物都不画；
+   *  - 直播 / 时长未知 / 还在解析：没有比例可画。
+   */
+  bar2Show(): boolean {
+    if (this.isLive || this.durMs <= 0 || this.resolving) {
+      return false;
+    }
+    if (this.locked || this.showOsd) {
+      return false;
+    }
+    return this.barVis;
+  }
+
+  /**
+   * 底部进度条的粗细（vp）。
+   * 常态 3vp：是一条「线」，不压画面；激活/拖动时 6vp：手指能看清落点。
+   */
+  bar2Thick(): number {
+    return (this.bar2Armed() || this.bar2Drag >= 0) ? 6 : 3;
+  }
+
+  /**
+   * 底部进度条整层的高度（vp），也就是触摸热区高度。
+   *
+   * 3vp 的线太细，手指根本点不准，所以热区做到 28vp —— 但热区在画面下缘，
+   * 平时必须完全透明、不吃手势（否则会在画面底部拦掉滑动快进）。
+   * 只有「刚点过一下（激活期内）」或「正在拖」才真正拦手势。
+   */
+  bar2TouchH(): number {
+    return 28;
+  }
+
+  /**
+   * 视频画面底边在当前窗口里的 y 坐标（vp）。
+   *
+   * 为什么要算，而不是直接把线贴屏幕最下沿：
+   * 竖屏播 16:9 影片时，画面只占中间一条，上下各留一大块黑边。
+   * 贴屏底的话，进度线离画面底边差着两三百像素，看起来像「屏幕装饰」
+   * 而不是「这条视频的进度」。用户要的是「视频底部」，那就必须跟着画面走。
+   *
+   * 三种缩放模式各算各的：
+   *  - 拉伸(0)：铺满整窗，底边 = 窗口高；
+   *  - 裁剪(1)：等比放大到铺满，画面溢出窗口，底边同样 = 窗口高；
+   *  - 适应(2)：等比缩到完整可见，上下留黑边，底边 = 居中后半高。
+   * 宽高比取不到（还没 prepared / 音频流）时一律当铺满，绝不把线放到屏幕外。
+   */
+  videoBottom(): number {
+    // 用画面容器的**实测**高度和起始 y，而不是窗口尺寸：
+    // 竖屏时 XComponent 从 y≈42vp（状态栏区）开始、高 674vp，
+    // 用 winH 推出来的位置会差几十像素，线会浮在画面中间或掉到黑边里。
+    const h: number = this.surfH > 0 ? this.surfH : (this.winH > 0 ? this.winH : 744);
+    const top: number = this.surfH > 0 ? this.surfY : 0;
+    if (this.vSrcW <= 0 || this.vSrcH <= 0) {
+      return top + h;
+    }
+    if (this.scaleMode !== SCALE_FIT) {
+      return top + h;
+    }
+    // 适应模式（留黑边）：按宽高比算实际显示高度，在容器内居中
+    const w: number = this.winW > 0 ? this.winW : 360;
+    const byW: number = w * this.vSrcH / this.vSrcW;
+    const shown: number = byW < h ? byW : h;
+    return top + (h + shown) / 2;
+  }
+
+  /** 底部进度条当前比例（0~1）。拖动中跟手，其余跟播放位置 */
+  bar2Ratio(): number {
+    const d: number = this.barDur > 0 ? this.barDur : this.durMs;
+    if (d <= 0) {
+      return 0;
+    }
+    const cur: number = this.bar2Drag >= 0 ? this.bar2Drag * d : this.barMs;
+    let r: number = cur / d;
+    if (r < 0) {
+      r = 0;
+    }
+    if (r > 1) {
+      r = 1;
+    }
+    return r;
+  }
+
+  /**
+   * 点一下底部区域：把它变成可拖动状态。
+   *
+   * 为什么需要「先点一下」再拖：这条线只有 3vp 高、贴着屏幕最下沿，
+   * 手机竖屏时正好压在系统手势条上，随时可拖会抢走返回手势。
+   * 激活后 6 秒内可点可拖，拖完自动续期，闲置即失效。
+   */
+  armBar2(): void {
+    if (this.bar2Timer >= 0) {
+      clearTimeout(this.bar2Timer);
+      this.bar2Timer = -1;
+    }
+    this.bar2Until = Date.now() + 6000;
+    this.bar2Timer = setTimeout(() => {
+      this.bar2Timer = -1;
+      this.bar2Until = 0;
+    }, 6000);
+  }
+
+  bar2Armed(): boolean {
+    return Date.now() < this.bar2Until;
+  }
+
+  /** 拖动过程：只改预览，不真的 seek（避免每帧都拉分片） */
+  bar2Preview(r: number): void {
+    if (r < 0) {
+      r = 0;
+    }
+    if (r > 1) {
+      r = 1;
+    }
+    this.bar2Drag = r;
+    this.seekPreview = Math.floor(r * this.durMs);
+    this.seekTip = '拖动定位';
+  }
+
+  /** 松手：落到预览位置 */
+  bar2Commit(): void {
+    const r: number = this.bar2Drag;
+    this.bar2Drag = -1;
+    this.seekPreview = -1;
+    if (r < 0) {
+      return;
+    }
+    const shown: string = this.fmt(r * this.durMs);
+    if (this.seekToRatio(r)) {
+      this.barMs = r * this.durMs;
+      Tip.show('已定位到 ' + shown);
+    }
+    this.armBar2();
   }
 
   /** 中央大图标闪一下 */
@@ -4297,6 +4539,35 @@ struct Player {
         .width('100%')
         .height('100%')
         .focusable(false)
+        /**
+         * 记下画面容器的真实高度（vp）。
+         *
+         * 底部进度条要「贴着视频底部」，可窗口高度、安全区、状态栏都会影响
+         * 真实可用高度，@StorageProp 的 winH 是窗口尺寸、不等于这里。
+         * 直接量这个 XComponent 最准，转屏/分屏时 onAreaChange 也会重报。
+         */
+        .onAreaChange((oldV: Area, newV: Area) => {
+          const hh = newV.height;
+          const hv: number = typeof hh === 'number' ? hh : parseFloat(hh.toString());
+          // globalPosition 及其 y 在类型定义里都是可选的，且 Length 与 number 不同型，
+          // 逐层判空 + 统一走字符串转数值，避开 arkts 的严格类型检查。
+          let gv: number = 0;
+          const gp0: object | undefined = newV.globalPosition;
+          if (gp0 !== undefined) {
+            const gp: Record<string, Object> = gp0 as Record<string, Object>;
+            const gy: Object | undefined = gp['y'];
+            if (gy !== undefined && gy !== null) {
+              const gn: number = parseFloat(gy.toString());
+              gv = isNaN(gn) ? 0 : gn;
+            }
+          }
+          if (hv > 0 && (Math.abs(hv - this.surfH) > 0.5 || Math.abs(gv - this.surfY) > 0.5)) {
+            this.surfH = hv;
+            this.surfY = gv;
+            hilog.info(0x1000, 'BOXN', 'surface area h=%{public}s y=%{public}s',
+              '' + Math.round(hv), '' + Math.round(gv));
+          }
+        })
         .onLoad(() => {
           this.surfaceId = this.xController.getXComponentSurfaceId();
           if (this.player !== null) {
@@ -4345,6 +4616,92 @@ struct Player {
         onHoverRetry: (on: boolean) => this.hoverTo('rt', on),
         onHoverBack: (on: boolean) => this.hoverTo('bk', on)
       })
+
+      /**
+       * 底部常驻进度条 —— 紧贴视频画面底边。
+       *
+       * 实测结论（真机 1320x2232 / 视频 1280x720 / 等比适应）：
+       * 画面容器从 y=42vp 起、高 674vp，视频实际显示区是
+       * y 766~1508px（约 255~503vp），所以线要落在 ~503vp 才对。
+       * videoBottom() 按实测容器位置 + 宽高比算出的就是这个值。
+       *
+       * 结构：外层 Stack 贴合定位，进度线是它的子元素。
+       * 草稿里试过「外层 Column 定位 + 内层 Stack 落底」，反而把线推到了
+       * 画面下方 100 多像素；这版是实测贴得准的，别再改回嵌套定位。
+       */
+      if (this.bar2Show()) {
+        Stack({ alignContent: Alignment.BottomStart }) {
+          // 触摸热区：整层都是热区，比 3vp 的细线好点太多。
+          // 只在激活/拖动时吃手势，平时透传，不抢滑动与点击。
+          Column() {
+          }
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#00000000')
+          .hitTestBehavior(this.bar2Armed() || this.bar2Drag >= 0
+            ? HitTestMode.Block : HitTestMode.None)
+          .onAreaChange((oldV: Area, newV: Area) => {
+            const w = newV.width;
+            this.bar2W = typeof w === 'number' ? w : parseFloat(w.toString());
+          })
+          .onClick((ev: ClickEvent) => {
+            if (!this.bar2Armed() || this.bar2W <= 0 || this.durMs <= 0) {
+              return;
+            }
+            Feedback.tap();
+            this.seekToRatio(ev.x / this.bar2W);
+            this.armBar2();
+          })
+          .gesture(
+            PanGesture({ direction: PanDirection.Horizontal, distance: 4 })
+              .onActionStart((e: GestureEvent) => {
+                if (!this.bar2Armed() || this.bar2W <= 0 || this.durMs <= 0) {
+                  return;
+                }
+                const fingers = e.fingerList;
+                if (fingers !== undefined && fingers.length > 0) {
+                  this.bar2Preview(fingers[0].localX / this.bar2W);
+                }
+              })
+              .onActionUpdate((e: GestureEvent) => {
+                if (!this.bar2Armed() || this.bar2W <= 0 || this.bar2Drag < 0) {
+                  return;
+                }
+                const fingers = e.fingerList;
+                if (fingers !== undefined && fingers.length > 0) {
+                  this.bar2Preview(fingers[0].localX / this.bar2W);
+                }
+              })
+              .onActionEnd(() => {
+                this.bar2Commit();
+              })
+              .onActionCancel(() => {
+                this.bar2Drag = -1;
+                this.seekPreview = -1;
+              })
+          )
+
+          // 轨道 + 已播段，贴层底（= 画面底边）
+          Row()
+            .width('100%')
+            .height(this.bar2Thick())
+            .backgroundColor('#59000000')
+          Row()
+            .width((this.bar2Ratio() * 100) + '%')
+            .height(this.bar2Thick())
+            .backgroundColor(this.bar2Drag >= 0 ? T.SELECTED : '#F2FFFFFF')
+        }
+        .width('100%')
+        .height(this.bar2TouchH())
+        /**
+         * 注意减掉 surfY：position 的 y 是**相对父容器**（根 Stack）的，
+         * 而根 Stack 本身从 surfY（实测 42vp，状态栏高度）处开始。
+         * videoBottom() 返回的是屏幕绝对坐标，直接拿去当 y 会把这段
+         * 顶偏移重复算一遍 —— 实测线就被推到了画面下方 100 多像素。
+         */
+        .position({ x: 0, y: this.videoBottom() - this.surfY - this.bar2TouchH() })
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
 
       /**
        * 自定义字幕层。
@@ -4883,10 +5240,11 @@ struct Player {
         this.grabFocus();
       }, 200);
     })
-    .onClick(() => {
+    .onClick((ev: ClickEvent) => {
       Feedback.tap();
-      // 单击唤菜单 / 双击暂停，判定在 onSurfaceTap 里
-      this.onSurfaceTap();
+      // 单击唤菜单 / 双击暂停 / 点底部进度条，判定都在 onSurfaceTap 里。
+      // 传坐标是因为要区分「点在画面中间」和「点在最下方那条进度带上」。
+      this.onSurfaceTap(ev.y);
     })
     .onMouse((e: MouseEvent) => {
       // 灵犀遥控器指针一动就把控制条唤出来，否则用户不知道该点哪。
