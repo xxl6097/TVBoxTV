@@ -142,6 +142,15 @@ struct Player {
   @State curMs: number = 0;
   @State durMs: number = 0;
   @State showOsd: boolean = true;
+  /**
+   * 屏幕锁定。锁住之后所有触摸手势和按键都失效，只留一个解锁按钮。
+   *
+   * 用途是「放兜里/躺床上看，不想被误触」——手一碰画面就暂停、一滑就跳几分钟，
+   * 追剧时很恼人。锁定期间播放照常进行，只是不接收操作。
+   */
+  @State locked: boolean = false;
+  /** 锁定状态下，画面上是否显示解锁按钮（点一下画面才显示，避免一直挡着） */
+  @State lockHint: boolean = false;
   @State via: string = '';
   /** 播放列表进度，如「第 3/24 集」 */
   @State epLabel: string = '';
@@ -262,6 +271,8 @@ struct Player {
   private directMode: boolean = false;
   private osdTimer: number = -1;
   private volTimer: number = -1;
+  /** 锁定提示/解锁按钮的自动收起定时器 */
+  private lockTimer: number = -1;
   private toastTimer: number = -1;
   private holdTimer: number = -1;
   private holdCode: number = -1;
@@ -1878,6 +1889,46 @@ struct Player {
    *
    * 短视频/主流播放器都是双击暂停，用户不用学；同时保留了单击唤菜单。
    */
+  /**
+   * 开关锁定。
+   *
+   * 锁定时顺手做三件事，否则「锁住了但看着还在动」会很怪：
+   *   1 收起控制条（不然按钮还亮着，用户以为能点）
+   *   2 清掉快进预览/长按加速等临时状态（锁之前手指可能正按着）
+   *   3 显示解锁提示 2 秒，告诉用户「已经锁了、怎么解」
+   */
+  toggleLock(): void {
+    const before: boolean = this.locked;
+    this.locked = !this.locked;
+    hilog.info(0x1000, 'BOXN', 'lock %{public}s -> %{public}s',
+      before ? 'Y' : 'N', this.locked ? 'Y' : 'N');
+    if (this.locked) {
+      this.showOsd = false;
+      this.showQ = false;
+      this.showEp = false;
+      this.seekPreview = -1;
+      this.endHoldSpeed();
+      this.clearHold();
+      this.lockHint = true;
+      if (this.lockTimer >= 0) {
+        clearTimeout(this.lockTimer);
+      }
+      this.lockTimer = setTimeout(() => {
+        this.lockHint = false;
+        this.lockTimer = -1;
+      }, 2000);
+      this.showTip('已锁定，点画面可解锁');
+    } else {
+      this.lockHint = false;
+      if (this.lockTimer >= 0) {
+        clearTimeout(this.lockTimer);
+        this.lockTimer = -1;
+      }
+      this.showTip('已解锁');
+      this.popOsd();
+    }
+  }
+
   private onSurfaceTap(): void {
     /**
      * 控制条上的按钮刚被点过 → 这次 onClick 是冒泡上来的，不是「点画面」，直接丢掉。
@@ -1893,6 +1944,33 @@ struct Player {
      */
     const now: number = Date.now();
     if (now - this.lastBtnTapAt < 100) {
+      return;
+    }
+    /**
+     * 锁定状态：任何点击都只切换「解锁按钮」的显隐，不切菜单、不暂停。
+     *
+     * 这里必须放在双击判定之前 —— 否则锁定期间双击会触发 togglePlay，
+     * 等于「锁了还能暂停」。解锁只认解锁按钮本身，不做「双击解锁」，
+     * 因为那正是最容易误触的动作（放兜里蹭两下就解了）。
+     */
+    if (this.locked) {
+      /**
+       * 锁定状态下点画面：**只负责把解锁按钮亮出来**，不再「再点一下收起」。
+       *
+       * 原来写的是 this.lockHint = !this.lockHint 做开关。实测出问题：
+       * 解锁按钮自己有 onClick，但点击同时冒泡到根容器，根容器把 lockHint
+       * 又切回了 false —— 用户看到的是「按钮闪一下就没了，怎么点都解不开」。
+       * 现在改成幂等的「亮出来」，浮层点不点得到都不影响它存在，
+       * 解锁只认浮层那颗按钮。
+       */
+      this.lockHint = true;
+      if (this.lockTimer >= 0) {
+        clearTimeout(this.lockTimer);
+      }
+      this.lockTimer = setTimeout(() => {
+        this.lockHint = false;
+        this.lockTimer = -1;
+      }, 3000);
       return;
     }
     const gap: number = now - this.lastTapAt;
@@ -2526,6 +2604,34 @@ struct Player {
 
   private onKey(e: KeyEvent): void {
     const code: number = e.keyCode;
+    /**
+     * 锁定时只放行「返回」和音量键。
+     *
+     * - 返回必须能用：锁死了连退都退不出去，只能杀进程，那是个 bug
+     *   而不是功能（各家的锁定也不会拦返回）。
+     * - 音量键本来就不归应用管（要冒泡给系统），这里更不能截。
+     * 其余按键（方向键换台/快进、确定键播放暂停）一律吞掉。
+     */
+    if (this.locked) {
+      if (code === KeyCode.KEYCODE_BACK || code === KeyCode.KEYCODE_ESCAPE ||
+        code === KeyCode.KEYCODE_VOLUME_UP || code === KeyCode.KEYCODE_VOLUME_DOWN ||
+        code === KeyCode.KEYCODE_MUTE) {
+        return;
+      }
+      if (e.type === KeyType.Down) {
+        e.stopPropagation();
+        // 给个可感知的反馈，否则用户以为按键坏了
+        this.lockHint = true;
+        if (this.lockTimer >= 0) {
+          clearTimeout(this.lockTimer);
+        }
+        this.lockTimer = setTimeout(() => {
+          this.lockHint = false;
+          this.lockTimer = -1;
+        }, 2000);
+      }
+      return;
+    }
     if (e.type === KeyType.Up) {
       if (code === this.holdCode) {
         // 松手时把还没提交的 seek 立刻落地，手感才跟得上
@@ -2610,6 +2716,17 @@ struct Player {
   // ==================== 提示 ====================
 
   popOsd(): void {
+    /**
+     * 锁定期间不许把控制条唤出来。
+     *
+     * popOsd 的调用点非常多（按键、手势、切集、缓冲结束、鼠标移动…），
+     * 锁定时只要漏掉一个调用点，控制条就会自己冒出来，而且因为
+     * 渲染条件里已经加了 !locked，这里再拦一次是为了不去无谓地
+     * 改 showOsd / 重设定时器，避免解锁后「控制条莫名其妙已经开着」。
+     */
+    if (this.locked) {
+      return;
+    }
     // 控制条出现时把「显示位置」对齐到真实位置（没显示时为了省刷新没同步）
     this.curMs = this.posMs;
     this.showOsd = true;
@@ -2762,6 +2879,9 @@ struct Player {
     if (act === 9) {
       return $r('app.media.ic_episodes');
     }
+    if (act === 10) {
+      return $r('app.media.ic_lock');
+    }
     return $r('app.media.ic_setting');
   }
 
@@ -2789,6 +2909,9 @@ struct Player {
     if (act === 6) {
       return this.isLive ? '下一台' : '下一集';
     }
+    if (act === 10) {
+      return '锁定';
+    }
     if (act === 9) {
       // 直播没有「集」，这条入口只在点播时出现
       return '选集';
@@ -2800,6 +2923,17 @@ struct Player {
 
   doCtrl(act: number): void {
     hilog.info(0x1000, 'BOXN', 'ctl=%{public}d', act);
+    /**
+     * 锁定时除「解锁」外一律不执行。
+     *
+     * 控制条本身在锁定时是不渲染的，但遥控器焦点链、指针事件、
+     * 以及某些机型上残留的点击，仍可能把 doCtrl 调进来。
+     * 在这里兜一道，比在十几处按钮上各加一次判断可靠得多。
+     */
+    if (this.locked && act !== 10) {
+      hilog.info(0x1000, 'BOXN', 'ctl blocked by lock act=%{public}d', act);
+      return;
+    }
     if (act === 0) {
       this.switchEpisode(-1);
     } else if (act === 1) {
@@ -2825,6 +2959,9 @@ struct Player {
       hilog.info(0x1000, 'BOXN', 'showQ=%{public}s lv=%{public}d osd=%{public}s',
         '' + this.showQ, this.levels.length, '' + this.showOsd);
       this.popOsd();
+    } else if (act === 10) {
+      // 锁定屏幕：锁住后手势/按键全停，只留一个解锁按钮
+      this.toggleLock();
     } else if (act === 9) {
       // 选集：与播放设置互斥，避免两个面板叠在一起
       this.showEp = !this.showEp;
@@ -4381,7 +4518,12 @@ struct Player {
       }
 
       // 底部控制面板：FongMi 的 shape_controller —— colorSurface + 上左/上右 28dp 圆角，padding 24/24/16
-      if (this.showOsd && !this.resolving) {
+      /**
+       * 控制条。锁定时**整块不渲染** —— 不是靠 pointerEvents 或透明度藏起来，
+       * 而是真的不进组件树。这样遥控器焦点链也摸不到里面的按钮，
+       * 不会出现「看不见但焦点能移上去、按确定还能触发」的情况。
+       */
+      if (this.showOsd && !this.resolving && !this.locked) {
         Column() {
           Column() {
             Row() {
@@ -4581,6 +4723,7 @@ struct Player {
                   this.CtlBtn(9)
                 }
               }
+              this.CtlBtn(10)
               this.CtlBtn(8)
             }
             .width('100%')
@@ -4635,6 +4778,61 @@ struct Player {
       if (this.skipShow !== '') {
         this.SkipFloatBtn()
       }
+
+      /**
+       * 锁定态浮层。
+       *
+       * 锁定期间画面上不能有任何可误触的控件，所以这里只有两个元素：
+       * 刚锁定时的一个居中提示（2 秒后自己消失），
+       * 之后点画面才出现的解锁按钮。
+       *
+       * 位置放在屏幕左侧中部——右手单手握持时拇指够不到，
+       * 正好不容易误触，这也是主流播放器的通行位置。
+       */
+      if (this.locked && this.lockHint) {
+        Row() {
+          Image($r('app.media.ic_lock'))
+            .width(22)
+            .height(22)
+            .objectFit(ImageFit.Contain)
+            .fillColor('#FFFFFF')
+          Text('已锁定')
+            .fontSize(15)
+            .fontColor('#FFFFFF')
+            .margin({ left: 8 })
+          Text('点此解锁')
+            .fontSize(13)
+            .fontColor(T.PANEL_SUB)
+            .margin({ left: 10 })
+        }
+        .padding({ left: 18, right: 22, top: 14, bottom: 14 })
+        .backgroundColor('#B3000000')
+        .borderRadius(T.RADIUS_PILL)
+        .border({ width: T.BORDER, color: '#4DFFFFFF' })
+        .position({ x: 28, y: '42%' })
+        .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+        /**
+         * 必须自己吃掉命中测试。
+         *
+         * 之前只写了 onClick，实测点上去按钮消失、`lock=` 日志却没出现 ——
+         * 说明点击被根容器接走了（锁定分支里「点画面 = 切换解锁按钮显隐」），
+         * 浮层自己的 onClick 根本没执行。Default 让本层优先命中并吞掉事件，
+         * 冒泡不再上到根节点。
+         */
+        .hitTestBehavior(HitTestMode.Block)
+        /**
+         * 解锁走 **onClick 单通道**，不再同时绑 onMouse(this.ptr(...))。
+         *
+         * 踩过的坑：两个都绑时，onMouse 的 pressRelease 在「按下」阶段就把
+         * Pointer.once('unlock') 的名额占了，等「抬起」后 onClick 再来，
+         * 被 400ms 去重直接丢掉 —— 表现就是点了没反应、连日志都没有。
+         * 这里只需要一次点击触发，单通道最稳。
+         */
+        .onClick(() => {
+          // 点这个按钮才解锁，别的任何点击都不解
+          this.toggleLock();
+        })
+      }
     }
     .width('100%')
     .height('100%')
@@ -4662,6 +4860,10 @@ struct Player {
     .onMouse((e: MouseEvent) => {
       // 灵犀遥控器指针一动就把控制条唤出来，否则用户不知道该点哪。
       // Press 也要唤：只点不移动时不产生 Move。
+      // 锁定期间不唤 —— popOsd 里也拦了，这里提前返回省一次无谓调用。
+      if (this.locked) {
+        return;
+      }
       if ((e.action === MouseAction.Move || e.action === MouseAction.Press) && !this.showOsd) {
         hilog.info(0x1000, 'BOXN', 'pointer wake');
         this.popOsd();
@@ -4682,6 +4884,10 @@ struct Player {
       GestureGroup(GestureMode.Parallel,
         LongPressGesture({ repeat: false, duration: HOLD_SPEED_DELAY })
           .onAction(() => {
+            // 锁定期间不响应长按加速
+            if (this.locked) {
+              return;
+            }
             this.beginHoldSpeed();
           })
           .onActionEnd(() => {
@@ -4692,6 +4898,10 @@ struct Player {
           }),
       PanGesture({ direction: PanDirection.All, distance: 10 })
         .onActionStart((e: GestureEvent) => {
+          // 锁定期间滑动一律不响应（快进、调亮度全停）
+          if (this.locked) {
+            return;
+          }
           // 进度条正在被拖动时，禁止其它手势
           if (this.dragSeeking) {
             return;
