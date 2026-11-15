@@ -2703,51 +2703,66 @@ struct Player {
    */
   @Builder
   CtlBtn(act: number, weight: boolean = true) {
-    Text(this.ctlText(act))
-      .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
-      // 左右 padding 收窄到 6：均分宽度固定，padding 太大会把文字挤没了
-      .padding({ left: 6, right: 6, top: 10, bottom: 10 })
-      .backgroundColor(this.hi('ctl' + act) ? T.PANEL_BTN_HI : '#00000000')
-      .borderRadius(T.RADIUS_SM)
-      .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
-      .textAlign(TextAlign.Center)
-      /**
-       * 必须单行。
-       *
-       * 之前为了「宁可缩小字号也别省略号」改成了 maxLines(2)，
-       * 结果适得其反：竖屏每格 147px、扣掉 padding 剩 135px，
-       * 「上一集」这种四个字本来够放，但 13sp 下累计宽度逼近上限，
-       * 一溢出就折成两行 —— 七个按钮里五个被折行，高度从 118 涨到 164，
-       * 整排参差不齐（实测：暂停/选集 118，其余 164）。
-       *
-       * 按钮文字本来就短（最多四个字），单行 + 自动缩字号最合适：
-       * 宽度够就用 14sp，不够 HarmonyOS 的 minFontSize/maxFontSize
-       * 会在 11~14 之间自动挑一个放得下的，永远一行。
-       */
-      .maxLines(1)
-      .minFontSize(11)
-      .maxFontSize(this.landscape ? 14 : 13)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
-      /**
-       * 定高，别让按钮高度跟着字号走。
-       *
-       * 单行之后字号仍会因文字长短而不同（「暂停」两个字用满 13sp，
-       * 「播放设置」四个字自动缩到 11sp），实测高度就分成 118 和 111 两档，
-       * 一排按钮上沿差 4px、下沿差 3px，看着像没对齐。
-       * 给一个固定高度 + 垂直居中，七个按钮就是一条线上齐平的块。
-       */
-      .height(52)
-      /**
-       * 只在 Row 里均分（weight=true）。放 Grid 的 GridItem 里必须关掉：
-       * GridItem 本身已经是等分的格子，里面的 Text 再 layoutWeight(1)
-       * 会去撑满纵向，把整个控制面板的高度顶飞 —— 实测面板被撑成全屏、
-       * 背景色被挤没，只剩白字浮在黑色画面上。
-       */
-      .layoutWeight(weight ? 1 : 0)
-      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-      .onHover((hv: boolean) => this.hoverTo('ctl' + act, hv))
-      .onClick(() => this.tap('ctl' + act, () => this.doCtrl(act)))
-      .onMouse(this.ptr('ctl' + act, () => this.doCtrl(act)))
+    /**
+     * 控制条按钮：图标在上、短文字在下（Apple TV 的做法）。
+     *
+     * 之前是一行纯文字，7 个按钮各 147px，「播放设置」四个字放不下，
+     * 只能靠缩字号（11sp）或省略号硬塞 —— 两者都难看，用户明确否掉了。
+     *
+     * 改成图标主导：
+     *   ⏮ 上一集 / ⏪ 10 / ⏸ 暂停 / ⏩ 10 / ⏭ 下一集 / ☰ 选集 / ⚙ 设置
+     * 文字最长的「上一集」「下一集」也只有三个字，14sp 正常字号一行放得下，
+     * 不用缩、不用省略。图标本身也宽（34vp），按钮更好点。
+     */
+    Column() {
+      Image(this.ctlIcon(act))
+        .width(this.landscape ? 30 : 26)
+        .height(this.landscape ? 30 : 26)
+        .objectFit(ImageFit.Contain)
+        // SVG 是单色白描边，用 fillColor 跟着选中态染色
+        .fillColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
+      Text(this.ctlText(act))
+        .fontSize(this.landscape ? 13 : 12)
+        .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
+        .maxLines(1)
+        .textAlign(TextAlign.Center)
+        .margin({ top: 6 })
+    }
+    .width(weight ? undefined : '100%')
+    .height(76)
+    .justifyContent(FlexAlign.Center)
+    .padding({ left: 4, right: 4 })
+    .backgroundColor(this.hi('ctl' + act) ? T.PANEL_BTN_HI : '#00000000')
+    .borderRadius(T.RADIUS_SM)
+    .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
+    .layoutWeight(weight ? 1 : 0)
+    .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+    .onHover((hv: boolean) => this.hoverTo('ctl' + act, hv))
+    .onClick(() => this.tap('ctl' + act, () => this.doCtrl(act)))
+    .onMouse(this.ptr('ctl' + act, () => this.doCtrl(act)))
+  }
+
+  /** 控制条按钮的图标 */
+  ctlIcon(act: number): Resource {
+    if (act === 0) {
+      return $r('app.media.ic_prev');
+    }
+    if (act === 1) {
+      return $r('app.media.ic_rew10');
+    }
+    if (act === 2) {
+      return this.playing ? $r('app.media.ic_pause') : $r('app.media.ic_play');
+    }
+    if (act === 3) {
+      return $r('app.media.ic_fwd10');
+    }
+    if (act === 6) {
+      return $r('app.media.ic_next');
+    }
+    if (act === 9) {
+      return $r('app.media.ic_episodes');
+    }
+    return $r('app.media.ic_setting');
   }
 
   /** 控制条文案。放在方法里读状态，@Builder 才能跟到变化（传值不会更新） */
@@ -2755,14 +2770,21 @@ struct Player {
     if (act === 0) {
       return this.isLive ? '上一台' : '上一集';
     }
+    /**
+     * 图标已经表达了动作，文字只做补充，尽量短。
+     *
+     * 按钮宽度只有 ~147px（7 个均分 1320），「播放设置」四个字 14sp 就超了。
+     * Apple TV 的做法也是图标主导、文字极简（「后退」「设置」），
+     * 而不是把字缩小 —— 缩到 11sp 在电视/手机上都不好认。
+     */
     if (act === 1) {
-      return '−10 秒';
+      return '10 秒';
     }
     if (act === 2) {
       return this.playing ? '暂停' : '播放';
     }
     if (act === 3) {
-      return '+10 秒';
+      return '10 秒';
     }
     if (act === 6) {
       return this.isLive ? '下一台' : '下一集';
@@ -2771,8 +2793,9 @@ struct Player {
       // 直播没有「集」，这条入口只在点播时出现
       return '选集';
     }
-    // act === 8：面板已升级为「播放设置」（画质 + 画面比例 + 跳过片头片尾），入口名跟着改
-    return '播放设置';
+    // act === 8：面板含画质 + 画面比例 + 跳过片头片尾，文字缩到「设置」，
+    // 图标是齿轮，语义不会丢
+    return '设置';
   }
 
   doCtrl(act: number): void {
