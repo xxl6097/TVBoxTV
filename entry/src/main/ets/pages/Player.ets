@@ -2704,7 +2704,6 @@ struct Player {
   @Builder
   CtlBtn(act: number, weight: boolean = true) {
     Text(this.ctlText(act))
-      .fontSize(14)
       .fontColor(this.hi('ctl' + act) ? T.SELECTED : T.PANEL_TXT)
       // 左右 padding 收窄到 6：均分宽度固定，padding 太大会把文字挤没了
       .padding({ left: 6, right: 6, top: 10, bottom: 10 })
@@ -2713,17 +2712,31 @@ struct Player {
       .border({ width: T.BORDER, color: this.hi('ctl' + act) ? T.PANEL_TXT : '#00000000' })
       .textAlign(TextAlign.Center)
       /**
-       * 文字要完整显示，不能被压成省略号。
+       * 必须单行。
        *
-       * 原来写的是 maxLines(1) + Ellipsis —— 和上面那句注释正好相反：
-       * 手机竖屏格子窄的时候，「播放设置」会被截成「播放设…」。
-       * 现在按屏幕宽度定字号，并允许折成两行：
-       * 竖屏 13sp（每格约 66~76vp，四个字横排放得下），
-       * 横屏 14sp。真到极端窄窗口也会折行而不是省略号。
+       * 之前为了「宁可缩小字号也别省略号」改成了 maxLines(2)，
+       * 结果适得其反：竖屏每格 147px、扣掉 padding 剩 135px，
+       * 「上一集」这种四个字本来够放，但 13sp 下累计宽度逼近上限，
+       * 一溢出就折成两行 —— 七个按钮里五个被折行，高度从 118 涨到 164，
+       * 整排参差不齐（实测：暂停/选集 118，其余 164）。
+       *
+       * 按钮文字本来就短（最多四个字），单行 + 自动缩字号最合适：
+       * 宽度够就用 14sp，不够 HarmonyOS 的 minFontSize/maxFontSize
+       * 会在 11~14 之间自动挑一个放得下的，永远一行。
        */
-      .fontSize(this.landscape ? 14 : 13)
-      .maxLines(2)
+      .maxLines(1)
+      .minFontSize(11)
+      .maxFontSize(this.landscape ? 14 : 13)
       .textOverflow({ overflow: TextOverflow.Ellipsis })
+      /**
+       * 定高，别让按钮高度跟着字号走。
+       *
+       * 单行之后字号仍会因文字长短而不同（「暂停」两个字用满 13sp，
+       * 「播放设置」四个字自动缩到 11sp），实测高度就分成 118 和 111 两档，
+       * 一排按钮上沿差 4px、下沿差 3px，看着像没对齐。
+       * 给一个固定高度 + 垂直居中，七个按钮就是一条线上齐平的块。
+       */
+      .height(52)
       /**
        * 只在 Row 里均分（weight=true）。放 Grid 的 GridItem 里必须关掉：
        * GridItem 本身已经是等分的格子，里面的 Text 再 layoutWeight(1)
@@ -2743,13 +2756,13 @@ struct Player {
       return this.isLive ? '上一台' : '上一集';
     }
     if (act === 1) {
-      return '−  10 秒';
+      return '−10 秒';
     }
     if (act === 2) {
       return this.playing ? '暂停' : '播放';
     }
     if (act === 3) {
-      return '+  10 秒';
+      return '+10 秒';
     }
     if (act === 6) {
       return this.isLive ? '下一台' : '下一集';
