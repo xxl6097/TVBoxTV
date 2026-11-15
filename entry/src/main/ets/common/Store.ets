@@ -118,6 +118,18 @@ export class Store {
   private static siteList: Site[] = [];
   private static parseList: ParseRule[] = [];
   private static rawSites: number = 0;
+  /**
+   * 播放历史的内存副本。
+   *
+   * 为什么需要它：updateHistoryPos 是 async 的（读 → 改 → put → flush），
+   * 而播放页 savePos() 不会 await（离开页面时来不及等），详情页 onPageShow
+   * 的 loadSeen() 又几乎同时读 —— 读到的还是 flush 之前的旧值。
+   * 实测：播放页存了 566615（09:26），详情页却显示 547472（09:07），差 19 秒。
+   *
+   * 有了这份缓存，写入时立刻更新内存，读取优先走内存，两边就不会错位。
+   * null 表示还没加载过。
+   */
+  private static histCache: HistItem[] | null = null;
 
   static async init(ctx: common.UIAbilityContext): Promise<void> {
     Store.ctx = ctx;
@@ -677,15 +689,22 @@ export class Store {
   // ---------- 历史 ----------
 
   static async history(): Promise<HistItem[]> {
+    // 内存里有就直接给，避免「刚写完还没 flush 就读」读到旧值（见 histCache 说明）
+    if (Store.histCache !== null) {
+      return Store.histCache.slice();
+    }
     if (Store.prefs === null) {
       return [];
     }
     const s: string = await Store.prefs.get('hist', '') as string;
     if (s.length === 0) {
+      Store.histCache = [];
       return [];
     }
     try {
       const arr: HistItem[] = JSON.parse(s) as HistItem[];
+      // 首次读盘后填进内存，后续读走缓存
+      Store.histCache = arr;
       // 按「最后观看时间」倒序。
       // updateHistoryPos 只改 time、不动数组位置，于是重看老片时会出现
       // 「刚刚」排在「12 小时前」下面，列表看起来是乱的。
@@ -716,6 +735,10 @@ export class Store {
         break;
       }
     }
+    // 先更新内存缓存：调用方（播放页 savePos）不会 await 这个函数，
+    // 详情页 onPageShow 紧接着就读，只有缓存能保证读到的就是刚写的值
+    Store.histCache = out;
+    Store.histCache = out;
     await Store.prefs.put('hist', JSON.stringify(out));
     await Store.prefs.flush();
     // 异步上传到 WebDAV，不阻塞当前操作
@@ -767,6 +790,7 @@ export class Store {
         out.push(it);
       }
     }
+    Store.histCache = out;
     await Store.prefs.put('hist', JSON.stringify(out));
     await Store.prefs.flush();
   }
@@ -775,6 +799,7 @@ export class Store {
     if (Store.prefs === null) {
       return;
     }
+    Store.histCache = [];
     await Store.prefs.put('hist', '[]');
     await Store.prefs.flush();
   }
@@ -2181,6 +2206,7 @@ export class Store {
         merged.length = 40;
       }
       if (Store.prefs !== null) {
+        Store.histCache = merged;
         await Store.prefs.put('hist', JSON.stringify(merged));
         await Store.prefs.flush();
       }

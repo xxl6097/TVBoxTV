@@ -99,13 +99,26 @@ struct Detail {
    * 原来只在 aboutToAppear 里读一次历史，于是「看完第 11 集 → 返回」后，
    * 标题还写着上次的集数、高亮也还停在旧的那集，只有杀掉页面重进才对。
    * 这里在每次页面显示时对一下，集数变了就更新高亮并重新定位。
+   *
+   * 2026-11-15 补：原来只在「集数变了」时才处理，导致**同一集里往后看了
+   * 十几分钟再返回**时，续播按钮和卡片上显示的仍是进来时那个旧位置
+   * （用户报的「继续播放的信息没有更新」）。现在位置变了也刷新。
    */
   onPageShow(): void {
-    const before: number = this.seen;
+    const beforeEp: number = this.seen;
+    const beforePos: number = this.seenPos;
     this.loadSeen().then(() => {
-      if (this.seen !== before && this.seen >= 0) {
+      const epChanged: boolean = this.seen !== beforeEp;
+      const posChanged: boolean = this.seenPos !== beforePos;
+      if (epChanged && this.seen >= 0) {
         this.located = false;      // 集数变了，允许再定位一次
         this.locateSeen();
+      }
+      // 位置变了但集数没变：续播按钮/信息条要重绘。
+      // seenPos 是 @State，赋值本身会触发重绘，这里只是把日志打出来便于排查。
+      if (epChanged || posChanged) {
+        hilog.info(0x1000, 'BOXN', 'detail seen refresh ep=%{public}d pos=%{public}d dur=%{public}d',
+          this.seen, this.seenPos, this.seenDur);
       }
     });
   }
@@ -121,6 +134,16 @@ struct Detail {
         return;
       }
     }
+    /**
+     * 找不到记录就把三个字段清干净。
+     *
+     * 原来这里直接 return，保留上一部片的值 —— 从 A 片退出再进 B 片，
+     * B 片没看过却会显示「第 6 集 · 已看 12%」，点「继续播放」还会跳到
+     * 不存在的集号。清掉之后 canResume() 自然返回 false。
+     */
+    this.seen = -1;
+    this.seenPos = 0;
+    this.seenDur = 0;
   }
 
   /**

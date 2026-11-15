@@ -448,9 +448,24 @@ struct Player {
 
   onPageHide(): void {
     this.leaving = true;
-    hilog.info(0x1000, 'BOXN', 'onPageHide live=%{public}s', this.isLive ? 'y' : 'n');
+    hilog.info(0x1000, 'BOXN', 'onPageHide live=%{public}s pos=%{public}d cur=%{public}d dur=%{public}d',
+      this.isLive ? 'y' : 'n', this.posMs, this.curMs, this.durMs);
     // 离开页面前把长按加速还原，否则 3 倍速会一直留在 this.speed 上
     this.endHoldSpeed();
+    /**
+     * 离开前必须落盘进度。
+     *
+     * 这里原来只调了 pausePlayback()，没有 savePos() —— 于是「返回详情页」
+     * 和「切后台/被系统回收」这两条路径都不会写历史：
+     *   - 从详情页读回来还是上一次的进度（用户以为没记住）
+     *   - 异常退出（被系统杀掉、来电切走）更是整段丢失
+     * aboutToDisappear / onBackPress 里虽然也有 savePos()，但 onPageHide
+     * 先触发；而且应用被回收时 aboutToDisappear 不保证执行。
+     *
+     * 放在 endHoldSpeed 之后：那一步可能已经把 speed 改回 1x，
+     * 但 posMs 不受影响，所以顺序上没有额外要求，写在这里更早更稳。
+     */
+    this.savePos();
     // 直播流不能「续播」，而用户返回列表的诉求就是立刻没声音：
     // 直接放掉播放器（pause 对部分 HLS 直播只是停止拉流，已解码的音频仍会播完缓冲）。
     // 回到前台时走 onPageShow 的重建分支重新连当前台。
@@ -1240,6 +1255,8 @@ struct Player {
     if (this.isLive) {
       return;
     }
+    hilog.info(0x1000, 'BOXN', 'savePos site=%{public}s vod=%{public}s pos=%{public}d',
+      this.siteKey, this.vodId, this.posMs);
     // WebDAV 播放：走网盘专用续播记录（自包含 url + 进度，下次直接续播）
     if (this.siteKey === 'webdav') {
       this.saveWdPos();
@@ -4709,16 +4726,30 @@ struct Player {
              * 手机上竖屏也就一排放得下了（横屏同样一排），
              * 不再需要之前那套 5+4、4+3 的两排 Grid。
              */
+            /**
+             * 分两行：主操作一行、辅助操作一行。
+             *
+             * 之前是挤在一排。加「锁定」之后变 8 个按钮，竖屏每个只剩约 133px，
+             * 「上一集」「下一集」三个字放不下 —— 字号缩到 11sp 还是被省略，
+             * 用户看到的就是「上一集/下一集文字被隐藏」。
+             *
+             * 分两行后每行最多 4 个，单格宽约 300px，12sp 正常字号绰绰有余：
+             *   第一行（主操作，用得最多）：上一集 / 暂停 / 下一集
+             *   第二行（辅助）：−10秒 / +10秒 / 选集 / 锁定 / 设置
+             * 主操作放上面，拇指自然落点；也没有任何按钮被压缩。
+             */
             Row({ space: 8 }) {
               this.CtlBtn(0)
-              if (this.isLive) {
-                this.CtlBtn(2)
-                this.CtlBtn(6)
-              } else {
+              this.CtlBtn(2)
+              this.CtlBtn(6)
+            }
+            .width('100%')
+            .margin({ top: 12 })
+
+            Row({ space: 8 }) {
+              if (!this.isLive) {
                 this.CtlBtn(1)
-                this.CtlBtn(2)
                 this.CtlBtn(3)
-                this.CtlBtn(6)
                 if (Playlist.count() > 1) {
                   this.CtlBtn(9)
                 }
@@ -4727,7 +4758,7 @@ struct Player {
               this.CtlBtn(8)
             }
             .width('100%')
-            .margin({ top: 12 })
+            .margin({ top: 8 })
 
             Row() {
               Text(this.isLive ? '频道地址直连播放，不经过解析' : ('解析：' + this.via))
