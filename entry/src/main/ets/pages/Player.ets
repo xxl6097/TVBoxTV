@@ -213,6 +213,8 @@ struct Player {
   private speedBeforeHold: number = 1;
   /** 上一次画面点击的时间戳，用于自己判定双击（0 表示没有上一次） */
   private lastTapAt: number = 0;
+  /** 最近一次点击控制条控件的时刻，用来丢掉冒泡到根容器的同一次点击 */
+  private lastBtnTapAt: number = 0;
   /** 按住加速中：画面角落显示「3× 加速中」提示 */
   @State speedBoostHint: boolean = false;
   
@@ -1871,7 +1873,22 @@ struct Player {
    * 短视频/主流播放器都是双击暂停，用户不用学；同时保留了单击唤菜单。
    */
   private onSurfaceTap(): void {
+    /**
+     * 控制条上的按钮刚被点过 → 这次 onClick 是冒泡上来的，不是「点画面」，直接丢掉。
+     *
+     * 实测日志（同一毫秒两条）：
+     *   ctl=2
+     *   center hit osd=true
+     * 点一下「暂停」，按钮的 onClick 执行完，事件继续冒泡到根容器，
+     * 又跑一遍单击逻辑把菜单收回去；连点两下时更糟 —— 第二下会落进
+     * 双击判定（450ms 内），反而触发 togglePlay，暂停被自己抵掉。
+     *
+     * 100ms 足够覆盖冒泡（同一帧内完成），又不会误吞用户随后真的点画面。
+     */
     const now: number = Date.now();
+    if (now - this.lastBtnTapAt < 100) {
+      return;
+    }
     const gap: number = now - this.lastTapAt;
     this.lastTapAt = now;
     /**
@@ -2364,6 +2381,12 @@ struct Player {
     if (!Pointer.once(key)) {
       return;
     }
+    /**
+     * 记下「刚点了一个控件」。根容器的 onClick 会收到同一事件冒泡，
+     * 没这个标记的话，点按钮会顺带把菜单开关逻辑再跑一遍
+     * （实测同一毫秒出现 ctl=N 和 center hit 两条日志）。
+     */
+    this.lastBtnTapAt = Date.now();
     Feedback.tap();
     act();
   }
@@ -2686,7 +2709,15 @@ struct Player {
     } else if (act === 1) {
       this.seekBy(-1, false);
     } else if (act === 2) {
-      this.onCenter();
+      /**
+       * 「暂停 / 播放」按钮。
+       *
+       * 这里原来调的是 this.onCenter() —— 而 onCenter 早就被改成
+       * 「只切换菜单显隐、不碰播放状态」（点画面暂停太容易误触，改掉了）。
+       * 于是按下「暂停」只把菜单收了又弹，播放器一动没动，用户看到的就是
+       * 「暂停按钮失效」。按钮的语义是明确的，必须直接调 togglePlay。
+       */
+      this.togglePlay();
     } else if (act === 3) {
       this.seekBy(1, false);
     } else if (act === 4) {
@@ -4006,6 +4037,9 @@ struct Player {
         resolving: this.resolving,
         buffering: this.buffering,
         prepared: this.prepared,
+        // 用状态机而不是 playing 字段：playing 在起播瞬间会被乐观置真，
+        // 而「真的在推进」只有 PLAYING 这个状态能保证。
+        playing: this.playState === PlayState.PLAYING,
         retryHi: this.hi('rt'),
         backHi: this.hi('bk'),
         onRetry: () => {

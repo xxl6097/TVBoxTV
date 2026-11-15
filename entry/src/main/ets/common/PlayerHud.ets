@@ -29,6 +29,15 @@ export struct PlayerHud {
   @Prop resolving: boolean = false;
   @Prop buffering: boolean = false;
   @Prop prepared: boolean = false;
+  /**
+   * 播放器此刻真的在推进（页面用 playState === PLAYING 传入）。
+   *
+   * 错误层原来只看 errMsg 是否非空 —— 但播放中途 HLS 某个分片失败、
+   * 或 seek 到新分片时偶发一次 error，errMsg 会被写上一次，而 prepared
+   * 早就过去了、不会再清。结果就是「画面在放，上面盖一层『无法播放』」。
+   * 有播放实况的时候，不该再显示「失败」。
+   */
+  @Prop playing: boolean = false;
   /** 两个按钮的高亮态，由页面的 hover 状态传入 */
   @Prop retryHi: boolean = false;
   @Prop backHi: boolean = false;
@@ -75,8 +84,9 @@ export struct PlayerHud {
         .hitTestBehavior(HitTestMode.Transparent)
       }
 
-      // ③ 无法播放：给出原因 + 就地重试，不让用户只能退出
-      if (this.errMsg.length > 0) {
+      // ③ 无法播放：给出原因 + 就地重试，不让用户只能退出。
+      //    正在播的时候不显示 —— 见 playing 字段的说明。
+      if (this.errMsg.length > 0 && !this.playing) {
         Column() {
           Text('无法播放').fontSize(30).fontColor(T.ERR)
           Text(this.errMsg)
@@ -118,6 +128,6 @@ export struct PlayerHud {
     // 导致播放页根节点上的 onClick / onMouse 收不到 —— 表现就是「点画面唤不出控制条、
     // 指针移动也不亮」。没有内容要显示时让命中测试穿透过去；
     // 只有真的有错误页时才拦截，保证「重试 / 返回」按钮不被下层抢走。
-    .hitTestBehavior(this.errMsg.length > 0 ? HitTestMode.Default : HitTestMode.Transparent)
+    .hitTestBehavior(this.errMsg.length > 0 && !this.playing ? HitTestMode.Default : HitTestMode.Transparent)
   }
 }
