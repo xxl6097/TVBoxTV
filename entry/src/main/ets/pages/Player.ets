@@ -24,6 +24,7 @@ import { PlayerFmt } from '../common/PlayerFmt';
 import { fixPlayable } from '../common/PlayUrl';
 import { friendlyErr, isCapabilityHint } from '../common/PlayerErr';
 import window from '@ohos.window';
+import audio from '@ohos.multimedia.audio';
 
 /** 单击快进快退步长 */
 const SEEK_STEP: number = 10000;
@@ -37,7 +38,6 @@ const HOLD_GAP_FAST: number = 70;
 /** 连发上限，防止按键 Up 事件丢失导致一直跑 */
 const HOLD_MAX: number = 200;
 /** 每次调音量步长 */
-const VOL_STEP: number = 0.05;
 /** 连续 seek 合并提交的延迟：HLS 频繁 seek 会卡顿，合并成一次 */
 const SEEK_COMMIT_DELAY: number = 260;
 /** 开播前探测单条直播流的超时 */
@@ -151,6 +151,8 @@ struct Player {
   @State volume: number = 1;
   @State muted: boolean = false;
   @State showVol: boolean = false;
+  /** 系统音量管理器，用来读当前媒体音量并订阅变化 */
+  private volMgr: audio.AudioVolumeManager | null = null;
   @State toast: string = '';
   @State showToast: boolean = false;
   /** 控制条按钮的指针高亮。灵犀遥控器是鼠标语义，没有焦点框，只能靠 hover 提示「点得到」 */
@@ -394,6 +396,10 @@ struct Player {
     // 电视遥控器抢不回焦点就再也收不到按键。
     this.leaving = false;
     hilog.info(0x1000, 'BOXN', 'onPageShow');
+    // 音量已交给系统：进来先读一次当前媒体音量，并订阅后续变化，
+    // 否则界面上的音量数字会一直停在默认的 100%。
+    this.syncSystemVolume();
+    this.watchSystemVolume();
     // 上次隐藏时为了彻底静音把播放器放掉了，这里重建：
     // 直播直接重连当前台，点播把进度接回去（pendingSeek 通道，起播后 seek）
     this.resumeAfterHide();
@@ -556,6 +562,9 @@ struct Player {
     this.closed = true;
     PlayGuard.unbind(this.stopHook);
     this.savePos();
+    // 先解订阅再放播放器：音量监听是全局的，留着会在页面销毁后继续
+    // 回调一个已经不存在的实例
+    this.unwatchSystemVolume();
     this.releasePlayer();
   }
 
@@ -1522,13 +1531,10 @@ struct Player {
            */
           this.errMsg = '';
           this.stallN = 0;
-          // prepared 时恢复音量偏好（异步，不挡起播）
-          Store.volumePref().then((volPref: number) => {
-            this.volume = volPref / 15; // 从 0-15 映射回 0-1
-            this.applyVolume();
-          }).catch(() => {
-            // 偏好读取失败用默认值
-          });
+          // 音量交给系统：不再读旧的应用级音量偏好（那个值和现在的声音毫无关系），
+          // 改成把系统媒体音量读回来显示。player 音量恒为 1，不做衰减。
+          this.syncSystemVolume();
+          this.applyVolume();
           // 画面显示模式只能在 prepared/playing/paused/completed 状态设置，
           // initialized 状态设会报 5400102（unsupport video scale operation）
           try {
@@ -1957,55 +1963,106 @@ struct Player {
     hilog.info(0x1000, 'BOXN', 'hold speed OFF -> %{public}sx', '' + this.speed);
   }
 
-  /** 音量 0~1，muted 时实际下发 0 */
+  /**
+   * 音量交给系统管。
+   *
+   * 原来是自己调 player.setVolume()(0~1) 做应用内衰减，后果是**侧边音量键
+   * 对它完全无效** —— 用户按音量键，系统音量条动了，声音一点没变。
+   *
+   * 平台上「写系统音量」这条路走不通：
+   *   AudioVolumeGroupManager.setVolume() 需要 ACCESS_NOTIFICATION_POLICY，
+   *   且 API 9 起已废弃（官方指向 avVolumePanel，那个只能弹面板让用户自己拖）。
+   * 能用的只有「读」：getVolume(Voice/Media) + on('volumeChange')。
+   *
+   * 所以改成：player 音量恒为 1.0，不做任何衰减，声音大小 100% 由系统
+   * 媒体音量决定；应用只负责「读回来显示」。这样侧键、系统音量条、
+   * 应用内显示三者天然一致，也不会出现「系统音量满、应用音量 10%」那种
+   * 用户无法理解的双层衰减。
+   */
   applyVolume(): void {
     if (this.player === null) {
       return;
     }
     try {
-      this.player.setVolume(this.muted ? 0 : this.volume);
+      // muted 仍走应用侧静音：静音是播放器的一个明确动作，
+      // 系统没有「只静这个应用」的接口，且用户按静音后不该去动系统音量。
+      this.player.setVolume(this.muted ? 0 : 1);
     } catch (e) {
       // 状态不允许时忽略，prepared 后会再调一次
     }
   }
 
-  changeVolume(delta: number): void {
-    let v: number = this.volume + delta;
-    if (v < 0) {
-      v = 0;
+  /** 读系统媒体音量，换算成 0~1 给 UI 用 */
+  syncSystemVolume(): void {
+    try {
+      const vm = audio.getAudioManager().getVolumeManager();
+      const group = vm.getVolumeGroupManagerSync(audio.DEFAULT_VOLUME_GROUP_ID);
+      const cur: number = group.getVolumeSync(audio.AudioVolumeType.MEDIA);
+      const max: number = group.getMaxVolumeSync(audio.AudioVolumeType.MEDIA);
+      if (max <= 0) {
+        return;
+      }
+      const v: number = cur / max;
+      this.volume = v < 0 ? 0 : (v > 1 ? 1 : v);
+      // 系统音量被调到 0，等价于静音，UI 上跟着标出来
+      this.muted = cur === 0;
+    } catch (e) {
+      // 取不到系统音量（部分设备/权限受限）就保持当前显示，不报错
+      hilog.warn(0x1000, 'BOXN', 'read system volume fail');
     }
-    if (v > 1) {
-      v = 1;
-    }
-    this.volume = v;
-    if (v > 0) {
-      this.muted = false;
-    }
-    // 保存音量偏好（映射到 0-15 范围）
-    Store.setVolumePref(Math.round(v * 15)).catch(() => {});
-    this.applyVolume();
-    this.showVol = true;
-    if (this.volTimer >= 0) {
-      clearTimeout(this.volTimer);
-    }
-    this.volTimer = setTimeout(() => {
-      this.showVol = false;
-      this.volTimer = -1;
-    }, 1600);
-    this.popOsd();
   }
 
-  toggleMute(): void {
-    this.muted = !this.muted;
-    this.applyVolume();
-    this.showVol = true;
-    if (this.volTimer >= 0) {      clearTimeout(this.volTimer);
+  /** 订阅系统音量变化：用户按侧键时要让界面上的音量显示跟着动 */
+  watchSystemVolume(): void {
+    try {
+      const vm = audio.getAudioManager().getVolumeManager();
+      this.volMgr = vm;
+      vm.on('volumeChange', (ev: audio.VolumeEvent) => {
+        if (ev.volumeType !== audio.AudioVolumeType.MEDIA) {
+          return;
+        }
+        // VolumeEvent 只带当前档位，没有上限，得自己查一次 maxVolume
+        let max: number = 1;
+        try {
+          max = this.volMgr === null ? 1 :
+            this.volMgr.getVolumeGroupManagerSync(audio.DEFAULT_VOLUME_GROUP_ID)
+              .getMaxVolumeSync(audio.AudioVolumeType.MEDIA);
+        } catch (e) {
+          max = 1;
+        }
+        if (max <= 0) {
+          max = 1;
+        }
+        hilog.info(0x1000, 'BOXN', 'system volume %{public}d/%{public}d', ev.volume, max);
+        this.volume = ev.volume / max;
+        this.muted = ev.volume === 0;
+        this.showVol = true;
+        if (this.volTimer >= 0) {
+          clearTimeout(this.volTimer);
+        }
+        this.volTimer = setTimeout(() => {
+          this.showVol = false;
+          this.volTimer = -1;
+        }, 1600);
+      });
+    } catch (e) {
+      hilog.warn(0x1000, 'BOXN', 'watch system volume fail');
     }
-    this.volTimer = setTimeout(() => {
-      this.showVol = false;
-      this.volTimer = -1;
-    }, 1600);
-    this.popOsd();
+  }
+
+
+
+  /** 取消系统音量订阅。页面销毁前必须解掉，否则会回调到已销毁的实例 */
+  unwatchSystemVolume(): void {
+    if (this.volMgr === null) {
+      return;
+    }
+    try {
+      this.volMgr.off('volumeChange');
+    } catch (e) {
+      // 没订阅过就 off 会抛，忽略
+    }
+    this.volMgr = null;
   }
 
   /**
@@ -2413,10 +2470,22 @@ struct Player {
       } else {
         this.seekBy(1, repeat);
       }
-    } else if (code === KeyCode.KEYCODE_DPAD_UP) {
-      this.changeVolume(VOL_STEP);
-    } else if (code === KeyCode.KEYCODE_DPAD_DOWN) {
-      this.changeVolume(-VOL_STEP);
+    } else if (code === KeyCode.KEYCODE_DPAD_UP || code === KeyCode.KEYCODE_DPAD_DOWN) {
+      /**
+       * 上下键原来用来调音量。音量交给系统之后应用改不了系统音量，
+       * 这里改成「把当前系统音量显示出来」，让用户知道现在是多少、
+       * 该去按哪调（遥控器/侧键的音量键走的是系统自己的通道）。
+       */
+      this.syncSystemVolume();
+      this.showVol = true;
+      if (this.volTimer >= 0) {
+        clearTimeout(this.volTimer);
+      }
+      this.volTimer = setTimeout(() => {
+        this.showVol = false;
+        this.volTimer = -1;
+      }, 1600);
+      this.popOsd();
     }
   }
 
@@ -2483,20 +2552,20 @@ struct Player {
       return;
     }
 
-    // 音量（遥控器音量键若被系统放行到应用也能接住）
-    if (code === KeyCode.KEYCODE_VOLUME_UP) {
+    /**
+     * 音量键：**不拦**，直接放行给系统。
+     *
+     * 这里原来自己 changeVolume() 再 return，等于把音量键截胡了 ——
+     * 系统收不到按键，真正的媒体音量没动，改的只是应用内部的衰减系数。
+     * 音量交给系统之后必须让事件穿过去，由系统去调、我们再通过
+     * on('volumeChange') 读回来显示。
+     *
+     * onKey 返回 void（onKeyEvent 那层也是 void，不消费就继续冒泡），
+     * 所以这里连 return 都不写，落到函数末尾自然放行。
+     */
+    if (code === KeyCode.KEYCODE_VOLUME_UP || code === KeyCode.KEYCODE_VOLUME_DOWN ||
+      code === KeyCode.KEYCODE_MUTE) {
       this.clearHold();
-      this.changeVolume(VOL_STEP);
-      return;
-    }
-    if (code === KeyCode.KEYCODE_VOLUME_DOWN) {
-      this.clearHold();
-      this.changeVolume(-VOL_STEP);
-      return;
-    }
-    if (code === KeyCode.KEYCODE_MUTE) {
-      this.clearHold();
-      this.toggleMute();
       return;
     }
 
@@ -2682,17 +2751,8 @@ struct Player {
     if (act === 3) {
       return '+  10 秒';
     }
-    if (act === 4) {
-      return '音量 −';
-    }
-    if (act === 5) {
-      return '音量 +';
-    }
     if (act === 6) {
       return this.isLive ? '下一台' : '下一集';
-    }
-    if (act === 7) {
-      return this.muted ? '取消静音' : '静音';
     }
     if (act === 9) {
       // 直播没有「集」，这条入口只在点播时出现
@@ -2720,14 +2780,8 @@ struct Player {
       this.togglePlay();
     } else if (act === 3) {
       this.seekBy(1, false);
-    } else if (act === 4) {
-      this.changeVolume(-VOL_STEP);
-    } else if (act === 5) {
-      this.changeVolume(VOL_STEP);
     } else if (act === 6) {
       this.switchEpisode(1);
-    } else if (act === 7) {
-      this.toggleMute();
     } else if (act === 8) {
       this.showQ = !this.showQ;
       // 两个面板互斥：叠在一起会互相遮挡，也分不清点的是哪个
@@ -4412,126 +4466,39 @@ struct Player {
              * 之前是一个 Flex(wrap) 左对齐：竖屏会随机在中间某个按钮处
              * 换行、第二排只占半行，右边一大块空白 —— 看着就是「没排布」。
              */
-            if (this.isLive && !this.landscape) {
-              /**
-               * 直播 + 竖屏：同样用 Grid 分两排（4 + 3）。
-               *
-               * 这里原本判断「直播只有 7 个，横竖屏都能一行放下」——
-               * 是按横屏宽度估的。手机竖屏只有 ~330vp，7 个按钮减去
-               * 6 个 8vp 间距后每个约 40vp，扣掉左右各 6 的 padding
-               * 只剩 28vp，「换台」「播放设置」四个字压根放不下，
-               * 全被压成省略号。7 个按钮两排是 4 + 3，每格 76vp。
-               */
-              Grid() {
-                GridItem() {
-                  this.CtlBtn(0, false)
-                }
-                GridItem() {
-                  this.CtlBtn(2, false)
-                }
-                GridItem() {
-                  this.CtlBtn(4, false)
-                }
-                GridItem() {
-                  this.CtlBtn(5, false)
-                }
-                GridItem() {
-                  this.CtlBtn(6, false)
-                }
-                GridItem() {
-                  this.CtlBtn(7, false)
-                }
-                GridItem() {
-                  this.CtlBtn(8, false)
-                }
-              }
-              .columnsTemplate('1fr 1fr 1fr 1fr')
-              .columnsGap(8)
-              .rowsGap(8)
-              .width('100%')
-              // 与点播竖屏一致：不写高度 Grid 会被拉满，两排变两行巨高的格子
-              .height(128)
-              .margin({ top: 12 })
-            } else if (this.isLive) {
-              // 直播 + 横屏（或电视）：7 个一排放得下
-              Row({ space: 8 }) {
-                this.CtlBtn(0)
+            /**
+             * 控制条按钮。
+             *
+             * 音量已经交给系统（player 恒为 1.0，不做应用内衰减），
+             * 所以「音量 −」「音量 +」「静音」三个按钮全部去掉 ——
+             * 它们改的是应用自己的衰减系数，和系统音量是两层，
+             * 留着只会让用户困惑「为什么按到 100% 还是小声」。
+             * 音量请用侧边音量键，界面上的显示只是把系统音量读出来。
+             *
+             * 去掉之后：
+             *   点播 6 个：上一集 / −10秒 / 暂停 / +10秒 / 下一集 / 选集 / 播放设置
+             *   直播 4 个：上一台 / 暂停 / 下一台 / 播放设置
+             * 手机上竖屏也就一排放得下了（横屏同样一排），
+             * 不再需要之前那套 5+4、4+3 的两排 Grid。
+             */
+            Row({ space: 8 }) {
+              this.CtlBtn(0)
+              if (this.isLive) {
                 this.CtlBtn(2)
-                this.CtlBtn(4)
-                this.CtlBtn(5)
                 this.CtlBtn(6)
-                this.CtlBtn(7)
-                this.CtlBtn(8)
-              }
-              .width('100%')
-              .margin({ top: 12 })
-            } else if (this.landscape) {
-              // 横屏：一行铺满
-              Row({ space: 8 }) {
-                this.CtlBtn(0)
+              } else {
                 this.CtlBtn(1)
                 this.CtlBtn(2)
                 this.CtlBtn(3)
-                this.CtlBtn(4)
-                this.CtlBtn(5)
                 this.CtlBtn(6)
-                this.CtlBtn(7)
                 if (Playlist.count() > 1) {
                   this.CtlBtn(9)
                 }
-                this.CtlBtn(8)
               }
-              .width('100%')
-              .margin({ top: 12 })
-            } else {
-              // 竖屏：Grid 均分，两排各 5/4 格，宽度一致、左边对齐
-              Grid() {
-                GridItem() {
-                  this.CtlBtn(0, false)
-                }
-                GridItem() {
-                  this.CtlBtn(1, false)
-                }
-                GridItem() {
-                  this.CtlBtn(2, false)
-                }
-                GridItem() {
-                  this.CtlBtn(3, false)
-                }
-                GridItem() {
-                  this.CtlBtn(4, false)
-                }
-                GridItem() {
-                  this.CtlBtn(5, false)
-                }
-                GridItem() {
-                  this.CtlBtn(6, false)
-                }
-                GridItem() {
-                  this.CtlBtn(7, false)
-                }
-                if (Playlist.count() > 1) {
-                  GridItem() {
-                    this.CtlBtn(9, false)
-                  }
-                }
-                GridItem() {
-                  this.CtlBtn(8, false)
-                }
-              }
-              .columnsTemplate('1fr 1fr 1fr 1fr 1fr')
-              .columnsGap(8)
-              .rowsGap(8)
-              .width('100%')
-              /**
-               * 高度必须收死。Grid 不写高度时会按可用空间伸展，
-               * 两排按钮会被拉成两行巨高的格子，整个控制面板跟着变高。
-               * 13sp 文字行高约 18 + 上下 padding 各 10 = 38，允许两行则 56；
-               * 两排 + 8 间距 = 120。留一点余量给字体缩放。
-               */
-              .height(128)
-              .margin({ top: 12 })
+              this.CtlBtn(8)
             }
+            .width('100%')
+            .margin({ top: 12 })
 
             Row() {
               Text(this.isLive ? '频道地址直连播放，不经过解析' : ('解析：' + this.via))
@@ -4736,11 +4703,14 @@ struct Player {
                 this.brightTimer = -1;
               }, 2000) as number;
             } else {
-              // 右半屏：调音量
-              const deltaVol: number = e.offsetY > 0 ? -VOL_STEP : VOL_STEP;
-              let vol: number = this.volume + deltaVol;
-              vol = vol < 0 ? 0 : (vol > 1 ? 1 : vol);
-              this.volume = vol;
+              /**
+               * 右半屏：调音量。
+               *
+               * 音量已经交给系统，应用不能再自己加减数字。滑动过程中
+               * 反复弹系统面板会很难看（每次 offsetY 变化都会触发），
+               * 所以这里只把界面上的音量提示条亮起来，真正调音量放到
+               * onActionEnd 里弹一次系统面板 —— 用户拖一下、松手、面板出来调。
+               */
               this.showVol = true;
               this.popOsd();
               if (this.volTimer >= 0) {
@@ -4762,6 +4732,14 @@ struct Player {
               Tip.show(this.fmt(target));
             }
             this.seekPreview = -1;
+          }
+          /**
+           * 竖向滑动只是把系统音量显示出来。
+           * 音量归系统管，应用没有可编程弹出的音量面板（见 applyVolume 的说明），
+           * 所以这里不再尝试弹面板，也不假装能调 —— 松手时读一次最新的系统音量。
+           */
+          if (this.panAxis === 'y') {
+            this.syncSystemVolume();
           }
         })
         .onActionCancel(() => {
