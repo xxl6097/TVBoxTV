@@ -54,6 +54,8 @@ struct SettingPage {
   @State presets: LivePreset[] = [];
   /** 订阅源名字，空串表示还没订阅 */
   @State subName: string = '';
+  /** 订阅源自带的更新时间（JSON 的 updated 字段），空串 = 订阅没写 */
+  @State subUpdated: string = '';
   /** EPG（XMLTV）节目单地址；空串 = 没配置，直播页不显示「现在播什么」 */
   @State epgUrl: string = '';
   /**
@@ -135,6 +137,7 @@ struct SettingPage {
     this.crawlInfo = await Store.crawlSummary();
     this.presets = fromLives(await Store.subLives());
     this.subName = await Store.subName();
+    this.subUpdated = await Store.subUpdated();
     this.epgUrl = await Store.epgUrl();
     this.wdSources = await Store.webdavSources();
     await this.reloadWdScanCounts();
@@ -504,6 +507,7 @@ struct SettingPage {
           this.url = v;
         }
         this.subName = r.name;
+        this.subUpdated = r.updated;
         Cms.clearCache();
         await this.refresh();
         await this.reloadSubState();
@@ -1292,10 +1296,22 @@ struct SettingPage {
       return;
     }
     this.crawlBusy = true;
-    this.crawlInfo = '正在逐个站源抓取最新影片，大约需要 1 分钟…';
+    this.crawlInfo = '正在刷新订阅并逐个站源抓取最新影片，大约需要 1 分钟…';
     try {
       const r: CrawlResult = await Crawler.run(true);
       this.crawlInfo = Crawler.summaryOf(r);
+      // 这一轮会连订阅一起刷新（站源 + 直播源），订阅名和更新时间都可能变了，
+      // 直接从结果回填，不用再读一次 preferences
+      if (r.cfgUpdated) {
+        if (r.subName.length > 0) {
+          this.subName = r.subName;
+        }
+        if (r.subUpdated.length > 0) {
+          this.subUpdated = r.subUpdated;
+        }
+        // 站源整批换过，站点列表/启用数要重算
+        await this.refresh();
+      }
     } catch (err) {
       const e = err as Error;
       this.crawlInfo = '更新失败：' + e.message;
@@ -1397,7 +1413,10 @@ struct SettingPage {
   SectionSource() {
     this.GroupLabel('播放源', 0)
     Column() {
-      SRowView({ label: '订阅', value: this.subName.length > 0 ? this.subName : '未订阅', arrow: true, focused: this.hi('r_sub'),
+      SRowView({ label: '订阅', value: this.subName.length > 0 ? this.subName : '未订阅',
+        // 订阅源自带更新时间：让用户一眼看出手上这份订阅新不新
+        sub: this.subUpdated.length > 0 ? ('更新于 ' + this.subUpdated) : '',
+        arrow: true, focused: this.hi('r_sub'),
         onTap: () => {
           this.openQr('sub');
         },

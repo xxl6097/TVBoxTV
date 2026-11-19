@@ -25,6 +25,12 @@ export class CrawlResult {
   items: number = 0;
   /** 是否顺带更新了远程配置 */
   cfgUpdated: boolean = false;
+  /** 刷新后的订阅名（cfgUpdated 时有效） */
+  subName: string = '';
+  /** 订阅源自带的更新时间（JSON 的 updated 字段），空串 = 订阅没写 */
+  subUpdated: string = '';
+  /** 刷新订阅失败的原因（成功或没配订阅时为空） */
+  cfgError: string = '';
   ok: boolean = true;
   msg: string = '';
 }
@@ -107,10 +113,23 @@ export class Crawler {
       const url: string = await Store.getConfigUrl();
       if (url.length > 0) {
         try {
-          await Store.loadConfig(url);
+          /**
+           * 用 loadSubscription 而不是 loadConfig。
+           *
+           * loadConfig 只解析 sites —— 一份订阅里通常还带 lives（直播源），
+           * 走它的话「立即更新」永远刷不到直播，用户换了直播源得手动重填一次订阅。
+           * loadSubscription 是同一个入口的完整版：sites + lives + name + updated 全刷。
+           *
+           * 站源为空时不抛错（订阅可能只配了直播），所以不能用「有没有站点」
+           * 判断成功与否 —— 只要没抛异常就算刷新成功。
+           */
+          const sub = await Store.loadSubscription(url);
           res.cfgUpdated = true;
+          res.subName = sub.name;
+          res.subUpdated = sub.updated;
         } catch (err) {
           res.cfgUpdated = false;
+          res.cfgError = (err as Error).message;
         }
       }
     }
@@ -228,7 +247,12 @@ export class Crawler {
       s += ' · ' + r.dead + ' 个无响应';
     }
     if (r.cfgUpdated) {
-      s += ' · 配置已刷新';
+      // 订阅内有 updated 就一并带出来，用户最关心的就是「这份订阅是哪天的」
+      s += r.subUpdated.length > 0 ? (' · 订阅已刷新（' + r.subUpdated + '）') : ' · 订阅已刷新';
+    } else if (r.cfgError.length > 0) {
+      // 以前这里静默吞掉，用户只看到「N 个站源无响应」，
+      // 完全不知道是订阅地址本身挂了 —— 这类失败必须显式说出来
+      s += ' · 订阅刷新失败：' + r.cfgError;
     }
     return s;
   }

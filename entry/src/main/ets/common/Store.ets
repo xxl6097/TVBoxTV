@@ -104,11 +104,13 @@ export class KwRecord {
   time: number = 0;
 }
 
-/** loadSubscription 的返回：订阅名 + 点播站点数 + 直播源数 */
+/** loadSubscription 的返回：订阅名 + 点播站点数 + 直播源数 + 订阅自带更新时间 */
 export class SubResult {
   name: string = '';
   sites: number = 0;
   lives: number = 0;
+  /** 订阅 JSON 里的 updated 字段原值（订阅作者标注的更新时间），空串 = 订阅没写 */
+  updated: string = '';
 }
 
 /** 配置与本地数据（preferences） */
@@ -167,6 +169,20 @@ export class Store {
     return await Store.prefs.get('subName', '') as string;
   }
 
+  /**
+   * 订阅源自带的更新时间（JSON 里的 updated 字段），空串 = 订阅没写或未订阅。
+   *
+   * 这是**订阅作者**标注的时间，不是「我们什么时候拉的」——
+   * 用户想看的正是「我这份订阅新不新」，所以必须原样带出来，
+   * 不要拿本地拉取时间冒充。
+   */
+  static async subUpdated(): Promise<string> {
+    if (Store.prefs === null) {
+      return '';
+    }
+    return await Store.prefs.get('subUpdated', '') as string;
+  }
+
   // ---------- EPG 节目单 ----------
 
   /** EPG（XMLTV）地址，空串 = 没配置，直播页不显示节目名 */
@@ -223,6 +239,11 @@ export class Store {
 
     if (Store.prefs !== null) {
       await Store.prefs.put('cfgText', text);
+      // 记住订阅自带的更新时间，设置页要展示「这份订阅新不新」
+      const up: string = cfg.updated !== undefined && cfg.updated !== null ? String(cfg.updated) : '';
+      if (up.length > 0) {
+        await Store.prefs.put('subUpdated', up);
+      }
       if (src.startsWith('http')) {
         await Store.prefs.put('cfgUrl', src);
         // 用户自己填的地址：标记住，之后订阅导入不会覆盖它
@@ -268,6 +289,12 @@ export class Store {
 
     const r: SubResult = new SubResult();
     r.name = cfg.name !== undefined && cfg.name !== null ? cfg.name : '';
+    // updated 是整份订阅的属性，和 sites/lives 有没有无关，
+    // 所以在这里读、在外面存，不要塞进 sites 分支（纯直播订阅会丢）。
+    r.updated = cfg.updated !== undefined && cfg.updated !== null ? String(cfg.updated) : '';
+    if (Store.prefs !== null && r.updated.length > 0) {
+      await Store.prefs.put('subUpdated', r.updated);
+    }
 
     // 点播站源
     if (cfg.sites !== undefined && cfg.sites !== null && cfg.sites.length > 0) {

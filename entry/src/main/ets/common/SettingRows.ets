@@ -69,6 +69,8 @@ export class S {
 export struct SRowView {
   @Prop label: string = '';
   @Prop value: string = '';
+  /** 值下方的小字副标题（如订阅源的更新时间），空串不占位 */
+  @Prop sub: string = '';
   @Prop arrow: boolean = false;
   @Prop focused: boolean = false;
   /** 破坏性操作：标题用警示色 */
@@ -99,17 +101,39 @@ export struct SRowView {
         .margin({ left: 12 })
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
-      if (this.value.length > 0) {
-        // 值改成占剩余空间并靠右省略，短值时位置和原来一致，
-        // 长值时由它自己缩，而不是去抢标签的宽度。
-        Text(this.value)
-          .fontSize(14)
-          .fontColor(this.focused ? T.TXT : (this.warn ? T.DIM : T.SUB))
-          .layoutWeight(1)
-          .textAlign(TextAlign.End)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ left: 12 })
+      if (this.value.length > 0 || this.sub.length > 0) {
+        /**
+         * 值区域：主值 + 可选副标题（小字）。
+         *
+         * 副标题专为「订阅」这行加的：订阅名下面要跟一行订阅源自己的更新时间
+         * （JSON 的 updated），两者挤在一个 Text 里靠省略号断开完全看不清。
+         * 上下两行等高排列，行高不变，其他行的表现和以前一致（sub 为空时不渲染）。
+         */
+        Column() {
+          if (this.value.length > 0) {
+            Text(this.value)
+              .fontSize(14)
+              .fontColor(this.focused ? T.TXT : (this.warn ? T.DIM : T.SUB))
+              .width('100%')
+              .textAlign(TextAlign.End)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          if (this.sub.length > 0) {
+            Text(this.sub)
+              .fontSize(11.5)
+              .fontColor(this.focused ? S.GROUP_TXT : T.DIM)
+              .width('100%')
+              .textAlign(TextAlign.End)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .margin({ top: 1 })
+          }
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.End)
+        .justifyContent(FlexAlign.Center)
+        .margin({ left: 12 })
       }
       if (this.arrow) {
         Text('›')
