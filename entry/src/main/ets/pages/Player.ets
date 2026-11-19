@@ -3364,9 +3364,12 @@ struct Player {
    * 原来每个分组只有一行 14sp 灰字（「画面比例」「倍速」），
    * 七八个分组叠在一起完全分不清边界，用户得逐行读才知道哪几行是一组。
    * 改成图标起头 + 标题加重 + 值变色，视线一扫就能定位。
+   *
+   * value 必须传「取值函数」而不是取好的字符串：@Builder 的参数是值传递，
+   * 传字符串只在首帧算一次，切档位后标题右边的当前值不会变（踩过）。
    */
   @Builder
-  SecHead(icon: Resource, title: string, value: string, scope: string) {
+  SecHead(icon: Resource, title: string, value: () => string, scope: string) {
     Row() {
       Image(icon)
         .width(18)
@@ -3381,8 +3384,8 @@ struct Player {
       if (scope.length > 0) {
         this.ScopeTag(scope)
       }
-      if (value.length > 0) {
-        Text(value)
+      if (value().length > 0) {
+        Text(value())
           .fontSize(13)
           .fontColor(T.SELECTED)
           .margin({ left: 10 })
@@ -3399,11 +3402,16 @@ struct Player {
    * 原来只有文字变色（选中黄、未选白），选项一多就分不清「哪个是当前值」——
    * 尤其「跳过片头」那排 0/15/30/60/90 长得都一样。
    * 选中时补一个 ✓，不再只靠颜色。
+   *
+   * sel 必须传「判定函数」，不能传 `this.xxx === n` 算好的布尔值：
+   * @Builder 参数是值传递，布尔值只在首帧求值，点选后 ✓、高亮、
+   * 标题右边的当前值全都停在旧状态（踩过：跳过片头实际生效但界面没变）。
+   * 在 builder 内部调 sel()，ArkUI 才能在渲染时建立状态依赖。
    */
   @Builder
-  OptChip(label: string, on: boolean, key: string, act: () => void) {
+  OptChip(label: string, sel: () => boolean, key: string, act: () => void) {
     Row() {
-      if (on) {
+      if (sel()) {
         Text('✓')
           .fontSize(13)
           .fontColor(T.SELECTED)
@@ -3411,13 +3419,13 @@ struct Player {
       }
       Text(label)
         .fontSize(14)
-        .fontColor(on ? T.SELECTED : T.PANEL_TXT)
+        .fontColor(sel() ? T.SELECTED : T.PANEL_TXT)
         .maxLines(1)
     }
     .padding({ left: 14, right: 14, top: 9, bottom: 9 })
-    .backgroundColor(on ? T.PANEL_BTN_HI : T.WHITE_15)
+    .backgroundColor(sel() ? T.PANEL_BTN_HI : T.WHITE_15)
     .borderRadius(T.RADIUS_PILL)
-    .border({ width: T.BORDER, color: on ? T.SELECTED : '#00000000' })
+    .border({ width: T.BORDER, color: sel() ? T.SELECTED : '#00000000' })
     .margin({ right: 10, bottom: 8 })
     .animation({ duration: T.ANIM, curve: Curve.EaseOut })
     .onHover((hv: boolean) => this.hoverTo(key, hv))
@@ -3449,43 +3457,6 @@ struct Player {
       .onHover((hv: boolean) => this.hoverTo(key, hv))
       .onClick(() => this.tap(key + '_c', act))
       .onMouse(this.ptr(key + '_c', act))
-  }
-
-  /** 画面显示模式选项（拉伸/裁剪），放进画质面板 */
-  @Builder
-  ScaleChip(mode: number, label: string) {
-    Text(label)
-      .fontSize(15)
-      .fontColor(this.scaleMode === mode ? T.SELECTED : T.PANEL_TXT)
-      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.scaleMode === mode ? T.PANEL_BTN_HI : T.WHITE_15)
-      .borderRadius(T.RADIUS_PILL)
-      .border({ width: T.BORDER, color: this.scaleMode === mode ? T.SELECTED : '#00000000' })
-      .margin({ right: 10, bottom: 8 })
-      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-      .onClick(() => this.tap('sc' + mode, () => this.setScale(mode)))
-      .onMouse(this.ptr('sc' + mode, () => this.setScale(mode)))
-  }
-
-  /** 跳过片头/片尾的档位 chip。kind = 'intro' | 'outro'，sec 单位秒，0 表示关 */
-  @Builder
-  SkipChip(kind: string, sec: number) {
-    Text(this.skipLabel(sec))
-      .fontSize(15)
-      .fontColor(this.skipOn(kind, sec) ? T.SELECTED : T.PANEL_TXT)
-      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .backgroundColor(this.skipOn(kind, sec) ? T.PANEL_BTN_HI : T.WHITE_15)
-      .borderRadius(T.RADIUS_PILL)
-      .border({ width: T.BORDER, color: this.skipOn(kind, sec) ? T.SELECTED : '#00000000' })
-      .margin({ right: 10, bottom: 8 })
-      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
-      .onHover((hv: boolean) => this.hoverTo('sk_' + kind + '_' + sec, hv))
-      .onClick(() => this.tap('skc_' + kind + '_' + sec, () => {
-        this.pickSkip(kind, sec);
-      }))
-      .onMouse(this.ptr('skc_' + kind + '_' + sec, () => {
-        this.pickSkip(kind, sec);
-      }))
   }
 
   // ==================== 倍速 / 字幕 ====================
@@ -3737,14 +3708,17 @@ struct Player {
       }))
   }
 
+  /**
+   * 当前档位是否等于 sec。
+   *
+   * 只在 builder 内部（或它的取值函数里）调用，别把结果当参数传进去：
+   * @Builder 参数是值传递，算好的布尔值不会跟着状态变。
+   */
   private skipOn(kind: string, sec: number): boolean {
     const cur: number = kind === 'intro' ? this.introSkipSec : this.outroSkipSec;
     return cur === sec;
   }
 
-  private skipLabel(sec: number): string {
-    return sec <= 0 ? '关' : (sec + ' 秒');
-  }
 
   private async pickSkip(kind: string, sec: number): Promise<void> {
     if (kind === 'intro') {
@@ -4256,34 +4230,35 @@ struct Player {
         // 解决直播常见的「4:3 画面被拉宽变形」或「四周黑边」问题。
         // 手机竖屏默认「等比适应」；电视端默认「拉伸铺满」。
         this.SecHead($r('app.media.ic_ratio'), '画面比例',
-          this.scaleMode === 2 ? '等比适应' : (this.scaleMode === 1 ? '裁剪铺满' : '拉伸铺满'), '全局')
+          () => this.scaleMode === 2 ? '等比适应' : (this.scaleMode === 1 ? '裁剪铺满' : '拉伸铺满'), '全局')
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-          this.OptChip('留黑边', this.scaleMode === 2, 'sc2', () => this.setScale(2))
-          this.OptChip('裁剪铺满', this.scaleMode === 1, 'sc1', () => this.setScale(1))
-          this.OptChip('拉伸铺满', this.scaleMode === 0, 'sc0', () => this.setScale(0))
+          this.OptChip('留黑边', () => this.scaleMode === 2, 'sc2', () => this.setScale(2))
+          this.OptChip('裁剪铺满', () => this.scaleMode === 1, 'sc1', () => this.setScale(1))
+          this.OptChip('拉伸铺满', () => this.scaleMode === 0, 'sc0', () => this.setScale(0))
         }
         .width('100%')
 
         // 倍速：按**当前这部片**保存（点播改了不影响其他剧/电影）
         this.SecHead($r('app.media.ic_speed'), '倍速',
-          this.speed === 1 ? '正常' : (this.speed + ' 倍'), '仅本片')
+          () => this.speed === 1 ? '正常' : (this.speed + ' 倍'), '仅本片')
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
           ForEach(SPEEDS, (s: number) => {
-            this.OptChip(s === 1 ? '正常' : (s + 'x'), this.speed === s, 'spd' + s, () => this.pickSpeed(s))
+            this.OptChip(s === 1 ? '正常' : (s + 'x'), () => this.speed === s, 'spd' + s,
+              () => this.pickSpeed(s))
           }, (s: number) => 'spd_' + s)
         }
         .width('100%')
 
         // 字幕：只有源里确实带字幕轨时才列出可选项
         this.SecHead($r('app.media.ic_subtitle'), '字幕',
-          this.subs.length === 0
+          () => this.subs.length === 0
             ? '源无字幕'
             : (this.subSel < 0 ? '已关闭' : this.subs[this.subSel].label), '')
         if (this.subs.length > 0) {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-            this.OptChip('关闭', this.subSel < 0, 'sub-1', () => this.pickSub(-1))
+            this.OptChip('关闭', () => this.subSel < 0, 'sub-1', () => this.pickSub(-1))
             ForEach(this.subs, (t: SubTrack, i: number) => {
-              this.OptChip(t.label, this.subSel === i, 'sub' + i, () => this.pickSub(i))
+              this.OptChip(t.label, () => this.subSel === i, 'sub' + i, () => this.pickSub(i))
             }, (t: SubTrack, i: number) => 'sub_' + i + '_' + t.index)
           }
           .width('100%')
@@ -4324,13 +4299,13 @@ struct Player {
 
         // 跳过片头片尾：起播自动跳片头，播到片尾自动切下一集（或结束）
         this.SecHead($r('app.media.ic_skip'), '跳过片头',
-          this.introSkipSec > 0 ? (this.introSkipSec + ' 秒') : '未设置', '仅本片')
+          () => this.introSkipSec > 0 ? (this.introSkipSec + ' 秒') : '未设置', '仅本片')
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-          this.OptChip('关闭', this.introSkipSec === 0, 'in0', () => this.pickSkip('intro', 0))
-          this.OptChip('15 秒', this.introSkipSec === 15, 'in15', () => this.pickSkip('intro', 15))
-          this.OptChip('30 秒', this.introSkipSec === 30, 'in30', () => this.pickSkip('intro', 30))
-          this.OptChip('60 秒', this.introSkipSec === 60, 'in60', () => this.pickSkip('intro', 60))
-          this.OptChip('90 秒', this.introSkipSec === 90, 'in90', () => this.pickSkip('intro', 90))
+          this.OptChip('关闭', () => this.skipOn('intro', 0), 'in0', () => this.pickSkip('intro', 0))
+          this.OptChip('15 秒', () => this.skipOn('intro', 15), 'in15', () => this.pickSkip('intro', 15))
+          this.OptChip('30 秒', () => this.skipOn('intro', 30), 'in30', () => this.pickSkip('intro', 30))
+          this.OptChip('60 秒', () => this.skipOn('intro', 60), 'in60', () => this.pickSkip('intro', 60))
+          this.OptChip('90 秒', () => this.skipOn('intro', 90), 'in90', () => this.pickSkip('intro', 90))
           this.ActChip('自定义', 'in_custom', () => this.onSkipAction('intro', 'custom'))
           this.ActChip('标当前', 'in_mark', () => this.onSkipAction('intro', 'mark'))
         }
@@ -4341,13 +4316,13 @@ struct Player {
         }
 
         this.SecHead($r('app.media.ic_skip'), '跳过片尾',
-          this.outroSkipSec > 0 ? (this.outroSkipSec + ' 秒') : '未设置', '仅本片')
+          () => this.outroSkipSec > 0 ? (this.outroSkipSec + ' 秒') : '未设置', '仅本片')
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-          this.OptChip('关闭', this.outroSkipSec === 0, 'out0', () => this.pickSkip('outro', 0))
-          this.OptChip('15 秒', this.outroSkipSec === 15, 'out15', () => this.pickSkip('outro', 15))
-          this.OptChip('30 秒', this.outroSkipSec === 30, 'out30', () => this.pickSkip('outro', 30))
-          this.OptChip('60 秒', this.outroSkipSec === 60, 'out60', () => this.pickSkip('outro', 60))
-          this.OptChip('90 秒', this.outroSkipSec === 90, 'out90', () => this.pickSkip('outro', 90))
+          this.OptChip('关闭', () => this.skipOn('outro', 0), 'out0', () => this.pickSkip('outro', 0))
+          this.OptChip('15 秒', () => this.skipOn('outro', 15), 'out15', () => this.pickSkip('outro', 15))
+          this.OptChip('30 秒', () => this.skipOn('outro', 30), 'out30', () => this.pickSkip('outro', 30))
+          this.OptChip('60 秒', () => this.skipOn('outro', 60), 'out60', () => this.pickSkip('outro', 60))
+          this.OptChip('90 秒', () => this.skipOn('outro', 90), 'out90', () => this.pickSkip('outro', 90))
           this.ActChip('自定义', 'out_custom', () => this.onSkipAction('outro', 'custom'))
           this.ActChip('标当前', 'out_mark', () => this.onSkipAction('outro', 'mark'))
         }
