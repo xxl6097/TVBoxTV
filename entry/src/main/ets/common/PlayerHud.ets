@@ -41,14 +41,28 @@ export struct PlayerHud {
   /** 两个按钮的高亮态，由页面的 hover 状态传入 */
   @Prop retryHi: boolean = false;
   @Prop backHi: boolean = false;
+  /** 「换个源看」按钮的高亮态 */
+  @Prop altHi: boolean = false;
+  /**
+   * 是否给「换个源看」这颗按钮。
+   *
+   * 这条线路的片源本身坏了的时候，重试多少次都没用 —— 用户只能自己退出去、
+   * 记着片名、再去搜索页重新搜一遍。有点播剧名时直接给个出口。
+   */
+  @Prop hasAlt: boolean = false;
 
   onRetry: () => void = () => {
   };
   onBack: () => void = () => {
   };
+  /** 带着片名跳到搜索页，换一个站源看同一部片 */
+  onAltSource: () => void = () => {
+  };
   onHoverRetry: (on: boolean) => void = () => {
   };
   onHoverBack: (on: boolean) => void = () => {
+  };
+  onHoverAlt: (on: boolean) => void = () => {
   };
 
   build() {
@@ -97,26 +111,40 @@ export struct PlayerHud {
             : '常见原因：站源已失效、播放地址需要专用解析器、或编码不被系统支持。')
             .fontSize(16).fontColor(T.PANEL_DIM).margin({ top: 16 })
             .textAlign(TextAlign.Center).width('80%')
-          Row() {
+          // 手机竖屏只有 360vp 左右，三颗按钮并排放不下：放不下就换行居中，
+          // 电视横屏仍然是一行
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Center }) {
             Text('重试')
               .fontSize(19).fontColor('#FFFFFF')
-              .height(52).padding({ left: 38, right: 38 })
+              .height(52).padding({ left: 32, right: 32 })
               .backgroundColor(this.retryHi ? T.PANEL_TXT : T.WHITE_15)
               .borderRadius(26).textAlign(TextAlign.Center)
               .animation({ duration: 120, curve: Curve.EaseOut })
               .onHover((hv: boolean) => this.onHoverRetry(hv))
               .onClick(() => this.onRetry())
+            if (this.hasAlt) {
+              Text('换个源看')
+                .fontSize(19).fontColor('#FFFFFF')
+                .height(52).padding({ left: 32, right: 32 })
+                .backgroundColor(this.altHi ? T.PANEL_BTN_HI : T.WHITE_15)
+                .borderRadius(26).textAlign(TextAlign.Center)
+                .margin({ left: 16 })
+                .animation({ duration: 120, curve: Curve.EaseOut })
+                .onHover((hv: boolean) => this.onHoverAlt(hv))
+                .onClick(() => this.onAltSource())
+            }
             Text(this.isLive ? '返回频道列表' : '返回选集')
               .fontSize(19).fontColor('#FFFFFF')
-              .height(52).padding({ left: 38, right: 38 })
+              .height(52).padding({ left: 32, right: 32 })
               .backgroundColor(this.backHi ? T.PANEL_BTN_HI : T.WHITE_15)
               .borderRadius(26).textAlign(TextAlign.Center)
-              .margin({ left: 18 })
+              .margin({ left: this.hasAlt ? 16 : 18 })
               .animation({ duration: 120, curve: Curve.EaseOut })
               .onHover((hv: boolean) => this.onHoverBack(hv))
               .onClick(() => this.onBack())
           }
           .margin({ top: 28 })
+          .flexShrink(0)
         }
         .width('100%').height('100%').justifyContent(FlexAlign.Center)
         .backgroundColor(T.BLACK_80)

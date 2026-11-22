@@ -103,6 +103,12 @@ struct Detail {
     // 顺序反了的话，按旧 key 找不到自己的播放记录，续播行就没了
     this.site = await this.resolveSite();
     this.fav = await Store.isFavorite(this.siteKey, this.vodId);
+    if (this.fav) {
+      // 打开详情页就算「已经看到这次更新」，收藏页的「有新集」角标随之消失。
+      // 不 await：这只是个角标状态，不该拖慢首屏。
+      Store.markFavSeen(this.siteKey, this.vodId).catch(() => {
+      });
+    }
     await this.loadSeen();
     await this.load();
   }

@@ -6,7 +6,7 @@
 import { Feedback } from '../common/Feedback';
 import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
-import { Store, FavItem, FavGroupDef } from '../common/Store';
+import { Store, FavItem, FavGroupDef, FavNew } from '../common/Store';
 import { DetailParam, T } from '../common/Model';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { Device, KEY_IS_PHONE } from '../common/Device';
@@ -49,6 +49,13 @@ struct CollectPage {
   @State moveTarget: FavItem | null = null;
   /** 上次长按时间，用来吞掉长按抬手补发的 click */
   private lastLongPress: number = 0;
+  /**
+   * 有新集的收藏。
+   *
+   * 数据来自 Crawler 抓好的「最近更新」（每 6 小时一轮），不发网络请求。
+   * 判断逻辑见 Store.favUpdates()：remark 变了就算有新集，打开详情页后清掉。
+   */
+  @State news: FavNew[] = [];
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -72,6 +79,17 @@ struct CollectPage {
   async reload(): Promise<void> {
     this.favs = await Store.favorites();
     this.groups = await Store.favGroups();
+    this.news = await Store.favUpdates();
+  }
+
+  /** 这部收藏有没有新集；有则返回更新描述（如「更新第08集」），否则空串 */
+  newRemark(f: FavItem): string {
+    for (let i = 0; i < this.news.length; i++) {
+      if (this.news[i].siteKey === f.siteKey && this.news[i].vodId === f.vodId) {
+        return this.news[i].remark;
+      }
+    }
+    return '';
   }
 
   /** 当前筛选后的收藏（curGroup 为空 = 全部） */
@@ -242,6 +260,21 @@ struct CollectPage {
               Feedback.tap();
               this.del(f);
           }))
+
+        // 有新集：左上角压一条更新描述。
+        // 放左上是因为右上角被「×」占了，而且这条信息比删除按钮更该先被看到。
+        if (this.newRemark(f).length > 0) {
+          Text(this.newRemark(f))
+            .fontSize(11)
+            .fontColor('#FFFFFF')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .constraintSize({ maxWidth: '70%' })
+            .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+            .backgroundColor(T.ERR)
+            .borderRadius(4)
+            .position({ x: 6, y: 6 })
+        }
       }
       .width('100%')
       .aspectRatio(16 / 9)
@@ -536,6 +569,15 @@ struct CollectPage {
           .fontColor(T.TXT)
           .margin({ left: 8 })
         Text('  ' + this.favs.length + ' 部').fontSize(14).fontColor(T.SUB)
+        if (this.news.length > 0) {
+          Text(this.news.length + ' 部有新集')
+            .fontSize(13)
+            .fontColor('#FFFFFF')
+            .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+            .backgroundColor(T.ERR)
+            .borderRadius(4)
+            .margin({ left: 8 })
+        }
         Blank()
         // 自定义分组入口。**常显**：新建分组在面板里，如果「一个分组都没有就不显示入口」，
         // 用户永远进不去建第一个分组（鸡生蛋）。
@@ -639,7 +681,7 @@ struct CollectPage {
         .scrollBar(BarState.Off)
       }
       if (this.isPhone) {
-        PhoneTabBar('pages/CollectPage')
+        PhoneTabBar('pages/CollectPage', this.news.length)
       }
     }
     .width('100%')

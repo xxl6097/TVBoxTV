@@ -27,16 +27,28 @@ function tabIcon(label: string): Resource {
   return $r('app.media.ic_vod');
 }
 
-/** 单个 Tab 项：图标 + 文字，整块可点 */
+/** 单个 Tab 项：图标 + 文字，整块可点。badge > 0 时图标右上角带数字角标 */
 @Builder
-function TabItem(label: string, page: string, active: string) {
+function TabItem(label: string, page: string, active: string, badge: number = 0) {
   Column() {
-    Image(tabIcon(label))
-      .width(20)
-      .height(20)
-      .objectFit(ImageFit.Contain)
-      // 白色单色 svg：浅色主题下要染色，否则图标消失（只剩文字）
-      .fillColor(page === active ? T.SELECTED : T.SUB)
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Image(tabIcon(label))
+        .width(20)
+        .height(20)
+        .objectFit(ImageFit.Contain)
+        // 白色单色 svg：浅色主题下要染色，否则图标消失（只剩文字）
+        .fillColor(page === active ? T.SELECTED : T.SUB)
+      if (badge > 0) {
+        Text('' + badge)
+          .fontSize(9)
+          .fontColor('#FFFFFF')
+          .backgroundColor(T.ERR)
+          .borderRadius(8)
+          .constraintSize({ minWidth: 16, minHeight: 16 })
+          .textAlign(TextAlign.Center)
+          .offset({ x: 9, y: -6 })
+      }
+    }
     Text(label)
       .fontSize(11)
       .fontColor(page === active ? T.SELECTED : T.SUB)
@@ -59,15 +71,15 @@ function TabItem(label: string, page: string, active: string) {
   })
 }
 
-/** 底部 Tab 栏：5 个入口，触屏拇指热区 */
+/** 底部 Tab 栏：5 个入口，触屏拇指热区。favNews = 收藏里有多少部有新集 */
 @Builder
-export function PhoneTabBar(active: string) {
+export function PhoneTabBar(active: string, favNews: number = 0) {
   Row() {
-    TabItem('点播', 'pages/VodPage', active)
-    TabItem('直播', 'pages/LivePage', active)
-    TabItem('搜索', 'pages/Search', active)
-    TabItem('收藏', 'pages/CollectPage', active)
-    TabItem('设置', 'pages/SettingPage', active)
+    TabItem('点播', 'pages/VodPage', active, 0)
+    TabItem('直播', 'pages/LivePage', active, 0)
+    TabItem('搜索', 'pages/Search', active, 0)
+    TabItem('收藏', 'pages/CollectPage', active, favNews)
+    TabItem('设置', 'pages/SettingPage', active, 0)
   }
   .width('100%')
   .height(54)

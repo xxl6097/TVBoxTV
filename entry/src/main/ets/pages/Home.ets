@@ -18,7 +18,9 @@ import common from '@ohos.app.ability.common';
 import display from '@ohos.display';
 import { Store, HistItem } from '../common/Store';
 import { Net, NET_ONLINE } from '../common/Net';
-import { Vod, DetailParam, T } from '../common/Model';
+import { Vod, DetailParam, Site, Line, Episode, PlayParam, T } from '../common/Model';
+import { Cms } from '../common/Cms';
+import { Playlist } from '../common/Playlist';
 import { Crawler, CrawlResult } from '../common/Crawler';
 import { Tip, TIP_MSG, TipLayer } from '../common/Tip';
 import { KEY_IS_PHONE, KEY_LANDSCAPE, KEY_WIN_W } from '../common/Device';
@@ -109,8 +111,13 @@ struct ContinueCard {
   /** 单条删除（右上角「✕」） */
   onDelete: () => void = () => {
   };
+  /** 一步续播（海报中央「▶」） */
+  onResume: () => void = () => {
+  };
   /** 删除按钮自身的悬停高亮 */
   @State delHover: boolean = false;
+  /** 播放按钮自身的悬停高亮 */
+  @State playHover: boolean = false;
 
   build() {
     Column() {
@@ -157,6 +164,35 @@ struct ContinueCard {
               Feedback.tap();
               this.onDelete();
           }))
+
+        // 一步续播：海报中央的「▶」。
+        // 原来点卡片只能先进详情页、再点一颗「继续播放」，追更的人每天为此多点一步。
+        // 放正中而不是角落：手机竖屏拇指自然落在中间，电视指针也最好对。
+        // 自己有 onClick，不会冒泡触发整张卡的 onTap（不会误进详情页）。
+        Row() {
+          Text('▶')
+            .fontSize(19)
+            .fontColor('#FFFFFF')
+        }
+        .width(52)
+        .height(52)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.playHover ? '#CC000000' : '#8C000000')
+        .borderRadius(26)
+        .border({ width: 1.5, color: this.playHover ? '#FFFFFF' : '#59FFFFFF' })
+        .position({ x: (R.W - 52) / 2, y: (R.H - 52) / 2 })
+        .animation({ duration: 120, curve: Curve.EaseOut })
+        .onHover((hv: boolean) => {
+          this.playHover = hv;
+        })
+        .onClick(() => Pointer.fire('cplay_' + this.name, () => {
+          Feedback.tap();
+          this.onResume();
+        }))
+        .onMouse(Pointer.on('cplay_' + this.name, () => {
+          Feedback.tap();
+          this.onResume();
+        }))
       }
       .width(R.W)
       .height(R.H)
@@ -308,6 +344,8 @@ struct Home {
   @State title: string = '夜帧影视';
   @State ready: boolean = false;
   @State items: Func[] = [];
+  /** 收藏里有多少部出现了新集（功能行「收藏」右上角红点用） */
+  @State favNews: number = 0;
   /**
    * 隐私同意门禁。
    *
@@ -425,6 +463,9 @@ struct Home {
     // 限制最多 40 条以优化渲染性能（超过屏幕可见范围）
     this.feed = all.length > 40 ? all.slice(0, 40) : all;
     this.hasSites = Store.sites().length > 0;
+    // 收藏里有多少部在「最近更新」里出现了新集（读 prefs，不发请求）
+    const news = await Store.favUpdates();
+    this.favNews = news.length;
   }
 
   /** 单条删除继续观看记录 */
@@ -771,6 +812,74 @@ struct Home {
     router.pushUrl({ url: 'pages/Detail', params: p });
   }
 
+  /**
+   * 从「继续观看」一步续播，不经过详情页。
+   *
+   * 历史里只存了 siteKey / vodId / 集号 / 进度，没有播放地址，所以必须先拉
+   * 一次详情拿剧集列表（1～2 秒）。用一句提示说明在准备，别让人以为没点动。
+   *
+   * 任何一步失败都退回详情页 —— 那边有完整的错误说明和换源入口，
+   * 在这里重新实现一遍得不偿失。
+   */
+  async resumeFromHistory(h: HistItem): Promise<void> {
+    await Store.ensureLoaded();
+    const s: Site | null = Store.site(h.siteKey);
+    if (s === null) {
+      // 站源换过了，交给详情页那套「按站源名兜底 + 按片名自动换源」去修
+      this.openDetail(h.siteKey, h.siteName, h.vodId, h.name);
+      return;
+    }
+    Tip.show('正在准备「' + h.name + '」…');
+    try {
+      const cms = new Cms(s);
+      const v: Vod = await cms.detail(h.vodId);
+      const lines: Line[] = Cms.splitLines(v.from, v.playUrl);
+      if (lines.length === 0) {
+        throw new Error('no lines');
+      }
+      // 优先回到上次看的那条线路；线路改名/消失就挑第一条能直接播的
+      let li: number = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (h.from.length > 0 && lines[i].name === h.from) {
+          li = i;
+          break;
+        }
+      }
+      if (li < 0) {
+        li = 0;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].direct) {
+            li = i;
+            break;
+          }
+        }
+      }
+      const eps: Episode[] = lines[li].eps;
+      if (eps.length === 0) {
+        throw new Error('no eps');
+      }
+      let epi: number = h.epIndex;
+      if (epi < 0 || epi >= eps.length) {
+        epi = 0;
+      }
+      const p = new PlayParam();
+      p.url = eps[epi].url;
+      p.title = v.name + ' ' + eps[epi].name;
+      p.siteKey = h.siteKey;
+      p.vodId = h.vodId;
+      p.from = lines[li].name;
+      p.epIndex = epi;
+      // 只有「还是上次那一集」才续播；集号对不上说明列表变了，从头放更安全
+      const sameEp: boolean = epi === h.epIndex;
+      p.seek = sameEp && h.pos > 5000 && (h.dur <= 0 || h.pos < h.dur - 15000) ? h.pos : 0;
+      Playlist.set(eps, epi, v.name);
+      router.pushUrl({ url: 'pages/Player', params: p });
+    } catch (err) {
+      Tip.show('准备失败，已打开详情页');
+      this.openDetail(h.siteKey, h.siteName, h.vodId, h.name);
+    }
+  }
+
   /** 功能块的 34dp 图标，每个功能一个专属图形（不能再有兜底共用） */
   iconOf(label: string): Resource {
     if (label === '点播') {
@@ -889,15 +998,29 @@ struct Home {
               Column() {
                 Stack() {
                   Column() {
-                    Image(this.iconOf(f.label))
-                      .width(34)
-                      .height(34)
-                      .objectFit(ImageFit.Contain)
-                      /**
-                       * 图标按功能染色。SVG 源文件统一是 #FFFFFF，
-                       * fillColor 会覆盖它，所以不用为每个颜色另存一份图标。
-                       */
-                      .fillColor(this.iconColorOf(f.label))
+                    // 图标外面套一层 Stack 只为了挂「有新集」的红点。
+                    // 不改外层 Column 的布局，红点用 offset 溢出到图标右上角。
+                    Stack({ alignContent: Alignment.TopEnd }) {
+                      Image(this.iconOf(f.label))
+                        .width(34)
+                        .height(34)
+                        .objectFit(ImageFit.Contain)
+                        /**
+                         * 图标按功能染色。SVG 源文件统一是 #FFFFFF，
+                         * fillColor 会覆盖它，所以不用为每个颜色另存一份图标。
+                         */
+                        .fillColor(this.iconColorOf(f.label))
+                      if (f.label === '收藏' && this.favNews > 0) {
+                        Text('' + this.favNews)
+                          .fontSize(10)
+                          .fontColor('#FFFFFF')
+                          .backgroundColor(T.ERR)
+                          .borderRadius(9)
+                          .constraintSize({ minWidth: 18, minHeight: 18 })
+                          .textAlign(TextAlign.Center)
+                          .offset({ x: 9, y: -7 })
+                      }
+                    }
                     Text(f.label)
                       .fontSize(17)
                       .fontColor(T.TXT)
@@ -985,6 +1108,9 @@ struct Home {
                     onHoverIn: (on: boolean) => this.hover('h_' + h.vodId, on),
                     onDelete: () => {
                       this.removeHist(h);
+                    },
+                    onResume: () => {
+                      this.resumeFromHistory(h);
                     }
                   })
                   .margin({ right: i === this.hist.length - 1 ? 0 : R.GAP })
@@ -1249,6 +1375,9 @@ struct Home {
                     onHoverIn: (on: boolean) => this.hover('h_' + h.vodId, on),
                     onDelete: () => {
                       this.removeHist(h);
+                    },
+                    onResume: () => {
+                      this.resumeFromHistory(h);
                     }
                   })
                   .margin({ right: i === this.hist.length - 1 ? 0 : R.GAP })
@@ -1387,7 +1516,7 @@ struct Home {
       .scrollBar(BarState.Off)
 
       // 底部 Tab 导航（触屏拇指热区）
-      PhoneTabBar('')
+      PhoneTabBar('', this.favNews)
     }
     .width('100%')
     .height('100%')

@@ -103,6 +103,15 @@ struct Player {
   @State errMsg: string = '';
   @State hint: string = '';
   /**
+   * 播完自动跳下一集的倒计时（秒）。0 = 不显示。
+   *
+   * 原来 completed 里直接 switchEpisode(1)：有片尾曲的剧，用户想再看一眼
+   * 结尾、或者就是不想往下追，手还没抬起来就已经跳到下一集了。
+   * 现在留 5 秒，期间可以点「留在此处」。
+   */
+  @State nextCd: number = 0;
+  private nextCdTimer: number = -1;
+  /**
    * 播放器主状态机（common/PlayState.ets）：负责**转移校验 + 轨迹日志 + 缓冲防抖**。
    *
    * 重要教训：UI 布尔（下面的 playing / prepared / buffering / resolving）**必须保持
@@ -635,11 +644,65 @@ struct Player {
     this.leaving = true;
     // 先标记关闭再释放：释放是同步的，但排队中的 initPlayer 回调会看这个标志
     this.closed = true;
+    this.stopNextCountdown();
     PlayGuard.unbind(this.stopHook);
     this.savePos();
     this.releasePlayer();
     router.back();
     return true;
+  }
+
+  /**
+   * 这条线路的片源本身坏了时的出口：带着剧名跳到搜索页，换一个站源看同一部片。
+   *
+   * 播放页手里只有当前这一条线路的播放地址（线路是在详情页选的），
+   * 所以这里不做「切下一条线路」—— 那得把整份线路表搬进播放页。
+   * 按片名换源更彻底：换了站源，线路、解析器、CDN 全都换掉了。
+   */
+  gotoAltSource(): void {
+    const kw: string = Playlist.title();
+    if (kw.length === 0) {
+      this.showTip('没有片名信息，请返回后手动搜索');
+      return;
+    }
+    this.savePos();
+    router.pushUrl({ url: 'pages/Search', params: { 'keyword': kw, 'autoSearch': true } });
+  }
+
+  /** 一集播完：5 秒后自动进下一集，期间用户可点「留在此处」反悔 */
+  startNextCountdown(): void {
+    this.stopNextCountdown();
+    this.nextCd = 5;
+    this.nextCdTimer = setInterval(() => {
+      if (this.nextCd <= 1) {
+        this.stopNextCountdown();
+        this.switchEpisode(1);
+        return;
+      }
+      this.nextCd = this.nextCd - 1;
+    }, 1000);
+  }
+
+  /**
+   * 清掉倒计时。
+   *
+   * 切集、退出页面、用户手动选集时都必须调：这个定时器不看播放状态，
+   * 留着它会在用户已经自己换了集之后又跳一次，表现为「刚选完下一集
+   * 又自己跳了一集」。
+   */
+  stopNextCountdown(): void {
+    if (this.nextCdTimer >= 0) {
+      clearInterval(this.nextCdTimer);
+      this.nextCdTimer = -1;
+    }
+    this.nextCd = 0;
+  }
+
+  /** 用户点了「留在此处」：停在片尾，把控制条唤出来方便自己操作 */
+  cancelNextCountdown(): void {
+    this.stopNextCountdown();
+    this.showOsd = true;
+    this.showTip('已停留本集结尾');
   }
 
   syncEpLabel(): void {
@@ -1700,9 +1763,9 @@ struct Player {
           if (this.isLive) {
             hilog.info(0x1000, 'BOXN', 'live completed, ignore auto-switch');
           } else if (Playlist.hasNext()) {
-            // 点播追剧：一集播完自动接下一集
-            hilog.info(0x1000, 'BOXN', 'vod completed, auto next episode');
-            this.switchEpisode(1);
+            // 点播追剧：一集播完接下一集。走 5 秒倒计时，给用户一个反悔窗口
+            hilog.info(0x1000, 'BOXN', 'vod completed, countdown to next episode');
+            this.startNextCountdown();
           } else {
             this.showOsd = true;
           }
@@ -2426,6 +2489,8 @@ struct Player {
     // 不打印调用栈——每次切集都抓 Error().stack 开销明显，而且日志一屏就刷过去了
     hilog.info(0x1000, 'BOXN', 'switchEpisode delta=%{public}d isLive=%{public}s',
       delta, this.isLive ? 'YES' : 'NO');
+    // 用户自己点了上一集/下一集，倒计时就没意义了
+    this.stopNextCountdown();
     // 页面已销毁（用户已返回）时不要再换台/换集——那会重新拉起一个播放器
     if (this.closed) {
       hilog.info(0x1000, 'BOXN', 'switchEpisode abort: page closed');
@@ -4582,15 +4647,59 @@ struct Player {
         playing: this.playState === PlayState.PLAYING,
         retryHi: this.hi('rt'),
         backHi: this.hi('bk'),
+        altHi: this.hi('alt'),
+        // 直播是频道轮换，没有「同一部片换个源」这回事；点播才有片名可搜
+        hasAlt: !this.isLive && Playlist.title().length > 0,
         onRetry: () => {
           this.retry();
         },
         onBack: () => {
           this.onBackPress();
         },
+        onAltSource: () => {
+          this.gotoAltSource();
+        },
         onHoverRetry: (on: boolean) => this.hoverTo('rt', on),
-        onHoverBack: (on: boolean) => this.hoverTo('bk', on)
+        onHoverBack: (on: boolean) => this.hoverTo('bk', on),
+        onHoverAlt: (on: boolean) => this.hoverTo('alt', on)
       })
+
+      /**
+       * 播完倒计时。
+       *
+       * 放右下角而不是屏幕正中：这时候画面还停在片尾最后一帧，用户多半
+       * 在盯着画面，浮层挡住中间反而碍事。右下角离「下一集」按钮的位置
+       * 也近，符合下意识动作。
+       */
+      if (this.nextCd > 0) {
+        Column() {
+          Text('即将播放下一集')
+            .fontSize(18)
+            .fontColor(T.PANEL_TXT)
+            .fontWeight(FontWeight.Medium)
+          Text(this.nextCd + ' 秒后自动播放')
+            .fontSize(14)
+            .fontColor(T.PANEL_SUB)
+            .margin({ top: 4 })
+          Text('留在此处')
+            .fontSize(15)
+            .fontColor(this.hi('ncd') ? T.PANEL_TXT : T.PANEL_SUB)
+            .padding({ left: 18, right: 18, top: 9, bottom: 9 })
+            .backgroundColor(this.hi('ncd') ? T.PANEL_BTN_HI : T.WHITE_15)
+            .borderRadius(18)
+            .border({ width: 1, color: this.hi('ncd') ? T.PANEL_TXT : '#00000000' })
+            .margin({ top: 14 })
+            .animation({ duration: 120, curve: Curve.EaseOut })
+            .onHover((hv: boolean) => this.hoverTo('ncd', hv))
+            .onClick(() => this.tap('ncd_c', () => this.cancelNextCountdown()))
+            .onMouse(this.ptr('ncd_c', () => this.cancelNextCountdown()))
+        }
+        .alignItems(HorizontalAlign.Start)
+        .padding({ left: 22, right: 22, top: 16, bottom: 16 })
+        .backgroundColor(T.BLACK_70)
+        .borderRadius(14)
+        .position({ right: 28, bottom: 120 })
+      }
 
       /**
        * 底部常驻进度条 —— 紧贴视频画面底边。

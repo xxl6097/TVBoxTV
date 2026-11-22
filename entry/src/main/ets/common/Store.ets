@@ -63,6 +63,23 @@ export class FavItem {
    * 统一按空串处理。
    */
   groupId: string = '';
+  /**
+   * 用户上次已经看到的「更新状态」原文（站点给的 remark，如「更新第08集」）。
+   *
+   * 用来判断收藏的剧有没有新集：和「最近更新」里的 remark 不一样就是有新集。
+   * 空串 = 还没建立基线（老数据 / 刚收藏），此时**不**提示，避免升级后
+   * 一次性冒出一整片红点。
+   */
+  seenRemark: string = '';
+}
+
+/** 收藏的片在「最近更新」里出现了新集（收藏页角标用） */
+export class FavNew {
+  siteKey: string = '';
+  vodId: string = '';
+  name: string = '';
+  /** 站点给的更新描述，如「更新第08集」 */
+  remark: string = '';
 }
 
 /** 一部片的片头/片尾跳过 + 倍速设置（都按影片独立保存） */
@@ -138,6 +155,104 @@ export class Store {
     if (Store.prefs === null) {
       Store.prefs = await dataPreferences.getPreferences(ctx, STORE);
     }
+    // 历史去重只跑一次：每个页面的 aboutToAppear 都会调 init。
+    // 这里 await 而不是后台跑 —— 首页 boot 紧接着就要读历史，
+    // 不 waiting 的话首页会先把重复的海报画出来、然后一直不刷新。
+    if (!Store.histDeduped) {
+      Store.histDeduped = true;
+      await Store.dedupHistory();
+    }
+    await Store.ensureFavBaseline();
+  }
+
+  /** 收藏更新提醒的基线是否已建立（见 ensureFavBaseline） */
+  private static favBaseDone: boolean = false;
+
+  /**
+   * 给「收藏有新集」建一次基线。
+   *
+   * FavItem.seenRemark 为空表示「还没基线」，此时 favUpdates() 不会提示 ——
+   * 这是为了避免升级后一次性冒出一整片红点。但老数据的 seenRemark 全是空的，
+   * 不主动补的话这个功能对老用户永远不会生效（除非他逐部打开一次详情页）。
+   *
+   * 所以升级后第一次启动时，把每部收藏的基线刷成「当前的更新状态」：
+   * 从这一刻起，只有当站点把它更新成别的内容时才提示。只跑一次（favSeenInit 标记）。
+   */
+  static async ensureFavBaseline(): Promise<void> {
+    if (Store.prefs === null || Store.favBaseDone) {
+      return;
+    }
+    Store.favBaseDone = true;
+    const v: string = await Store.prefs.get('favSeenInit', '') as string;
+    if (v === '1') {
+      return;
+    }
+    const favs: FavItem[] = await Store.favorites();
+    const feed: Vod[] = await Store.feed();
+    let changed: boolean = false;
+    for (let i = 0; i < favs.length; i++) {
+      const cur: string = favs[i].seenRemark === undefined || favs[i].seenRemark === null ?
+        '' : favs[i].seenRemark;
+      if (cur.length > 0) {
+        continue;
+      }
+      const want: string = Store.normSiteName(favs[i].name);
+      let rk: string = '';
+      for (let k = 0; k < feed.length; k++) {
+        if (Store.normSiteName(feed[k].name) === want) {
+          rk = feed[k].remark === undefined || feed[k].remark === null ? '' : feed[k].remark;
+          break;
+        }
+      }
+      favs[i].seenRemark = rk;
+      changed = true;
+    }
+    if (changed) {
+      await Store.prefs.put('fav', JSON.stringify(favs));
+    }
+    await Store.prefs.put('favSeenInit', '1');
+    await Store.prefs.flush();
+    hilog.info(0x1000, 'BOXN', 'fav baseline inited: %{public}d items', favs.length);
+  }
+
+  /** 历史去重是否已跑过（见 init） */
+  private static histDeduped: boolean = false;
+
+  /**
+   * 清掉历史里「同一部片的多条记录」，只留最近看的那条。
+   *
+   * pushHistory 现在写入时就会去重，但老数据是旧逻辑攒下来的：实测一台机器
+   * 上 22 条历史只有 18 个片名（《遮天动画版》占了 4 条，来自 4 个站）。
+   * 不清理的话，首页「继续观看」会一直显示几张一模一样的海报。
+   */
+  static async dedupHistory(): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const list: HistItem[] = await Store.history();
+    if (list.length === 0) {
+      return;
+    }
+    // history() 已按「最后观看时间」倒序，因此先遇到的就是最近看的那条
+    const seen: string[] = [];
+    const out: HistItem[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const n: string = Store.normSiteName(list[i].name);
+      if (n.length > 0 && seen.indexOf(n) >= 0) {
+        continue;
+      }
+      if (n.length > 0) {
+        seen.push(n);
+      }
+      out.push(list[i]);
+    }
+    if (out.length === list.length) {
+      return;
+    }
+    hilog.info(0x1000, 'BOXN', 'hist dedup %{public}d -> %{public}d', list.length, out.length);
+    Store.histCache = out;
+    await Store.prefs.put('hist', JSON.stringify(out));
+    await Store.prefs.flush();
   }
 
   /**
@@ -806,7 +921,35 @@ export class Store {
     if (fn > 0) {
       await Store.prefs.put('fav', JSON.stringify(favs));
     }
-    if (n > 0 || fn > 0) {
+
+    // 播放偏好（片头/片尾跳过、倍速、字幕偏移）也是按 siteKey|vodId 存的，
+    // 不一起迁的话，换源之后用户辛苦调好的设置会静默回到默认值 ——
+    // 表现为「设了片头跳过 90 秒，下次进来又开始放片头」。
+    // 新键已经存在时以新的为准，别把用户在新站上调的设置盖掉。
+    const oldPf: string = oldKey + '|' + oldVodId;
+    const newPf: string = newKey + '|' + newVodId;
+    const prefs: SkipPref[] = await Store.skipPrefs();
+    let hasNew: boolean = false;
+    for (let i = 0; i < prefs.length; i++) {
+      if (prefs[i].k === newPf) {
+        hasNew = true;
+        break;
+      }
+    }
+    let prefMoved: number = 0;
+    if (!hasNew) {
+      for (let i = 0; i < prefs.length; i++) {
+        if (prefs[i].k === oldPf) {
+          prefs[i].k = newPf;
+          prefMoved++;
+        }
+      }
+      if (prefMoved > 0) {
+        await Store.prefs.put('skipPrefs', JSON.stringify(prefs));
+      }
+    }
+
+    if (n > 0 || fn > 0 || prefMoved > 0) {
       await Store.prefs.flush();
     }
     return n + fn;
@@ -950,18 +1093,27 @@ export class Store {
     const list: HistItem[] = await Store.history();
     const out: HistItem[] = [];
     out.push(h);
+    const sameName: string = Store.normSiteName(h.name);
     for (let i = 0; i < list.length; i++) {
       const k: string = list[i].siteKey + '|' + list[i].vodId;
-      if (k !== h.siteKey + '|' + h.vodId) {
-        out.push(list[i]);
+      if (k === h.siteKey + '|' + h.vodId) {
+        continue;
       }
+      // 同一部片只留最近看的那一条。
+      //
+      // 原来只按 siteKey|vodId 去重，而订阅换源会给同一部片换 key，于是
+      // 「遮天动画版」在历史里堆了 4 条（4 个站各一条），首页「继续观看」
+      // 也跟着出现两张一模一样的海报。片名相同就当作同一部片，丢掉旧的。
+      if (sameName.length > 0 && Store.normSiteName(list[i].name) === sameName) {
+        continue;
+      }
+      out.push(list[i]);
       if (out.length >= 40) {
         break;
       }
     }
     // 先更新内存缓存：调用方（播放页 savePos）不会 await 这个函数，
     // 详情页 onPageShow 紧接着就读，只有缓存能保证读到的就是刚写的值
-    Store.histCache = out;
     Store.histCache = out;
     await Store.prefs.put('hist', JSON.stringify(out));
     await Store.prefs.flush();
@@ -1063,6 +1215,95 @@ export class Store {
     return false;
   }
 
+  /**
+   * 收藏里有哪些片在「最近更新」里出现了新集。
+   *
+   * 数据来自 Crawler 已经抓好的 feed（每 6 小时一轮、40 部），所以这里
+   * **不发任何网络请求**，读一次 prefs 就够。
+   *
+   * 判断依据是 remark 原文：feed 里这部片的更新描述和 seenRemark 不同，
+   * 就算有新集。用户打开详情页时把 seenRemark 刷成当前值，角标随之消失。
+   */
+  static async favUpdates(): Promise<FavNew[]> {
+    const out: FavNew[] = [];
+    if (Store.prefs === null) {
+      return out;
+    }
+    const favs: FavItem[] = await Store.favorites();
+    if (favs.length === 0) {
+      return out;
+    }
+    const feed: Vod[] = await Store.feed();
+    if (feed.length === 0) {
+      return out;
+    }
+    for (let i = 0; i < favs.length; i++) {
+      const f: FavItem = favs[i];
+      const seen: string = f.seenRemark === undefined || f.seenRemark === null ? '' : f.seenRemark;
+      if (seen.length === 0) {
+        continue;      // 还没建立基线，见 seenRemark 的说明
+      }
+      const want: string = Store.normSiteName(f.name);
+      for (let k = 0; k < feed.length; k++) {
+        if (Store.normSiteName(feed[k].name) !== want) {
+          continue;
+        }
+        const rk: string = feed[k].remark === undefined || feed[k].remark === null ? '' : feed[k].remark;
+        if (rk.length > 0 && rk !== seen) {
+          const n = new FavNew();
+          n.siteKey = f.siteKey;
+          n.vodId = f.vodId;
+          n.name = f.name;
+          n.remark = rk;
+          out.push(n);
+        }
+        break;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 用户打开了某部收藏片的详情页：把「已看到的更新描述」刷成当前值，
+   * 收藏页的角标据此消失。不是收藏的片直接返回。
+   */
+  static async markFavSeen(siteKey: string, vodId: string): Promise<void> {
+    if (Store.prefs === null) {
+      return;
+    }
+    const favs: FavItem[] = await Store.favorites();
+    let hit: FavItem | null = null;
+    for (let i = 0; i < favs.length; i++) {
+      if (favs[i].siteKey === siteKey && favs[i].vodId === vodId) {
+        hit = favs[i];
+        break;
+      }
+    }
+    if (hit === null) {
+      return;
+    }
+    const rk: string = await Store.statRemark(hit.name);
+    const cur: string = hit.seenRemark === undefined || hit.seenRemark === null ? '' : hit.seenRemark;
+    if (rk.length === 0 || rk === cur) {
+      return;
+    }
+    hit.seenRemark = rk;
+    await Store.prefs.put('fav', JSON.stringify(favs));
+    await Store.prefs.flush();
+  }
+
+  /** 从「最近更新」里取某部片当前的更新描述；没命中返回空串 */
+  private static async statRemark(name: string): Promise<string> {
+    const feed: Vod[] = await Store.feed();
+    const want: string = Store.normSiteName(name);
+    for (let i = 0; i < feed.length; i++) {
+      if (Store.normSiteName(feed[i].name) === want) {
+        return feed[i].remark === undefined || feed[i].remark === null ? '' : feed[i].remark;
+      }
+    }
+    return '';
+  }
+
   static async toggleFavorite(f: FavItem): Promise<boolean> {
     if (Store.prefs === null) {
       return false;
@@ -1079,6 +1320,11 @@ export class Store {
     }
     if (!removed) {
       f.time = Date.now();
+      // 新收藏以「此刻的更新状态」为基线：收藏这一刻本来就该是最新的，
+      // 不该立刻给自己标一个「有新集」。库里没有这部片时留空 = 不提示。
+      if (f.seenRemark === undefined || f.seenRemark === null || f.seenRemark.length === 0) {
+        f.seenRemark = await Store.statRemark(f.name);
+      }
       out.unshift(f);
     }
     // 收藏原来没有任何上限，会一直长。preferences 单个 string 值有容量上限，
