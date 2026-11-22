@@ -85,6 +85,10 @@ struct Detail {
   private site: Site | null = null;
   /** 非空表示「原来那个站源已经不在订阅里」，build 里据此给出自救入口 */
   @State goneSite: string = '';
+  /** 自动换源的进度提示（非空时在错误位置显示转圈 + 文案） */
+  @State rescueMsg: string = '';
+  /** 自动换源每次进页面只做一次，避免两个失败分支互相触发死循环 */
+  private rescued: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -129,8 +133,13 @@ struct Detail {
     this.siteKey = alt.key;
     hilog.info(0x1000, 'BOXN', 'detail site rebound %{public}s -> %{public}s (%{public}s)',
       old, alt.key, alt.name);
-    Store.rebindSiteKey(old, alt.key).catch(() => {
-    });
+    // 必须 await：紧接着要按新 key 读播放记录，不等它写完缓存就还是旧 key，
+    // 续播按钮和进度会凭空消失
+    try {
+      await Store.rebindSiteKey(old, alt.key);
+    } catch (err) {
+      // 迁移失败不影响这次打开，下次进来还会再试一次
+    }
     return alt;
   }
 
@@ -415,7 +424,20 @@ struct Detail {
         }))
     }
 
-    if (this.err.length > 0) {
+    // 自动换源中：给一条明确的进度，别让用户对着空页面干等
+    if (this.rescueMsg.length > 0) {
+      Row() {
+        LoadingProgress().width(20).height(20).color(T.ACCENT)
+        Text(this.rescueMsg)
+          .fontSize(15)
+          .fontColor(T.SUB)
+          .margin({ left: 10 })
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .margin({ top: 14 })
+    }
+    if (this.err.length > 0 && this.rescueMsg.length === 0) {
       Text(this.err).fontSize(17).fontColor(T.WARN).margin({ top: 14 })
     }
     if (this.goneSite.length > 0) {
@@ -698,17 +720,31 @@ struct Detail {
   async load(): Promise<void> {
     const s: Site | null = this.site !== null ? this.site : Store.site(this.siteKey);
     if (s === null) {
-      // 不再只甩一句「数据源不存在」：说清是哪个站源没了，并给出两条出路
-      this.goneSite = this.siteName.length > 0 ? this.siteName : '原站源';
-      this.err = '这个站源已经不在当前订阅里了';
-      this.loading = false;
+      // 站源彻底不在了（订阅换源、站源下线）：别只甩一句报错，
+      // 先按片名自动找一个能播的源
+      await this.rescueBySearch();
       return;
     }
+    const ok: boolean = await this.loadOn(s, this.vodId);
+    if (!ok && !this.rescued) {
+      // 站源还在，但这部片已经被删了（采集站删片很常见）。
+      // 这种情况原来只显示一行红字，用户同样出不去，一并自动换源。
+      await this.rescueBySearch();
+    }
+  }
+
+  /**
+   * 用指定站源 + 片号拉详情。成功（拿到了剧集）返回 true。
+   *
+   * 单独拆出来是因为自动换源会拿「另一个站源 + 另一个片号」再调一次，
+   * 原来的 load() 把站源解析和抓取揉在一起，没法复用。
+   */
+  private async loadOn(s: Site, vodId: string): Promise<boolean> {
     this.loading = true;
     this.err = '';
     try {
       const cms = new Cms(s);
-      const v: Vod = await cms.detail(this.vodId);
+      const v: Vod = await cms.detail(vodId);
       if (v.siteName.length === 0) {
         v.siteName = s.name;
       }
@@ -726,17 +762,21 @@ struct Detail {
         }
       }
       // 用户在这部片子上手动选过线路就沿用他选的，别再退回收视最差的默认线
-      const savedLine: number = await Store.linePref(this.siteKey, this.vodId);
+      const savedLine: number = await Store.linePref(this.siteKey, vodId);
       if (savedLine >= 0 && savedLine < this.lines.length) {
         this.lineIdx = savedLine;
       }
-      if (this.lines.length === 0) {
-        this.err = '该片没有可播放的剧集地址';
-      }
       this.syncEps();
+      if (this.lines.length === 0) {
+        // 详情接口回了个空壳（有片名没有播放地址）：对用户来说等同于没这部片
+        this.err = '该片没有可播放的剧集地址';
+        return false;
+      }
+      return true;
     } catch (err) {
       const e = err as Error;
       this.err = e.message;
+      return false;
     } finally {
       this.loading = false;
       // 剧集节点这一刻才真正生成，等一帧再滚，否则 scroller 还没有可滚内容
@@ -744,6 +784,164 @@ struct Detail {
       // 有历史进度时弹出续播提示
       this.triggerResumePrompt();
     }
+  }
+
+  /**
+   * 按片名自动换源。
+   *
+   * 订阅换源之后，靠得住的身份不是站源名也不是片号，而是**片名** ——
+   * 同名影片在整个采集生态里到处都是。所以直接拿片名搜一遍，命中同名
+   * 就地把这条记录迁到新站：用户点「继续观看」看到的还是自己那部片，
+   * 进度也接着走，不用再从搜索结果里自己挑一遍。
+   *
+   * 只在「站源找不到」或「站源在但片没了」时触发，且每次进入页面最多一次。
+   */
+  private async rescueBySearch(): Promise<void> {
+    this.rescued = true;
+    const kw: string = this.vodName.length > 0 ? this.vodName : this.vod.name;
+    if (kw.length === 0) {
+      this.markGone();
+      return;
+    }
+    this.loading = true;
+    this.err = '';
+    this.goneSite = '';
+    this.rescueMsg = '原站源已失效，正在按片名寻找新的播放源…';
+
+    let hit: Vod | null = null;
+    let hitSite: Site | null = null;
+    // 全站搜索的总预算。单个站的搜索接口最长要 12 秒（还有两级兜底会翻倍），
+    // 18 个站串起来能转到一分多钟 —— 用户不会等。超时就收手，直接走手动兜底。
+    const t0: number = Date.now();
+    const BUDGET: number = 15000;
+    try {
+      // 第一优先：站源名兜底猜中的那个站（多半是同一家的另一个镜像域名）
+      const pref: Site | null = this.site;
+      if (pref !== null) {
+        hit = await this.searchOn(pref, kw);
+        if (hit !== null) {
+          hitSite = pref;
+        }
+      }
+      // 其次：全站铺开搜。分批跑，找到同名就停，不必等所有站回完。
+      if (hit === null) {
+        const all: Site[] = await Store.activeSites();
+        const targets: Site[] = [];
+        for (let i = 0; i < all.length; i++) {
+          if (!all[i].searchable) {
+            continue;
+          }
+          if (pref !== null && all[i].key === pref.key) {
+            continue;   // 上面已经单独搜过
+          }
+          targets.push(all[i]);
+          if (targets.length >= 18) {
+            break;
+          }
+        }
+        const BATCH: number = 6;
+        for (let i = 0; i < targets.length && hit === null; i += BATCH) {
+          if (Date.now() - t0 > BUDGET) {
+            break;   // 预算用完了，剩下的交给用户手动搜
+          }
+          const batch: Site[] = targets.slice(i, i + BATCH);
+          const ps: Promise<Vod | null>[] = [];
+          for (let k = 0; k < batch.length; k++) {
+            ps.push(this.searchOn(batch[k], kw));
+          }
+          const rs: (Vod | null)[] = await Promise.all(ps);
+          for (let k = 0; k < rs.length; k++) {
+            if (rs[k] !== null) {
+              hit = rs[k];
+              hitSite = batch[k];
+              break;
+            }
+          }
+          if (hit === null) {
+            this.rescueMsg = '已搜索 ' + Math.min(i + BATCH, targets.length) + ' / ' +
+            targets.length + ' 个站源…';
+          }
+        }
+      }
+    } catch (err) {
+      // 搜索失败不影响后面的兜底：走 GonePanel 让用户手动搜
+    }
+
+    if (hit === null || hitSite === null) {
+      this.rescueMsg = '';
+      this.markGone();
+      return;
+    }
+
+    // 换源成功：把记录迁到新站，下次点「继续观看」直接走对的路。
+    // await 而不是后台跑：下面要按新 key/新片号把播放进度读回来。
+    const oldKey: string = this.siteKey;
+    const oldVodId: string = this.vodId;
+    this.siteKey = hitSite.key;
+    this.siteName = hitSite.name;
+    this.vodId = hit.id;
+    this.site = hitSite;
+    hilog.info(0x1000, 'BOXN',
+      'detail rescued %{public}s/%{public}s -> %{public}s/%{public}s (%{public}s)',
+      oldKey, oldVodId, hitSite.key, hit.id, hitSite.name);
+    try {
+      await Store.rebindRecord(oldKey, oldVodId, hitSite.key, hit.id,
+        hitSite.name, hit.name, hit.pic);
+    } catch (err) {
+      // 迁移失败不影响这次播放
+    }
+    this.rescueMsg = '';
+    await this.loadSeen();
+    const ok: boolean = await this.loadOn(hitSite, hit.id);
+    if (!ok) {
+      this.markGone();
+      return;
+    }
+    Tip.show('原站源已失效，已自动换到「' + hitSite.name + '」');
+  }
+
+  /**
+   * 在单个站源里按片名找同名影片。
+   *
+   * 只接受「名字完全一致」的结果 —— 自动换源必须换得准，宁可放弃也不能
+   * 把用户送到《遮天》以外的片上。唯一的例外是该站只回了 1～2 条：
+   * 这种情况下搜索结果本身就是强信号（多半是名字带了个副标题）。
+   */
+  private async searchOn(s: Site, kw: string): Promise<Vod | null> {
+    try {
+      const cms = new Cms(s);
+      const list: Vod[] = await cms.search(kw);
+      if (list.length === 0) {
+        return null;
+      }
+      const want: string = Detail.normName(kw);
+      for (let i = 0; i < list.length; i++) {
+        if (Detail.normName(list[i].name) === want) {
+          return list[i];
+        }
+      }
+      if (list.length <= 2) {
+        return list[0];
+      }
+      return null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  private static normName(s: string): string {
+    if (s === undefined || s === null) {
+      return '';
+    }
+    return s.replace(/\s+/g, '').toLowerCase();
+  }
+
+  /** 自动换源也救不回来：回到「站源没了」的兜底面板，让用户手动处理 */
+  private markGone(): void {
+    this.goneSite = this.siteName.length > 0 ? this.siteName : '原站源';
+    this.err = '这个站源已经不在当前订阅里了';
+    this.rescueMsg = '';
+    this.loading = false;
   }
 
   async toggleFav(): Promise<void> {

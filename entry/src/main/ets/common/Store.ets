@@ -671,22 +671,32 @@ export class Store {
         return Store.siteList[i];
       }
     }
-    // 名字有细微差别（「无尽资源」vs「无尽资源网」）时退一步做包含匹配，
-    // 但只在唯一命中时采用：多个都沾边就放弃，免得串到别的站源上。
-    let hit: Site | null = null;
+    // 名字有细微差别（「无尽资源」vs「无尽资源网」）时退一步做包含匹配。
+    //
+    // 订阅换源后常见的情况是「🐝量子资源」变成「🐝量子资源·lz / ·lz3 / ·net」
+    // 好几个镜像，一次会命中多条。原来「多个命中就放弃」等于白白丢掉一次
+    // 自动换源的机会（实测 16 条失效记录只能救回 4 条）；现在取名字最短
+    // 的那个 —— 也就是后缀最少、最贴近原名的站点。真换错了也不要紧，
+    // 详情页拿不到这部片时会继续按片名自动换源。
+    let best: Site | null = null;
+    let bestLen: number = Number.MAX_SAFE_INTEGER;
+    let tie: boolean = false;
     for (let i = 0; i < Store.siteList.length; i++) {
       const n: string = Store.normSiteName(Store.siteList[i].name);
       if (n.length === 0) {
         continue;
       }
       if (n.indexOf(want) >= 0 || want.indexOf(n) >= 0) {
-        if (hit !== null) {
-          return null;
+        if (n.length < bestLen) {
+          best = Store.siteList[i];
+          bestLen = n.length;
+          tie = false;
+        } else if (n.length === bestLen) {
+          tie = true;
         }
-        hit = Store.siteList[i];
       }
     }
-    return hit;
+    return tie ? null : best;
   }
 
   /**
@@ -720,6 +730,76 @@ export class Store {
     for (let i = 0; i < favs.length; i++) {
       if (favs[i].siteKey === oldKey) {
         favs[i].siteKey = newKey;
+        fn++;
+      }
+    }
+    if (fn > 0) {
+      await Store.prefs.put('fav', JSON.stringify(favs));
+    }
+    if (n > 0 || fn > 0) {
+      await Store.prefs.flush();
+    }
+    return n + fn;
+  }
+
+  /**
+   * 把一条记录从「旧站源 + 旧片号」迁到「新站源 + 新片号」。
+   *
+   * rebindSiteKey 只改 siteKey，适用于「同一个站换了 key」——片号还通用。
+   * 但按片名自动换源换的是**另一个站**，片号在那边没有意义，必须连 vodId
+   * 一起改，否则记录迁过去照样打不开。
+   *
+   * 线路名（HistItem.from）跨站不通用，一并清空让播放器回退到默认线路；
+   * 集号和进度保留：同名的片子集数排布基本一致，用户能接着看。
+   */
+  static async rebindRecord(oldKey: string, oldVodId: string, newKey: string, newVodId: string,
+    newSiteName: string, newName: string, newPic: string): Promise<number> {
+    if (Store.prefs === null) {
+      return 0;
+    }
+    if (oldKey.length === 0 || oldVodId.length === 0 || newKey.length === 0 || newVodId.length === 0) {
+      return 0;
+    }
+    let n: number = 0;
+
+    const hist: HistItem[] = await Store.history();
+    for (let i = 0; i < hist.length; i++) {
+      if (hist[i].siteKey === oldKey && hist[i].vodId === oldVodId) {
+        hist[i].siteKey = newKey;
+        hist[i].vodId = newVodId;
+        hist[i].from = '';
+        if (newSiteName.length > 0) {
+          hist[i].siteName = newSiteName;
+        }
+        if (newName.length > 0) {
+          hist[i].name = newName;
+        }
+        if (newPic.length > 0) {
+          hist[i].pic = newPic;
+        }
+        n++;
+      }
+    }
+    if (n > 0) {
+      Store.histCache = hist;
+      await Store.prefs.put('hist', JSON.stringify(hist));
+    }
+
+    const favs: FavItem[] = await Store.favorites();
+    let fn: number = 0;
+    for (let i = 0; i < favs.length; i++) {
+      if (favs[i].siteKey === oldKey && favs[i].vodId === oldVodId) {
+        favs[i].siteKey = newKey;
+        favs[i].vodId = newVodId;
+        if (newSiteName.length > 0) {
+          favs[i].siteName = newSiteName;
+        }
+        if (newName.length > 0) {
+          favs[i].name = newName;
+        }
+        if (newPic.length > 0) {
+          favs[i].pic = newPic;
+        }
         fn++;
       }
     }
