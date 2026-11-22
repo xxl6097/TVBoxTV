@@ -761,11 +761,13 @@ struct Home {
     router.pushUrl({ url: page });
   }
 
-  openDetail(siteKey: string, siteName: string, vodId: string): void {
+  openDetail(siteKey: string, siteName: string, vodId: string, vodName: string): void {
     const p = new DetailParam();
     p.siteKey = siteKey;
     p.siteName = siteName;
     p.vodId = vodId;
+    // 片名带进详情页：订阅换源后站源可能失效，详情页要靠它去搜同名影片
+    p.vodName = vodName;
     router.pushUrl({ url: 'pages/Detail', params: p });
   }
 
@@ -978,7 +980,7 @@ struct Home {
                     ratio: this.histRatio(h),
                     focused: this.hi('h_' + h.vodId),
                     onTap: () => {
-                      this.openDetail(h.siteKey, h.siteName, h.vodId);
+                      this.openDetail(h.siteKey, h.siteName, h.vodId, h.name);
                     },
                     onHoverIn: (on: boolean) => this.hover('h_' + h.vodId, on),
                     onDelete: () => {
@@ -1023,7 +1025,7 @@ struct Home {
                     meta: this.feedMeta(v),
                     focused: this.hi('v_' + v.id),
                     onTap: () => {
-                      this.openDetail(v.siteKey, v.siteName, v.id);
+                      this.openDetail(v.siteKey, v.siteName, v.id, v.name);
                     },
                     onHoverIn: (on: boolean) => this.hover('v_' + v.id, on)
                   })
@@ -1242,7 +1244,7 @@ struct Home {
                     ratio: this.histRatio(h),
                     focused: this.hi('h_' + h.vodId),
                     onTap: () => {
-                      this.openDetail(h.siteKey, h.siteName, h.vodId);
+                      this.openDetail(h.siteKey, h.siteName, h.vodId, h.name);
                     },
                     onHoverIn: (on: boolean) => this.hover('h_' + h.vodId, on),
                     onDelete: () => {
@@ -1273,11 +1275,11 @@ struct Home {
                 }
                 .onClick(() => Pointer.fire('pfeed_' + v.siteKey + v.id, () => {
                     Feedback.tap();
-                    this.openDetail(v.siteKey, v.siteName, v.id);
+                    this.openDetail(v.siteKey, v.siteName, v.id, v.name);
                 }))
                 .onMouse(Pointer.on('pfeed_' + v.siteKey + v.id, () => {
                     Feedback.tap();
-                    this.openDetail(v.siteKey, v.siteName, v.id);
+                    this.openDetail(v.siteKey, v.siteName, v.id, v.name);
                 }))
               }, (v: Vod) => 'pfeed' + v.siteKey + v.id)
             }

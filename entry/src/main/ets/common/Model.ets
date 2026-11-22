@@ -181,6 +181,13 @@ export class DetailParam {
   siteKey: string = '';
   siteName: string = '';
   vodId: string = '';
+  /**
+   * 片名（历史 / 收藏里有存）。
+   *
+   * 订阅换过之后 siteKey 会失效，详情页只能靠站源名或片名自救：
+   * 站源名对得上就自动迁移，对不上就用片名去搜索同名影片。
+   */
+  vodName: string = '';
 }
 
 export class PlayParam {

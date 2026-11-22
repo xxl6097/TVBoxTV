@@ -320,6 +320,7 @@ struct SearchPage {
     p.siteKey = g.key;
     p.siteName = g.site;
     p.vodId = v.id;
+    p.vodName = v.name;
     router.pushUrl({ url: 'pages/Detail', params: p });
   }
 

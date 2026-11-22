@@ -616,6 +616,7 @@ struct VodList {
               p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.site.key;
               p.siteName = v.siteName.length > 0 ? v.siteName : this.site.name;
               p.vodId = v.id;
+              p.vodName = v.name;
               router.pushUrl({ url: 'pages/Detail', params: p });
           }))
           .onMouse(Pointer.on('vp_card' + v.id, () => {
@@ -624,6 +625,7 @@ struct VodList {
               p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.site.key;
               p.siteName = v.siteName.length > 0 ? v.siteName : this.site.name;
               p.vodId = v.id;
+              p.vodName = v.name;
               router.pushUrl({ url: 'pages/Detail', params: p });
           }))
         }, (v: Vod) => 'v' + v.id + v.name)

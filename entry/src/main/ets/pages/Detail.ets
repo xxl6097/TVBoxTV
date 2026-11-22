@@ -79,6 +79,12 @@ struct Detail {
   private siteKey: string = '';
   private siteName: string = '';
   private vodId: string = '';
+  /** 片名：站源失效时用它去搜索同名影片（历史/收藏里带过来的） */
+  private vodName: string = '';
+  /** 解析出来的站源，load() 直接用，避免再查一遍 */
+  private site: Site | null = null;
+  /** 非空表示「原来那个站源已经不在订阅里」，build 里据此给出自救入口 */
+  @State goneSite: string = '';
 
   async aboutToAppear(): Promise<void> {
     await Store.init(getContext(this) as common.UIAbilityContext);
@@ -87,10 +93,45 @@ struct Detail {
       this.siteKey = p.siteKey;
       this.siteName = p.siteName;
       this.vodId = p.vodId;
+      this.vodName = p.vodName !== undefined && p.vodName !== null ? p.vodName : '';
     }
+    // 先把站源落实（可能顺带把旧 key 迁移掉），再读历史 ——
+    // 顺序反了的话，按旧 key 找不到自己的播放记录，续播行就没了
+    this.site = await this.resolveSite();
     this.fav = await Store.isFavorite(this.siteKey, this.vodId);
     await this.loadSeen();
     await this.load();
+  }
+
+  /**
+   * 找到这条记录对应的站源。
+   *
+   * 三件事，缺一不可：
+   *  1. ensureLoaded：站源列表是从缓存异步恢复的，从「继续观看」直接进来时，
+   *     首页那次恢复可能还没跑完，不等待就会误判成「数据源不存在」。
+   *  2. key 命中不了就按站源名再找一次：订阅更新/换源后 key 会整批重写，
+   *     名字一般还认得出来（用户报的「点继续观看提示源站不存在」就是这个）。
+   *  3. 命中后把历史/收藏里的旧 key 热迁移，下次点击直接走对的路。
+   */
+  private async resolveSite(): Promise<Site | null> {
+    await Store.ensureLoaded();
+    const hit: Site | null = Store.site(this.siteKey);
+    if (hit !== null) {
+      return hit;
+    }
+    const alt: Site | null = Store.siteByName(this.siteName);
+    if (alt === null) {
+      hilog.warn(0x1000, 'BOXN', 'detail site missing key=%{public}s name=%{public}s sites=%{public}d',
+        this.siteKey, this.siteName, Store.sites().length);
+      return null;
+    }
+    const old: string = this.siteKey;
+    this.siteKey = alt.key;
+    hilog.info(0x1000, 'BOXN', 'detail site rebound %{public}s -> %{public}s (%{public}s)',
+      old, alt.key, alt.name);
+    Store.rebindSiteKey(old, alt.key).catch(() => {
+    });
+    return alt;
   }
 
   /**
@@ -220,6 +261,80 @@ struct Detail {
 
 
   /**
+   * 站源没了之后的两个出口。
+   *
+   * 以前这里只有一行红字「数据源不存在」，用户只能退出去手动搜一遍 ——
+   * 「订阅换源」的代价全丢给了用户。现在直接给「搜索同名影片」和
+   * 「删除这条记录」，失效记录也能顺手清掉。
+   */
+  @Builder
+  GonePanel() {
+    Column() {
+      Text('「' + this.goneSite + '」在订阅更新后被移除了。这部片一般还在别的站源里，可以重新搜一下，或者先删掉这条失效记录。')
+        .fontSize(15)
+        .fontColor(T.SUB)
+        .lineHeight(23)
+        .width('100%')
+      Row() {
+        this.GoneBtn('搜索同名影片', 'gone_search', () => this.searchVod())
+        this.GoneBtn('删除这条记录', 'gone_del', () => this.dropGoneHist())
+      }
+      .margin({ top: 12 })
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+    .margin({ top: 10 })
+  }
+
+  /** GonePanel 里的按钮：和线路/演员标签同一套观感，触屏与遥控都能点 */
+  @Builder
+  GoneBtn(label: string, key: string, act: () => void) {
+    Text(label)
+      .fontSize(15)
+      .fontColor(this.hi(key) ? T.TXT : T.ACCENT)
+      .backgroundColor(this.hi(key) ? T.CARD_HI : T.CARD)
+      .padding({ left: 18, right: 18, top: 10, bottom: 10 })
+      .borderRadius(T.RADIUS)
+      .border({ width: T.BORDER, color: this.hi(key) ? T.TXT : '#00000000' })
+      .margin({ right: 10 })
+      .animation({ duration: T.ANIM, curve: Curve.EaseOut })
+      .focusable(true)
+      .onFocus(() => this.hoverTo(key, true))
+      .onBlur(() => this.hoverTo(key, false))
+      .onHover((hv: boolean) => this.hoverTo(key, hv))
+      .onClick(() => Pointer.fire(key, () => {
+        Feedback.tap();
+        act();
+      }))
+      .onMouse(Pointer.on(key, () => {
+        Feedback.tap();
+        act();
+      }))
+  }
+
+  /** 站源失效后拿片名去搜同名影片（搜索结果会跨站源合并） */
+  private searchVod(): void {
+    const kw: string = this.vodName.length > 0 ? this.vodName : this.vod.name;
+    if (kw.length === 0) {
+      Tip.show('这条记录没存片名，请到搜索页手动搜');
+      return;
+    }
+    const params: Record<string, Object> = { 'keyword': kw, 'autoSearch': true };
+    router.pushUrl({ url: 'pages/Search', params: params });
+    Tip.show('搜索：' + kw);
+  }
+
+  /** 删掉这条已经打不开的记录，退回上一页（继续观看里也跟着消失） */
+  private async dropGoneHist(): Promise<void> {
+    const h = new HistItem();
+    h.siteKey = this.siteKey;
+    h.vodId = this.vodId;
+    await Store.removeHistory(h);
+    Tip.show('已删除这条失效记录');
+    router.back();
+  }
+
+  /**
    * 海报 + 站点名。手机竖排时单独占一行，电视与元信息左右并排。
    * 手机把尺寸收到 108×152：竖屏一行放得下，也不会把下方的信息推得太远。
    */
@@ -302,6 +417,9 @@ struct Detail {
 
     if (this.err.length > 0) {
       Text(this.err).fontSize(17).fontColor(T.WARN).margin({ top: 14 })
+    }
+    if (this.goneSite.length > 0) {
+      this.GonePanel()
     }
 
     /**
@@ -552,6 +670,7 @@ struct Detail {
     p.siteKey = v.siteKey.length > 0 ? v.siteKey : this.siteKey;
     p.siteName = v.siteName.length > 0 ? v.siteName : this.vod.siteName;
     p.vodId = v.id;
+    p.vodName = v.name;
     router.pushUrl({ url: 'pages/Detail', params: p });
   }
 
@@ -577,9 +696,11 @@ struct Detail {
   }
 
   async load(): Promise<void> {
-    const s: Site | null = Store.site(this.siteKey);
+    const s: Site | null = this.site !== null ? this.site : Store.site(this.siteKey);
     if (s === null) {
-      this.err = '数据源不存在';
+      // 不再只甩一句「数据源不存在」：说清是哪个站源没了，并给出两条出路
+      this.goneSite = this.siteName.length > 0 ? this.siteName : '原站源';
+      this.err = '这个站源已经不在当前订阅里了';
       this.loading = false;
       return;
     }

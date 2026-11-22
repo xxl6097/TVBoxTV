@@ -299,6 +299,7 @@ struct HistoryPage {
                         p.siteKey = h.siteKey;
                         p.siteName = h.siteName;
                         p.vodId = h.vodId;
+                        p.vodName = h.name;
                         router.pushUrl({ url: 'pages/Detail', params: p });
                     }))
                     .onMouse(Pointer.on('hp_open' + h.siteKey + h.vodId, () => {
@@ -307,6 +308,7 @@ struct HistoryPage {
                         p.siteKey = h.siteKey;
                         p.siteName = h.siteName;
                         p.vodId = h.vodId;
+                        p.vodName = h.name;
                         router.pushUrl({ url: 'pages/Detail', params: p });
                     }))
                   }, (h: HistItem) => 'g_hist' + h.siteKey + h.vodId + h.time)
@@ -388,6 +390,7 @@ struct HistoryPage {
                   p.siteKey = h.siteKey;
                   p.siteName = h.siteName;
                   p.vodId = h.vodId;
+                  p.vodName = h.name;
                   router.pushUrl({ url: 'pages/Detail', params: p });
               }))
               .onMouse(Pointer.on('hp_open' + h.siteKey + h.vodId, () => {
@@ -396,6 +399,7 @@ struct HistoryPage {
                   p.siteKey = h.siteKey;
                   p.siteName = h.siteName;
                   p.vodId = h.vodId;
+                  p.vodName = h.name;
                   router.pushUrl({ url: 'pages/Detail', params: p });
               }))
             }

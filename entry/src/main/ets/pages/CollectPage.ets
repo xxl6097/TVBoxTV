@@ -285,6 +285,7 @@ struct CollectPage {
         p.siteKey = f.siteKey;
         p.siteName = f.siteName;
         p.vodId = f.vodId;
+        p.vodName = f.name;
         router.pushUrl({ url: 'pages/Detail', params: p });
     }))
     .onMouse(Pointer.on('cp_open' + f.siteKey + f.vodId, () => {
@@ -293,6 +294,7 @@ struct CollectPage {
         p.siteKey = f.siteKey;
         p.siteName = f.siteName;
         p.vodId = f.vodId;
+        p.vodName = f.name;
         router.pushUrl({ url: 'pages/Detail', params: p });
     }))
   }

@@ -522,8 +522,34 @@ export class Store {
     return isNaN(n) ? fallback : n;
   }
 
+  /**
+   * 同一份订阅更新后，接口地址没变、但 key 被改写时，沿用上一次的 key。
+   *
+   * key 只是内部标识，历史、收藏、已启用集合全按它存。订阅作者偶尔会重排/重写
+   * key（有的干脆按数组顺序生成），一换就等于把用户所有历史记录打成孤儿 ——
+   * 表现就是「点继续观看提示源站不存在」。只要 api 没变就是同一个站，让它认旧 key。
+   *
+   * @param prev 上一次的站源列表
+   * @param api  当前这一项的接口地址
+   * @param used 本轮已经占用过的 key，避免两个站撞到同一个旧 key
+   */
+  private static prevKeyFor(prev: Site[], api: string, used: string[]): string {
+    if (api.length === 0) {
+      return '';
+    }
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i].api === api && used.indexOf(prev[i].key) < 0) {
+        return prev[i].key;
+      }
+    }
+    return '';
+  }
+
   private static buildSites(cfg: RawConfig): void {
     const out: Site[] = [];
+    // 上一轮的列表：用来把「同 api 的站点」的旧 key 接过来（见 prevKeyFor）
+    const prev: Site[] = Store.siteList;
+    const usedKeys: string[] = [];
     const raw: RawSite[] = cfg.sites as RawSite[];
     for (let i = 0; i < raw.length; i++) {
       const r = raw[i];
@@ -536,6 +562,11 @@ export class Store {
       s.name = Store.strOf(r.name, '站源 ' + (i + 1));
       s.type = Store.numOf(r.type, 1);
       s.api = Store.strOf(r.api, '');
+      const keep: string = Store.prevKeyFor(prev, s.api, usedKeys);
+      if (keep.length > 0 && keep !== s.key) {
+        s.key = keep;
+      }
+      usedKeys.push(s.key);
       s.searchable = Store.numOf(r.searchable, 1) === 1;
       s.quickSearch = Store.numOf(r.quickSearch, 0) === 1;
       // 订阅源的 ext 可能是 JSON 对象（如 hongtv.json v5 的 note/library/verified），
@@ -613,6 +644,92 @@ export class Store {
       }
     }
     return null;
+  }
+
+  /** 站源名归一化：去掉空白、统一小写，只用于比较 */
+  private static normSiteName(s: string): string {
+    if (s === undefined || s === null) {
+      return '';
+    }
+    return s.replace(/\s+/g, '').toLowerCase();
+  }
+
+  /**
+   * 按站源名找站点。
+   *
+   * 订阅更新 / 换源之后站源的 key 会整批重写（有的订阅干脆按顺序生成 key），
+   * 历史、收藏里存的旧 key 就再也命中不了 `site()` —— 用户看到的就是
+   * 「点继续观看提示源站不存在」。站源名一般不会变，用它兜底能救回大部分记录。
+   */
+  static siteByName(name: string): Site | null {
+    const want: string = Store.normSiteName(name);
+    if (want.length === 0) {
+      return null;
+    }
+    for (let i = 0; i < Store.siteList.length; i++) {
+      if (Store.normSiteName(Store.siteList[i].name) === want) {
+        return Store.siteList[i];
+      }
+    }
+    // 名字有细微差别（「无尽资源」vs「无尽资源网」）时退一步做包含匹配，
+    // 但只在唯一命中时采用：多个都沾边就放弃，免得串到别的站源上。
+    let hit: Site | null = null;
+    for (let i = 0; i < Store.siteList.length; i++) {
+      const n: string = Store.normSiteName(Store.siteList[i].name);
+      if (n.length === 0) {
+        continue;
+      }
+      if (n.indexOf(want) >= 0 || want.indexOf(n) >= 0) {
+        if (hit !== null) {
+          return null;
+        }
+        hit = Store.siteList[i];
+      }
+    }
+    return hit;
+  }
+
+  /**
+   * 把历史和收藏里指向旧站源 key 的记录改写到新 key，返回改写的条数。
+   *
+   * 只迁移点播历史与收藏的 siteKey 字段。跳过片头、线路这类按
+   * `siteKey|vodId` 拼键存的偏好不迁（换 key 后读不到就是回默认值，
+   * 不影响能不能看），免得为了几个偏好去遍历整张偏好表。
+   */
+  static async rebindSiteKey(oldKey: string, newKey: string): Promise<number> {
+    if (Store.prefs === null || oldKey.length === 0 || newKey.length === 0 || oldKey === newKey) {
+      return 0;
+    }
+    let n: number = 0;
+
+    const hist: HistItem[] = await Store.history();
+    for (let i = 0; i < hist.length; i++) {
+      if (hist[i].siteKey === oldKey) {
+        hist[i].siteKey = newKey;
+        n++;
+      }
+    }
+    if (n > 0) {
+      // 缓存和落盘一起改：history() 有内存缓存，只写盘下次读还是旧 key
+      Store.histCache = hist;
+      await Store.prefs.put('hist', JSON.stringify(hist));
+    }
+
+    const favs: FavItem[] = await Store.favorites();
+    let fn: number = 0;
+    for (let i = 0; i < favs.length; i++) {
+      if (favs[i].siteKey === oldKey) {
+        favs[i].siteKey = newKey;
+        fn++;
+      }
+    }
+    if (fn > 0) {
+      await Store.prefs.put('fav', JSON.stringify(favs));
+    }
+    if (n > 0 || fn > 0) {
+      await Store.prefs.flush();
+    }
+    return n + fn;
   }
 
   static parses(): ParseRule[] {
