@@ -183,6 +183,18 @@ struct Player {
   @State showQ: boolean = false;
   /** 选集面板（独立于播放设置，两者的内容互不相干） */
   @State showEp: boolean = false;
+  /**
+   * 两个面板「刚打开」的时间戳。
+   *
+   * 面板一展开就铺一层全屏遮罩（点空白关闭）。用鼠标/手指点按钮打开时，
+   * 同一事件的抬起会落到刚挂上去的遮罩上，等于「开了立刻被关掉」——
+   * 实测点控制条的 ⚙ 只有日志 showQ=true，面板肉眼看不见。
+   * 遥控器按键没有这个问题，所以只在真机触屏/模拟器鼠标下暴露。
+   *
+   * 处理：遮罩关闭前先看距离开面板够不够久（见 closeQ/closeEp）。
+   */
+  private qOpenedAt: number = 0;
+  private epOpenedAt: number = 0;
   /** 实测网速文案，如「3.4 MB/s」 */
   @State netTxt: string = '';
   /** 画面显示模式：SCALE_STRETCH=0 / SCALE_CROP=1 / SCALE_FIT=2 */
@@ -2715,6 +2727,27 @@ struct Player {
     });
   }
 
+  /**
+   * 点遮罩关闭画质面板。
+   *
+   * 350ms 内的点击一律忽略：这个时间窗里的点击只可能是「刚点按钮把面板
+   * 调出来」的那一下，穿透到遮罩上就会变成开了立刻关（见 qOpenedAt 注释）。
+   */
+  private closeQ(): void {
+    if (Date.now() - this.qOpenedAt < 350) {
+      return;
+    }
+    this.showQ = false;
+  }
+
+  /** 点遮罩关闭选集面板，去重理由同 closeQ */
+  private closeEp(): void {
+    if (Date.now() - this.epOpenedAt < 350) {
+      return;
+    }
+    this.showEp = false;
+  }
+
   // ==================== 按键 ====================
   private doAction(code: number, repeat: boolean): void {
     if (code === KeyCode.KEYCODE_DPAD_LEFT) {
@@ -3277,6 +3310,7 @@ struct Player {
     } else if (act === 6) {
       this.switchEpisode(1);
     } else if (act === 8) {
+      this.qOpenedAt = Date.now();
       this.showQ = !this.showQ;
       // 两个面板互斥：叠在一起会互相遮挡，也分不清点的是哪个
       this.showEp = false;
@@ -3288,6 +3322,7 @@ struct Player {
       this.toggleLock();
     } else if (act === 9) {
       // 选集：与播放设置互斥，避免两个面板叠在一起
+      this.epOpenedAt = Date.now();
       this.showEp = !this.showEp;
       this.showQ = false;
       hilog.info(0x1000, 'BOXN', 'showEp=%{public}s ep=%{public}d/%{public}d',
@@ -4234,10 +4269,10 @@ struct Player {
         .height('100%')
         .backgroundColor(T.BLACK_50)
         .onClick(() => this.tap('qmask', () => {
-          this.showQ = false;
+          this.closeQ();
         }))
         .onMouse(this.ptr('qmask', () => {
-          this.showQ = false;
+          this.closeQ();
         }))
 
       Column() {
@@ -4454,10 +4489,10 @@ struct Player {
         .height('100%')
         .backgroundColor(T.BLACK_50)
         .onClick(() => this.tap('epmask', () => {
-          this.showEp = false;
+          this.closeEp();
         }))
         .onMouse(this.ptr('epmask', () => {
-          this.showEp = false;
+          this.closeEp();
         }))
 
       Column() {
