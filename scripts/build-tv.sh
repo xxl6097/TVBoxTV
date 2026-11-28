@@ -94,8 +94,18 @@ if [ -n "$UDID" ] && ! echo "$DEVIDS" | grep -q "$UDID"; then
 fi
 
 echo "→ 安装到 ${TARGET_DEV}…"
-if hdc -t "$TARGET_DEV" install -r "$HAP" 2>&1 | tee "${TMPDIR:-/tmp}/hmy-tv-install.log" | grep -q "install bundle successfully"; then
+ILOG="${TMPDIR:-/tmp}/hmy-tv-install.log"
+if hdc -t "$TARGET_DEV" install -r "$HAP" 2>&1 | tee "$ILOG" | grep -q "install bundle successfully"; then
   echo "✓ 已安装。启动：hdc -t $TARGET_DEV shell aa start -a EntryAbility -b $BUNDLE"
+elif grep -q "install version downgrade" "$ILOG"; then
+  # 设备上留过 versionCode 更高的老包（例如早期 20000000 的 0.4.x），
+  # 按版本号比较会被判降级。这里显式允许降级覆盖，保留应用数据，不卸载。
+  echo "  ! 设备上已装包的 versionCode 更高，按降级覆盖安装（保留数据）…"
+  if hdc -t "$TARGET_DEV" install -r -d "$HAP" 2>&1 | tee "$ILOG" | grep -q "install bundle successfully"; then
+    echo "✓ 已安装（降级覆盖）。启动：hdc -t $TARGET_DEV shell aa start -a EntryAbility -b $BUNDLE"
+  else
+    echo "✗ 安装失败："; tail -5 "$ILOG"; exit 11
+  fi
 else
-  echo "✗ 安装失败："; tail -5 "${TMPDIR:-/tmp}/hmy-tv-install.log"; exit 11
+  echo "✗ 安装失败："; tail -5 "$ILOG"; exit 11
 fi
