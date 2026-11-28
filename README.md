@@ -292,6 +292,9 @@ CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含
 - 站源本身极不稳定：写测试时 `bajiezy.xyz` 返回 429、`ikaola.tv` 被 Cloudflare 403。
   应用对单站失败做了隔离，不会整页崩。
 - 播放格式取决于鸿蒙系统解码器：HLS/H.264/H.265/TS 正常，DTS/TrueHD 音轨大概率无声。
+  **H.265 要看设备**：真机（如 HUAWEI 手机、智慧屏）有硬解，DevEco 的 TV 模拟器没有 HEVC
+  解码器（`CodecListCore Can not find input mime type, video/hevc`），直播里的 H.265 台会自动
+  换到同名的 H.264 线路，换不到就是解不了，不是源坏了。
 
 ### 直播源怎么配
 
@@ -334,6 +337,26 @@ CI 报错先在本地跑同一条命令复现，再看 `docs/CNB构建.md`（含
 
 这样做的原因：AVPlayer 对死链要 20 秒上下才回调 error，用户盯着黑屏等 20 秒才知道台挂了。
 自己探活是 2.5 秒一次，体验差一个数量级。
+
+#### 流能连上、但本机解不了这个编码
+
+探活只能证明「这个地址有数据」，证明不了「这台设备能解」。典型是 H.265/HEVC：
+模拟器和部分老设备没有 HEVC 解码器，AVPlayer 报
+`5400106 Unsupported Format: VID_DEC_ERR-video/hevc-unsupport interface`，
+同时 hilog 里 `VideoDecoderAdapter SetOutputSurface mediaCodec_ is nullptr` ——
+视频解码器压根没建起来，而同一路流的 AAC 音频解码器是正常的。
+
+这类失败**不能当频道失效**处理，因为同一个台往往另有一路不同编码的源：
+
+- iFan 的 CCTV1 在「央视」组是 migu 的 H.265（`/uuxia/608807420`），
+  在「央视频」组是 ysp 的 H.264（`/uuxia/relay/ysp-cctv1.m3u8`），台名一模一样、分组不同。
+- 进播放页时把**跨分组的同名台地址**一并收进该台的候选线路（`LivePage.buildNameIndex`），
+  解不了码就换这条线，而不是判死整台再跳到下个频道（整组央视都是 H.265 时会一路空转）。
+- 失败过的线路记进进程内黑名单（`common/CodecBad.ets`），下次进这个台直接从能解的那路起播，
+  不再黑屏试一次。不落盘是有意的：换台设备、系统更新后解码器可能就有了。
+
+实测 TV 模拟器：点 CCTV1 → 1 秒内报 HEVC 不支持 → 自动切到 ysp 的 H.264 1080p → 正常出画面；
+第二次进入、以及换台到 CCTV2，都直接走能解的那路。
 
 #### 频道分组：用源里写的原名字，摆成电视盒子的样子
 

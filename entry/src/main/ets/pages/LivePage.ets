@@ -25,6 +25,7 @@ import { Theme, KEY_THEME } from '../common/Theme';
 import { PhoneTabBar } from '../common/PhoneTabBar';
 import { isBackCode } from '../common/TvFocus';
 import { Pointer } from '../common/Pointer';
+import { isCodecBad } from '../common/CodecBad';
 
 /**
  * 「今日节目单」面板的一行：一个台 + 正在播 + 接下来。
@@ -601,6 +602,43 @@ struct LivePage {
   }
 
   /**
+   * 台名 → 该台在**所有分组**里的全部地址。
+   *
+   * 为什么要跨分组：直播源常把同一个台按来源拆进不同分组。iFan 就是
+   * 「央视」组放 migu 的 H.265 流、「央视频」组放 ysp 的 H.264 流，
+   * 台名一模一样、编码不同。Live.push() 的多线路合并只认「同组同名」，
+   * 跨分组就取不到 —— 而模拟器和部分老设备恰恰只有 H.264 能解，
+   * 拿不到这条备用线路就只能判定整台播不了。
+   */
+  private collectByName(n: LiveDir, idx: Map<string, string[]>): void {
+    for (let i = 0; i < n.channels.length; i++) {
+      const ch: Channel = n.channels[i];
+      let arr: string[] | undefined = idx.get(ch.name);
+      if (arr === undefined) {
+        arr = [];
+        idx.set(ch.name, arr);
+      }
+      for (let k = 0; k < ch.urls.length; k++) {
+        if (arr.indexOf(ch.urls[k]) < 0) {
+          arr.push(ch.urls[k]);
+        }
+      }
+      if (arr.indexOf(ch.url) < 0) {
+        arr.push(ch.url);
+      }
+    }
+    for (let i = 0; i < n.children.length; i++) {
+      this.collectByName(n.children[i], idx);
+    }
+  }
+
+  private buildNameIndex(): Map<string, string[]> {
+    const idx: Map<string, string[]> = new Map<string, string[]>();
+    this.collectByName(this.root, idx);
+    return idx;
+  }
+
+  /**
    * 进播放页。
    * 把当前目录下的全部频道塞进 Playlist，播放页的「上一台/下一台」就能直接换台，
    * 单台失效时也能自动顺延——不用退回列表再点。
@@ -608,6 +646,7 @@ struct LivePage {
   play(ch: Channel): void {
     hilog.info(0x1000, 'BOXN', 'play enter %{public}s url2=%{public}d', ch.name, ch.urls.length);
     const list: Channel[] = this.channels();
+    const nameIdx: Map<string, string[]> = this.buildNameIndex();
     const eps: Episode[] = [];
     let idx: number = 0;
     for (let i = 0; i < list.length; i++) {
@@ -620,6 +659,37 @@ struct LivePage {
       if (e.urls.length === 0) {
         e.urls.push(list[i].url);
       }
+      // 同名台的其它分组线路排在后面当备用（去重，主线路始终在第一位）
+      const same: string[] | undefined = nameIdx.get(list[i].name);
+      if (same !== undefined) {
+        for (let k = 0; k < same.length; k++) {
+          if (e.urls.indexOf(same[k]) < 0) {
+            e.urls.push(same[k]);
+          }
+        }
+      }
+      /**
+       * 把本机已确认解不了的编码排到最后。
+       *
+       * 只在「还有别的线路可选」时才动顺序：整台只有一条 H.265 时保持原样，
+       * 否则主线路会被排成自己，提示语反而更乱。
+       */
+      if (e.urls.length > 1) {
+        const ok: string[] = [];
+        const bad: string[] = [];
+        for (let k = 0; k < e.urls.length; k++) {
+          if (isCodecBad(e.urls[k])) {
+            bad.push(e.urls[k]);
+          } else {
+            ok.push(e.urls[k]);
+          }
+        }
+        if (ok.length > 0 && bad.length > 0) {
+          const merged: string[] = ok.concat(bad);
+          e.urls = merged;
+          e.url = merged[0];
+        }
+      }
       if (list[i].url === ch.url && list[i].name === ch.name) {
         idx = i;
       }
@@ -630,7 +700,13 @@ struct LivePage {
     this.curUrl = ch.url;
 
     const p = new PlayParam();
-    p.url = ch.url;
+    /**
+     * 用排好序的首选线路，而不是 ch.url。
+     *
+     * ch.url 是源里的第一路，可能就是本机解不了的编码；上面已经把能解的
+     * 换到第一位，这里必须跟着走，否则等于白排 —— 照样先黑屏试一次再换线。
+     */
+    p.url = eps.length > idx ? eps[idx].url : ch.url;
     p.title = ch.name;
     p.siteKey = '';
     p.vodId = '';

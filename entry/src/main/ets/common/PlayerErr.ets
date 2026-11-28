@@ -21,6 +21,25 @@ export function isCapabilityHint(code: number, msg: string, isLive: boolean): bo
 }
 
 /**
+ * 判断这条 error 是不是「本机没有对应的视频解码器」。
+ *
+ * 典型场景：H.265/HEVC。AVPlayer 报 5400106，消息里带
+ * `VID_DEC_ERR-video/hevc-unsupport interface, unsupport video decoder type`；
+ * 同时 hilog 里能看到 `VideoDecoderAdapter SetOutputSurface mediaCodec_ is nullptr`
+ * ——视频解码器压根没建起来，而同一路流的 AAC 音频解码器是正常的。
+ *
+ * 为什么要单独认这一类：它**不是频道失效**。同一个台在别的源上往往换了编码
+ * （iFan 的 CCTV1 就是 migu 的 h265 和 ysp 的 h264 并存），换一条线路就能播。
+ * 把它当普通失效处理会一路跳到下个频道，整组央视都是 h265 时空转到底。
+ */
+export function isCodecUnsupported(code: number, msg: string): boolean {
+  if (code !== 5400106) {
+    return false;
+  }
+  return /VID_DEC_ERR|hevc-unsupport|unsupport(ed)?\s+video\s+decoder|video\/hevc/i.test(msg);
+}
+
+/**
  * 把播放器底层错误码/错误消息转成用户能看懂的中文。
  * 鸿蒙 AVPlayer 的错误码体系：
  *  - 5400101：格式/编码不支持
@@ -64,6 +83,9 @@ export function friendlyErr(code: number, msg: string): string {
      */
     if (/CONTAINER_ERR|container format/i.test(msg)) {
       return '系统播放器打不开这个视频的封装格式，转成 MP4 后可播放';
+    }
+    if (isCodecUnsupported(code, msg)) {
+      return '本机不支持该视频的编码（H.265/HEVC），请换其它线路或源';
     }
     return '视频解码失败，可能硬件不支持此规格';
   }
