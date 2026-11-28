@@ -17,7 +17,10 @@
 #
 # 前置（AGC 已签发好，直接可用）：
 #   $SIGN_DIR/release.p12           私钥库，别名 release，口令见 HMY_STOREPASS
-#   $SIGN_DIR/release.cer           证书链（root + 中间 CA + 开发者证书）
+#   $SIGN_DIR/release.cer           证书链，**第一段必须是开发者证书**（CN=…,Release），
+#                                   后面才是中间 CA（Developer Relations CA G2）和根 CA。
+#                                   顺序反了（根排最前）会把根证书当成签名证书写进包，
+#                                   AGC 一律回「软件包解析失败」。
 #   $SIGN_DIR/夜帧影视Release.p7b   发布 Profile：bundle-name=com.hong.tv, type=release
 # 换了目录就用 SIGN_DIR 覆盖，换了口令用 HMY_STOREPASS 覆盖。
 set -uo pipefail
@@ -27,7 +30,8 @@ cd "$ROOT" || exit 1
 
 SIGN_DIR="${SIGN_DIR:-/Users/uuxia/Desktop/work/code/huawei}"
 P12="$SIGN_DIR/release.p12"
-CER="${1:-$SIGN_DIR/release.cer}"
+CER="${1:-$SIGN_DIR/release-app-chain.cer}"
+[ -f "$CER" ] || CER="$SIGN_DIR/release.cer"
 P7B="${2:-$SIGN_DIR/夜帧影视Release.p7b}"
 ALIAS="${HMY_ALIAS:-release}"
 PASS="${HMY_STOREPASS:-het002402}"
@@ -158,6 +162,77 @@ echo "  未签名 .app：$(basename "$RAW_APP")  $(du -h "$APP_UNSIGNED" | cut -
 # 结构自检：缺 pac.json 的包上 AGC 一定解析失败，先在这里拦下来
 if ! unzip -l "$APP_UNSIGNED" 2>/dev/null | grep -q 'pac.json'; then
   echo "✗ .app 里没有 pac.json（隐私清单），AGC 会报「软件包解析失败」"
+  exit 7
+fi
+
+# ---------- 2.5 校验签名材料 ----------
+# AGC 的「软件包解析失败」在这个项目上出现过两次，都是 -appCertFile 惹的：
+#   · 第一次：用 app_packing_tool 手工拼 .app，缺 pac.json
+#   · 第二次：.cer 的段序是「根 → 中间 CA → 开发者证书」，签名工具只认第一段当
+#     签名证书，于是把 Root CA G2 写了进去，跟 profile 里登记的开发者证书对不上
+# 两次 AGC 都只回一句「软件包解析失败」，不给细节。所以这里先自查。
+echo "→ 校验签名材料…"
+if ! HMY_P12PASS="$PASS" python3 - "$CER" "$P12" <<'PYCHAIN'
+import os, re, subprocess, sys
+
+cer, p12 = sys.argv[1], sys.argv[2]
+pw = os.environ.get('HMY_P12PASS', '')
+
+
+def ssl(args, data=None):
+    return subprocess.run(['openssl'] + args, input=data, capture_output=True, text=True)
+
+
+txt = open(cer, encoding='utf-8', errors='ignore').read()
+certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', txt, re.S)
+if not certs:
+    print('  ✗ %s 不是 PEM 证书' % cer)
+    sys.exit(1)
+
+head = certs[0]
+r = ssl(['x509', '-noout', '-subject', '-issuer', '-pubkey'], head)
+lines = r.stdout.splitlines()
+sub = next((l for l in lines if l.startswith('subject=')), '')
+if '-----BEGIN PUBLIC KEY-----' in lines:
+    leaf_pub = '\n'.join(lines[lines.index('-----BEGIN PUBLIC KEY-----'):])
+else:
+    leaf_pub = ''
+print('  链段数 %d，首段（会被当成签名证书）：%s' % (len(certs), sub.replace('subject=', '').strip()))
+
+fail = []
+if len(certs) < 2:
+    fail.append('只有 1 段；签名工具要求「开发者证书 + 中间 CA」的链')
+if 'Root CA' in sub:
+    fail.append('首段是根证书 —— 段序反了，开发者证书必须排在第一个')
+elif 'Release' not in sub or 'Development' in sub:
+    fail.append('首段不是正式发布证书（应含 Release、不含 Development）')
+
+key = ssl(['pkcs12', '-in', p12, '-nocerts', '-nodes', '-passin', 'pass:' + pw])
+if 'BEGIN PRIVATE KEY' not in key.stdout:
+    key = ssl(['pkcs12', '-in', p12, '-nocerts', '-nodes', '-legacy', '-passin', 'pass:' + pw])
+key_pub = ssl(['pkey', '-pubout'], key.stdout).stdout
+
+
+def pub_id(pem):
+    """只取 PEM 里的 base64 正文，避免换行/头尾差异导致误判。"""
+    m = re.search(r'-----BEGIN PUBLIC KEY-----(.*?)-----END PUBLIC KEY-----', pem, re.S)
+    return re.sub(r'\s+', '', m.group(1)) if m else ''
+
+
+a, b = pub_id(leaf_pub), pub_id(key_pub)
+if a and b and a != b:
+    fail.append('首段证书的公钥与 p12 私钥不配对（证书和密钥不是同一次申请的）')
+
+if fail:
+    for f in fail:
+        print('  ✗ ' + f)
+    print('''  修法：.cer 的段序必须是
+      ① 开发者证书（CN=…,Release） ② 中间 CA（Developer Relations CA G2） ③ 根 CA
+    脚本默认用 release-app-chain.cer；重建时把 release-app.cer + release-ca.cer + release-root.cer 依次 cat 起来''')
+    sys.exit(1)
+print('  ✓ 证书链与私钥配对正确')
+PYCHAIN
+then
   exit 7
 fi
 
