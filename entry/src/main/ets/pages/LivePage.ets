@@ -26,6 +26,7 @@ import { PhoneTabBar } from '../common/PhoneTabBar';
 import { isBackCode } from '../common/TvFocus';
 import { Pointer } from '../common/Pointer';
 import { isCodecBad } from '../common/CodecBad';
+import { isCleanStream, cleanCooldownLeftMs } from '../common/StreamTag';
 
 /**
  * 「今日节目单」面板的一行：一个台 + 正在播 + 接下来。
@@ -669,26 +670,41 @@ struct LivePage {
         }
       }
       /**
-       * 把本机已确认解不了的编码排到最后。
-       *
-       * 只在「还有别的线路可选」时才动顺序：整台只有一条 H.265 时保持原样，
-       * 否则主线路会被排成自己，提示语反而更乱。
+       * 同一台的多条线路重排序，两级：
+       *   1) 画面干净的官方上游（央视频）优先 —— 咪咕那路右上角烧着
+       *      「CCTV. 咪咕视频」水印，那是编进画面的像素，播放器去不掉，
+       *      只能靠换上游躲开；
+       *   2) 本机已确认解不了的编码排到最后（见 common/CodecBad.ets）。
+       * 任一级「全命中」或「全不命中」时都不动顺序，避免无谓抖动。
        */
       if (e.urls.length > 1) {
+        const clean: string[] = [];
+        const other: string[] = [];
+        for (let k = 0; k < e.urls.length; k++) {
+          if (isCleanStream(e.urls[k])) {
+            clean.push(e.urls[k]);
+          } else {
+            other.push(e.urls[k]);
+          }
+        }
+        let ordered: string[] = e.urls;
+        if (clean.length > 0 && other.length > 0) {
+          ordered = clean.concat(other);
+        }
         const ok: string[] = [];
         const bad: string[] = [];
-        for (let k = 0; k < e.urls.length; k++) {
-          if (isCodecBad(e.urls[k])) {
-            bad.push(e.urls[k]);
+        for (let k = 0; k < ordered.length; k++) {
+          if (isCodecBad(ordered[k])) {
+            bad.push(ordered[k]);
           } else {
-            ok.push(e.urls[k]);
+            ok.push(ordered[k]);
           }
         }
         if (ok.length > 0 && bad.length > 0) {
-          const merged: string[] = ok.concat(bad);
-          e.urls = merged;
-          e.url = merged[0];
+          ordered = ok.concat(bad);
         }
+        e.urls = ordered;
+        e.url = ordered[0];
       }
       if (list[i].url === ch.url && list[i].name === ch.name) {
         idx = i;
@@ -707,6 +723,8 @@ struct LivePage {
      * 换到第一位，这里必须跟着走，否则等于白排 —— 照样先黑屏试一次再换线。
      */
     p.url = eps.length > idx ? eps[idx].url : ch.url;
+    hilog.info(0x1000, 'BOXN', 'play pick %{public}s lines=%{public}d cd=%{public}d first=%{public}s',
+      ch.name, eps.length > idx ? eps[idx].urls.length : 1, cleanCooldownLeftMs(), p.url.substring(0, 64));
     p.title = ch.name;
     p.siteKey = '';
     p.vodId = '';

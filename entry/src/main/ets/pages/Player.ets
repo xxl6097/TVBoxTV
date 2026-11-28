@@ -24,6 +24,7 @@ import { PlayerFmt } from '../common/PlayerFmt';
 import { fixPlayable } from '../common/PlayUrl';
 import { friendlyErr, isCapabilityHint, isCodecUnsupported } from '../common/PlayerErr';
 import { markCodecBad } from '../common/CodecBad';
+import { hasCleanHint, markCleanFail } from '../common/StreamTag';
 import window from '@ohos.window';
 import audio from '@ohos.multimedia.audio';
 
@@ -1364,15 +1365,17 @@ struct Player {
   }
 
   /**
-   * 换到当前频道剩下的备用线路（解码器不支持时用）。
+   * 换到当前频道剩下的备用线路。
    *
    * 与 pickPlayableLive() 的分工：那边是「进播放前探活」，只能看 HTTP 通不通，
-   * 判不出编码能不能解；这里是已经在解码器上失败了，所以不再探活、直接换。
+   * 判不出编码能不能解、也判不出 CDN 会不会拒流；这里是已经在播放器上失败了，
+   * 所以不再探活、直接换。
    *
-   * 不累加 liveFail：这条线换完还是同台的另一个源，不代表这台死了。
-   * 换完也保留 epName / 游标不动 —— 频道没变，只是线路变了。
+   * 不累加 liveFail：换的是线路，频道没变。
+   * codecBad 只在「本机没有这个编码的解码器」时为 true —— 那种线路换台设备也
+   * 未必能解，值得记住；网络失败是上游临时状态，记下来反而会错杀好线路。
    */
-  private switchLiveLine(): void {
+  private switchLiveLine(codecBad: boolean): void {
     if (this.liveAlts.length === 0) {
       return;
     }
@@ -1380,15 +1383,26 @@ struct Player {
     const badUrl: string = this.rawUrl;
     const alt: string = this.liveAlts[0];
     this.liveAlts = this.liveAlts.slice(1);
-    hilog.warn(0x1000, 'BOXN', 'codec unsupported, switch line remain=%{public}d url=%{public}s',
-      this.liveAlts.length, alt.substring(0, 72));
+    hilog.warn(0x1000, 'BOXN', 'switch line codecBad=%{public}s remain=%{public}d url=%{public}s',
+      codecBad ? 'y' : 'n', this.liveAlts.length, alt.substring(0, 72));
     this.rawUrl = alt;
     this.finalUrl = alt;
     this.errMsg = '';
     this.via = '直播直连';
-    // 记下来，下次进这个台直接从别的线路起播，不用再黑屏试一次
-    markCodecBad(badUrl);
-    this.showTip('本机不支持该编码，已换用备用线路');
+    if (codecBad) {
+      // 记下来，下次进这个台直接从别的线路起播，不用再黑屏试一次
+      markCodecBad(badUrl);
+      this.showTip('本机不支持该编码，已换用备用线路');
+    } else {
+      /**
+       * 干净上游（央视频）拉不动时进入冷却：它一挂往往是整体 403，
+       * 不降级的话每进一个台都要先失败一次再回退，比不优化还慢。
+       */
+      if (hasCleanHint(badUrl)) {
+        markCleanFail();
+      }
+      this.showTip('这条线路打不开，已换用备用线路');
+    }
     this.releasePlayer();
     /**
      * 延迟起播：releasePlayer 之后播放器要经历 idle，且 initPlayer 有
@@ -1618,17 +1632,18 @@ struct Player {
           return;
         }
         /**
-         * 「本机没有这个编码的解码器」单独处理，且必须排在换台之前。
+         * 直播先换线、再换台。
          *
-         * 直播同台常有多条线路，来源不同编码也不同 —— iFan 的 CCTV1 就是
-         * migu 的 h265（/uuxia/608807420）和央视频转发的 h264
-         * （/uuxia/relay/ysp-cctv1.m3u8）并存。进播放前 pickPlayableLive()
-         * 只用 HTTP 探活，h265 的流照样 200、照样有 m3u8，探活根本看不出解不了；
-         * 真正失败要等到解码器这一层。所以这里先换同台的备用线路，
-         * 而不是把它当「频道失效」一路跳到下个台（整组央视都是 h265 时就是空转）。
+         * 换线的命中率比换台高得多：同一个台常有两三条来自不同上游的地址，
+         * 挂的往往只是其中一条。而且「进播放前探活」只能证明这个地址有数据，
+         * 证明不了播放器拉得动 —— CDN 限流、防盗链、编解码能力都可能在这一层才暴露。
+         * 所以任何直播错误，只要还有备用线路就先换线；线路耗尽了才顺延到下个台。
+         *
+         * 只有「编码不支持」才把线路拉黑：那是本机能力问题，换台设备就好了；
+         * 网络/CDN 失败是上游的临时状态，不该记成永久不可用。
          */
-        if (this.isLive && isCodecUnsupported(err.code, err.message) && this.liveAlts.length > 0) {
-          this.switchLiveLine();
+        if (this.isLive && this.liveAlts.length > 0) {
+          this.switchLiveLine(isCodecUnsupported(err.code, err.message));
           return;
         }
         this.applyEv(PlayState.EV_ERROR);
