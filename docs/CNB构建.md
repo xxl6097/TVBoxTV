@@ -36,6 +36,16 @@
 
 版本号故意不做「自动改写」：写错就报错，而不是悄悄给你打个 `v1.2.0` 的 tag 却挂着 1.1.0 的包。
 
+> **与本地打包的差别**：本地 `./scripts/build-tv.sh` 每次会把 `versionName` patch 位 +1、
+> `versionCode` +1（实现见 `scripts/ci-build.sh` 第 0 步）；云端默认不动版本号——
+> 发版以页面填的 `REL_VERSION` 为准，普通构建按 git 里的版本出包，保证「同一个 commit
+> 编出来的包版本固定」。要让云端也自增，在流水线里设 `HMY_BUMP=1`；本地要冻结则设
+> `HMY_NO_BUMP=1`。
+>
+> 快照/发版两种构建都会把**编译时间**写进 `entry/src/main/ets/common/BuildInfo.ets`
+> （编译前写、编译后还原），App 里设置页「关于 · 版本」下方显示为
+> 「编译于 2026-11-28 11:58:40」，与是否自增无关。
+
 **换镜像、升 SDK 之后先用 `编译校验` 验证**，它不碰任何密钥，失败信息也最干净。
 
 一次 `出包` 的产物：
@@ -63,13 +73,15 @@ dist/release-info.txt                    ← tag / 附件名 / 下载地址
 ```
 app=夜帧影视
 bundle=com.hong.tv
-version=1.1.0
-version_code=1000008
+version=1.1.1
+version_code=1000009
 build_mode=debug
 signed=yes
-hap=dist/夜帧影视-1.1.0-debug-signed.hap
-size=2.4M
+hap=dist/夜帧影视-1.1.1-debug-signed.hap
+size=3.2M
 sha256=e557011bf5fd3789d0387c1c5ec69a90de4d1526eec5d744ab4f9fbd50e1c19a
+built_at=2026-11-28T03:58:47Z
+built_at_local=2026-11-28 11:58:40
 ```
 
 ---

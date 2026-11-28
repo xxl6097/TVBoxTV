@@ -26,6 +26,7 @@ import { PhoneTabBar } from '../common/PhoneTabBar';
 import { Pointer } from '../common/Pointer';
 import { Epg } from '../common/Epg';
 import { S, SiteSpeed, SRowView, SChildView, SSiteView } from '../common/SettingRows';
+import { BuildInfo } from '../common/BuildInfo';
 
 
 @Entry
@@ -112,6 +113,8 @@ struct SettingPage {
   @State wdScanBusy: number = -1;
   /** 展示用版本号，不引 bundleManager 也能从 AppStorage 拿到 */
   @State verName: string = '1.0.2';
+  /** 打包时的编译时间（BuildInfo.BUILT_AT），显示在版本号下面一行 */
+  @State builtAt: string = '';
   /** 弹窗里切到「手动输入」模式（没 Wi-Fi / 扫不了码时的退路） */
   @State qrManualMode: boolean = false;
   @State qrManual: string = '';
@@ -261,7 +264,13 @@ struct SettingPage {
       .replace('个无响应', '失效');
   }
 
-  /** 版本号从包信息读，别在代码里写死——改了 app.json5 忘了同步会误导审核 */
+  /**
+   * 版本号从包信息读，别在代码里写死——改了 app.json5 忘了同步会误导审核。
+   *
+   * 编译时间没有系统接口可取：installTime 是「安装时间」，覆盖安装就刷新，
+   * 换台设备更是全新值，当成编译时间会误事。它由构建脚本在编译前写进
+   * BuildInfo.BUILT_AT（scripts/ci-build.sh 第 0 步），运行期只是读常量。
+   */
   readVersion(): void {
     try {
       const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
@@ -271,6 +280,7 @@ struct SettingPage {
     } catch (e) {
       // 读不到就保留默认值，不影响主流程
     }
+    this.builtAt = BuildInfo.BUILT_AT;
   }
 
   aboutToDisappear(): void {
@@ -1654,7 +1664,9 @@ struct SettingPage {
         },
         onHoverIn: (on: boolean) => this.hoverTo('r_fsy', on) })
       this.SDiv()
-      SRowView({ label: '版本', value: 'v' + this.verName, arrow: false, focused: this.hi('r_ver'),
+      SRowView({ label: '版本', value: 'v' + this.verName,
+        sub: this.builtAt.length > 0 ? '编译于 ' + this.builtAt : '',
+        arrow: false, focused: this.hi('r_ver'),
         onTap: () => {
         },
         onHoverIn: (on: boolean) => this.hoverTo('r_ver', on) })

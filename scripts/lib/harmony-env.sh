@@ -193,3 +193,68 @@ hv_size() {
     else printf "%.1f%s\n", b, u[i]
   }'
 }
+
+# ---------------------------------------------------------------------------
+# 版本号自增 + 编译时间注入
+#
+# 需求：每次打包版本号都要往上走一格，并且包里能显示「这一版是什么时候编的」。
+# 两者都在编译前一刻生成，避免出现「版本号是手改的、时间是上次的」这种对不上。
+#
+# 版本号规则：versionName 的最后一段 +1（1.1.0 → 1.1.1），versionCode 同步 +1。
+# 想冻结版本（比如打与 tag 一致的包）设 HMY_NO_BUMP=1。
+# ---------------------------------------------------------------------------
+
+# 自增 AppScope/app.json5 里的 versionName(patch) 与 versionCode
+#   hv_bump_version [app.json5]
+hv_bump_version() {
+  local f="${1:-AppScope/app.json5}"
+  [ -f "$f" ] || return 1
+  local ver code major rest minor patch newver newcode
+  ver="$(hv_app_version "$f")"
+  code="$(hv_app_version_code "$f")"
+  [ -n "$ver" ] || return 1
+
+  major="${ver%%.*}"
+  rest="${ver#*.}"
+  if [ "$rest" = "$ver" ]; then
+    minor=0; patch=0
+  else
+    minor="${rest%%.*}"
+    if [ "$minor" = "$rest" ]; then patch=0; else patch="${rest#*.}"; fi
+  fi
+  # 非数字（如 1.1.0-beta）就归零重来，别把版本号写成 NaN
+  case "$patch" in ''|*[!0-9]*) patch=0 ;; esac
+  case "$major" in ''|*[!0-9]*) major=1 ;; esac
+  case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+  newver="$major.$minor.$((patch + 1))"
+
+  case "$code" in ''|*[!0-9]*) newcode=1 ;; *) newcode=$((code + 1)) ;; esac
+
+  # 用临时文件改写：GNU 的 sed -i 与 BSD 的 sed -i '' 不兼容，走重定向最省事
+  sed -e "s/\(\"versionName\"[[:space:]]*:[[:space:]]*\)\"[^\"]*\"/\1\"$newver\"/" \
+      -e "s/\(\"versionCode\"[[:space:]]*:[[:space:]]*\)[0-9][0-9]*/\1$newcode/" \
+      "$f" > "$f.hvbump" && mv "$f.hvbump" "$f" || return 1
+
+  hv_log "版本号 $ver ($code) → $newver ($newcode)"
+  return 0
+}
+
+# 写 BuildInfo.ets（编译前注入，编译后由调用方还原）
+#   hv_write_build_info <目标文件> <versionName> <versionCode> <编译时间> <buildMode>
+hv_write_build_info() {
+  local f="$1" ver="${2:-0.0.0}" code="${3:-0}" at="${4:-}" mode="${5:-debug}"
+  [ -n "$f" ] || return 1
+  mkdir -p "$(dirname "$f")" || return 1
+  cat > "$f" <<EOF
+/**
+ * 构建信息 —— 由 scripts/lib/harmony-env.sh 的 hv_write_build_info() 在编译前写入，
+ * 编译结束后自动还原成仓库里的默认值。本文件是生成物，不要手改。
+ */
+export class BuildInfo {
+  static readonly VERSION: string = '$ver';
+  static readonly VERSION_CODE: number = $code;
+  static readonly BUILT_AT: string = '$at';
+  static readonly BUILD_MODE: string = '$mode';
+}
+EOF
+}

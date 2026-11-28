@@ -212,6 +212,14 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 ./scripts/hdcx.sh shell "bm get -u"     # 单条命令里完成重连+执行，读设备信息
 ```
 
+> **每次打包自动升版本号 + 记录编译时间**（实现见 `scripts/ci-build.sh` 第 0 步）：
+> `AppScope/app.json5` 的 `versionName` patch 位 +1（1.1.0 → 1.1.1）、`versionCode` +1；
+> 同时把编译时间写进 `entry/src/main/ets/common/BuildInfo.ets`，设置页「关于 · 版本」
+> 下方显示成「编译于 2026-11-28 11:58:40」。打包后 `app.json5` 会变脏，属于预期，
+> 跟着代码一起提交即可；`BuildInfo.ets` 编译完自动还原，不会残留。
+> 不自增的三种情况：CNB 发版（`REL_VERSION` 由页面填）、CNB 普通构建（按 git 版本出包，
+> 需要自增设 `HMY_BUMP=1`）、本地 `HMY_NO_BUMP=1`。
+
 > `build-tv.sh` 解决的是命令行构建的两个坑：
 > **① `DEVECO_SDK_HOME` 要指到 `.../DevEco-Studio.app/Contents/sdk`**（含 `default`
 > 子目录的父级）；指到 `sdk/default` 会报 `00303312 SDK component missing`，不设又会报

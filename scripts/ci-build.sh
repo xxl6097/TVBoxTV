@@ -6,6 +6,10 @@
 #   ./scripts/ci-build.sh --mode sign              编译 + 调试签名（读环境变量里的签名材料）
 #   ./scripts/ci-build.sh --mode sign --build-mode release
 #
+# 每次构建都会：versionName 的 patch 位 +1、versionCode +1，并把编译时间写进
+# entry/src/main/ets/common/BuildInfo.ets（设置页「关于 · 版本」下面那行小字）。
+# 想冻结版本号（例如打与 git tag 对应的包）：HMY_NO_BUMP=1 ./scripts/ci-build.sh ...
+#
 # 模式区别只在于「要不要补签」：编译流程完全一致，避免本地与 CI 各写一套。
 #
 # 签名材料来源（--mode sign）：
@@ -55,13 +59,62 @@ fi
 [ -n "${HV_SDK_HOME:-}" ] || hv_die "没找到鸿蒙 SDK（DEVECO_SDK_HOME / DevEco / 命令行工具都没有）" 2
 [ -n "${HV_HVIGOR:-}" ] || hv_die "没找到 hvigorw" 2
 
+# ---------------- 0. 版本号自增 + 编译时间注入 ----------------
+#
+# 每次打包 versionName 的 patch 位 +1、versionCode +1，并把「现在几点编的」写进
+# entry/src/main/ets/common/BuildInfo.ets，设置页「关于 · 版本」那行在版本号下面
+# 显示它。
+#
+# 什么时候不自增（否则会跟发版流程打架）：
+#   · REL_VERSION 有值 —— CNB 发版页面已指定版本号，release-notes.sh 要求它与
+#     app.json5 严格一致，这里再改就必然对不上；
+#   · CNB 云端构建 —— 构建应当可由 git 复现，版本号由仓库决定（想强制自增设 HMY_BUMP=1）；
+#   · HMY_NO_BUMP=1 —— 本地手动冻结。
+#
+# BuildInfo.ets 是编译期生成物：写 → 编译 → 还原，仓库里始终留着默认值，
+# 不会因为打包而变脏（打包后 app.json5 会脏，那是版本号真升了，需要提交）。
+APP_JSON="$ROOT/AppScope/app.json5"
+BUILD_INFO_FILE="$ROOT/entry/src/main/ets/common/BuildInfo.ets"
+
+_restore_build_info() {
+  if [ -n "${BUILD_INFO_BAK:-}" ] && [ -f "${BUILD_INFO_BAK:-}" ]; then
+    cp "$BUILD_INFO_BAK" "$BUILD_INFO_FILE" 2>/dev/null
+    rm -f "$BUILD_INFO_BAK"
+  fi
+}
+if [ -f "$BUILD_INFO_FILE" ]; then
+  BUILD_INFO_BAK="$(mktemp "${TMPDIR:-/tmp}/buildinfo.XXXXXX" 2>/dev/null || true)"
+  [ -n "${BUILD_INFO_BAK:-}" ] && cp "$BUILD_INFO_FILE" "$BUILD_INFO_BAK"
+  trap _restore_build_info EXIT
+fi
+
+if [ "${HMY_NO_BUMP:-0}" = "1" ]; then
+  hv_log "跳过版本号自增（HMY_NO_BUMP=1）"
+elif [ -n "${REL_VERSION:-}" ]; then
+  hv_log "跳过版本号自增（发版指定 REL_VERSION=$REL_VERSION）"
+elif [ -n "${CNB_BUILD_WORKSPACE:-}" ] && [ "${HMY_BUMP:-0}" != "1" ]; then
+  hv_log "跳过版本号自增（云端构建按 git 版本出包，要自增设 HMY_BUMP=1）"
+else
+  hv_bump_version "$APP_JSON" || hv_warn "版本号自增失败，沿用当前值"
+fi
+
+VER="$(hv_app_version "$APP_JSON")"; [ -n "$VER" ] || VER="0.0.0"
+VCODE="$(hv_app_version_code "$APP_JSON")"; [ -n "$VCODE" ] || VCODE="0"
+BUNDLE="$(hv_app_bundle "$APP_JSON")"; [ -n "$BUNDLE" ] || BUNDLE="unknown"
+BUILT_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+if hv_write_build_info "$BUILD_INFO_FILE" "$VER" "$VCODE" "$BUILT_AT" "$BUILD_MODE"; then
+  hv_ok "编译时间 $BUILT_AT → ${BUILD_INFO_FILE#$ROOT/}"
+else
+  hv_warn "写 BuildInfo.ets 失败，设置页将不显示编译时间"
+fi
+
 # ---------------- 1. 编译 ----------------
 OUT_DIR="$ROOT/dist"
 LOG_DIR="$OUT_DIR"
 mkdir -p "$LOG_DIR"
 BUILD_LOG="$LOG_DIR/hvigor.log"
 
-hv_log "编译（product=$PRODUCT, buildMode=${BUILD_MODE}）…"
+hv_log "编译（product=$PRODUCT, buildMode=${BUILD_MODE}, version=${VER}/${VCODE}）…"
 set +e
 if [ -n "${CNB_BUILD_WORKSPACE:-}" ]; then
   # 云端把全量 hvigor 日志打到构建日志里，排障不用再翻文件
@@ -93,9 +146,9 @@ fi
 [ -n "$UNSIGNED" ] && [ -f "$UNSIGNED" ] || hv_die "编译成功但没找到未签名 hap（预期 entry/build/default/outputs/default/）" 5
 hv_ok "未签名包：${UNSIGNED#$ROOT/}"
 
-VER="$(hv_app_version "$ROOT/AppScope/app.json5")"; [ -n "$VER" ] || VER="0.0.0"
-VCODE="$(hv_app_version_code "$ROOT/AppScope/app.json5")"; [ -n "$VCODE" ] || VCODE="0"
-BUNDLE="$(hv_app_bundle "$ROOT/AppScope/app.json5")"; [ -n "$BUNDLE" ] || BUNDLE="unknown"
+# VER / VCODE / BUNDLE 已在第 0 步读好（编译前），这里不再重复读——
+# 重复读虽然值一样，但一旦哪天有人在编译过程里改了 app.json5，
+# 就会出现「包内版本」与「文件名版本」不一致的诡异问题。
 
 HAP_NAME="夜帧影视-$VER-$BUILD_MODE"
 FINAL_HAP=""
@@ -197,6 +250,7 @@ sha256=$SHA
 branch=${CNB_BRANCH:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')}
 commit=${CNB_COMMIT:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo '-')}
 built_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+built_at_local=$BUILT_AT
 toolkit=${HV_TOOLKIT}
 EOF
 

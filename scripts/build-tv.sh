@@ -5,6 +5,12 @@
 #   ./scripts/build-tv.sh --install 192.168.100.176:5555   # 构建 + 装到电视
 #   ./scripts/build-tv.sh --install 192.168.10.168:37713   # 构建 + 装到手机
 #   ./scripts/build-tv.sh --build-mode release             # 换构建模式（默认 debug）
+#   HMY_NO_BUMP=1 ./scripts/build-tv.sh                    # 不升版本号（需要与 tag 对齐时）
+#
+# 每次构建自动做两件事（实现在 scripts/ci-build.sh 第 0 步）：
+#   · AppScope/app.json5 的 versionName patch+1、versionCode+1（打包后记得提交这个改动）
+#   · 把编译时间写进 entry/src/main/ets/common/BuildInfo.ets，设置页「关于 · 版本」
+#     下方显示为「编译于 2026-11-28 11:55:07」。该文件编译后自动还原，不会变脏。
 #
 # 它现在只是「本地封装」，不再自己实现编译/签名：
 #   编译 + 签名 → 交给 scripts/ci-build.sh --mode sign（与 CNB 流水线同一份代码）
@@ -39,7 +45,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --install) TARGET_DEV="${2:-}"; shift 2 || shift ;;
     --build-mode) BUILD_MODE="${2:-}"; shift 2 || shift ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "未知参数：$1"; exit 2 ;;
   esac
 done
