@@ -33,7 +33,7 @@ P12="$SIGN_DIR/release.p12"
 CER="${1:-$SIGN_DIR/release-app-chain.cer}"
 [ -f "$CER" ] || CER="$SIGN_DIR/release.cer"
 P7B="${2:-$SIGN_DIR/夜帧影视Release.p7b}"
-ALIAS="${HMY_ALIAS:-release}"
+ALIAS="${HMY_ALIAS:-hong}"
 PASS="${HMY_STOREPASS:-het002402}"
 
 DEVECO="${DEVECO_HOME:-/Applications/DevEco-Studio.app/Contents}"
@@ -172,10 +172,10 @@ fi
 #     签名证书，于是把 Root CA G2 写了进去，跟 profile 里登记的开发者证书对不上
 # 两次 AGC 都只回一句「软件包解析失败」，不给细节。所以这里先自查。
 echo "→ 校验签名材料…"
-if ! HMY_P12PASS="$PASS" python3 - "$CER" "$P12" <<'PYCHAIN'
+if ! HMY_P12PASS="$PASS" python3 - "$CER" "$P12" "$P7B" <<'PYCHAIN'
 import os, re, subprocess, sys
 
-cer, p12 = sys.argv[1], sys.argv[2]
+cer, p12, p7b = sys.argv[1], sys.argv[2], sys.argv[3]
 pw = os.environ.get('HMY_P12PASS', '')
 
 
@@ -223,12 +223,42 @@ a, b = pub_id(leaf_pub), pub_id(key_pub)
 if a and b and a != b:
     fail.append('首段证书的公钥与 p12 私钥不配对（证书和密钥不是同一次申请的）')
 
+# profile 里登记的发布证书必须就是签名链首段，且与私钥配套。
+# 换成新证书后忘了换 profile（或反过来）时，AGC 回的是 993「Profile 文件非法」。
+import datetime
+
+ptxt = open(p7b, 'rb').read().decode('utf-8', 'ignore')
+pm = re.search(r'"distribution-certificate"\s*:\s*"([^"]+)"', ptxt)
+if not pm:
+    fail.append('读不出 profile 里的 distribution-certificate，%s 可能不是发布 Profile' % p7b)
+else:
+    prof_pub = ssl(['x509', '-noout', '-pubkey'], pm.group(1).replace('\\n', '\n')).stdout
+    if pub_id(prof_pub) and a and pub_id(prof_pub) != a:
+        fail.append('profile 登记的证书与包签名证书不是同一张 —— 证书换了但 profile 还是旧的（AGC 报 993）')
+
+    now = datetime.datetime.now().timestamp()
+    nb = re.search(r'"not-before"\s*:\s*(\d+)', ptxt)
+    na = re.search(r'"not-after"\s*:\s*(\d+)', ptxt)
+    if nb and int(nb.group(1)) > now:
+        fail.append('profile 尚未生效：%s' % datetime.datetime.fromtimestamp(int(nb.group(1))).strftime('%Y-%m-%d %H:%M'))
+    if na and int(na.group(1)) < now:
+        fail.append('profile 已过期：%s' % datetime.datetime.fromtimestamp(int(na.group(1))).strftime('%Y-%m-%d %H:%M'))
+
+    uid = re.search(r'"uuid"\s*:\s*"([^"]+)"', ptxt)
+    pb = re.search(r'"bundle-name"\s*:\s*"([^"]+)"', ptxt)
+    print('  profile UUID %s / bundle %s / 到期 %s' % (
+        uid.group(1) if uid else '?',
+        pb.group(1) if pb else '?',
+        datetime.datetime.fromtimestamp(int(na.group(1))).strftime('%Y-%m-%d') if na else '?'))
+
 if fail:
     for f in fail:
         print('  ✗ ' + f)
-    print('''  修法：.cer 的段序必须是
-      ① 开发者证书（CN=…,Release） ② 中间 CA（Developer Relations CA G2） ③ 根 CA
-    脚本默认用 release-app-chain.cer；重建时把 release-app.cer + release-ca.cer + release-root.cer 依次 cat 起来''')
+    print('''  修法：
+    · 段序：① 开发者证书（CN=…,Release）② 中间 CA（Developer Relations CA G2）③ 根 CA
+      重建：cat release-app.cer release-ca.cer release-root.cer > release.cer
+    · 三者必须同一次申请：p12（私钥）、.cer（证书）、.p7b（profile）。任何一样换了，
+      另外两样也要跟着换，否则 AGC 报 993「Profile 文件非法」''')
     sys.exit(1)
 print('  ✓ 证书链与私钥配对正确')
 PYCHAIN
