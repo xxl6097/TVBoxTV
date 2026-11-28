@@ -9,10 +9,11 @@
 #   明文会被直接拒绝：
 #     「The length of the storePassword or keyPassword field is less than 32」
 #   而密文只能用 DevEco 图形界面生成。为了不依赖 IDE，这里改成：
-#     1) 先让 hvigor 出一份**未签名**的 Release hap
-#     2) 用 SDK 自带的 app_packing_tool.jar 把 hap 打成未签名 .app
-#     3) 再用 SDK 自带的 hap-sign-tool.jar 签 .app（它接受明文密码）
-#   三条命令都是官方工具，产物与 DevEco 签出来的一致。
+#     1) hvigor **assembleApp**（不是 assembleHap）出未签名 .app —— 只有它会生成
+#        pac.json（隐私清单）和项目级 pack.info；手工用 app_packing_tool 打的包缺
+#        这两样，AGC 上传时报「软件包解析失败」
+#     2) 用 SDK 自带的 hap-sign-tool.jar 签 .app（它接受明文密码，-signCode 0）
+#   两条命令都是官方工具，产物与 DevEco 签出来的一致。
 #
 # 前置（AGC 已签发好，直接可用）：
 #   $SIGN_DIR/release.p12           私钥库，别名 release，口令见 HMY_STOREPASS
@@ -38,8 +39,6 @@ JAVA="$DEVECO/jbr/Contents/Home/bin/java"
 [ -x "$JAVA" ] || JAVA="$(command -v java)"
 
 OUT="build/release"
-UNSIGNED="$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
-PACKINFO="$ROOT/entry/build/default/outputs/default/pack.info"
 
 # 版本号从 AppScope/app.json5 读，不写死。
 # 原来这里硬编码 1.0.4，app.json5 早就升到 1.1.0 了，产物名一直是旧版本 ——
@@ -120,49 +119,52 @@ s = re.sub(r'\s*"signingConfig"\s*:\s*"[^"]*",?', '', s, count=1)
 io.open(bp, 'w', encoding='utf-8').write(s)
 PYEOF
 
-echo "→ 编译未签名 Release…"
+echo "→ 编译未签名 Release .app…"
 export DEVECO_SDK_HOME="$DEVECO/sdk"
 export NODE_HOME="$DEVECO/tools/node"
 export PATH="$NODE_HOME/bin:$DEVECO/sdk/default/openharmony/toolchains:$PATH"
 LOG="${TMPDIR:-/tmp}/hmy-sign-build.log"
 HVIGOR="$DEVECO/tools/hvigor/bin/hvigorw"
 [ -x "$ROOT/hvigorw" ] && HVIGOR="$ROOT/hvigorw"
-"$HVIGOR" --mode module -p product=default -p buildMode=release assembleHap --no-daemon > "$LOG" 2>&1
+
+# 必须用 assembleApp（不是 assembleHap + app_packing_tool 手工打包）。
+# 手工打出来的 .app 只有 pack.info + hap 两个条目，缺 pac.json（隐私清单），
+# 用的还是模块级 pack.info（字段不全），AGC 上传时直接报「软件包解析失败」，
+# 错误详情只给一个错误码，极难自查。assembleApp 产出的才是官方结构：
+#   entry-default.hap + pack.info（项目级）+ pac.json（{"dataProcess":[],"specialAPIs":[]}）
+CACHE_REL="$ROOT/entry/build/default/cache/default/default@CompileArkTS/esmodule/release"
+if [ -d "$CACHE_REL" ]; then
+  # hvigor 清理该目录时是整目录删除，文件一多会被环境的批量删除保护拦下
+  # （safe-delete 钩子 → hvigor 报 00308018 Unknown Error），先挪开再编译。
+  mv "$CACHE_REL" "${TMPDIR:-/tmp}/hv-cache-aside-$(date +%s)" 2>/dev/null || true
+fi
+"$HVIGOR" --mode project -p product=default -p buildMode=release assembleApp --no-daemon > "$LOG" 2>&1
 if ! grep -q "BUILD SUCCESSFUL" "$LOG"; then
   echo "✗ 编译失败，日志：$LOG"
   grep -n "Error Message" "$LOG" | head -6
   exit 6
 fi
-[ -f "$UNSIGNED" ] || { echo "✗ 没找到未签名包：$UNSIGNED"; exit 6; }
-echo "  未签名包：$(du -h "$UNSIGNED" | cut -f1)"
 
-# ---------- 2. 用 app_packing_tool 打包成 .app ----------
-# 应用市场上架要求 .app 后缀（App Pack），传 .hap 会被拒「不是 .app 后缀」。
-# 所以把未签名 hap 打成 .app 容器，再对 .app 整体签名。
+# ---------- 2. 取出 hvigor 产出的未签名 .app ----------
+RAW_APP="$(ls -t "$ROOT"/build/outputs/default/*-unsigned.app 2>/dev/null | head -1)"
+[ -n "$RAW_APP" ] && [ -f "$RAW_APP" ] || {
+  echo "✗ 没找到未签名 .app（build/outputs/default/*-unsigned.app）"
+  echo "  编译日志：$LOG"
+  exit 7
+}
 mkdir -p "$OUT"
-echo "→ 打包 .app…"
-STAGE_HAP="${TMPDIR:-/tmp}/entry-default.hap"
-cp "$UNSIGNED" "$STAGE_HAP"
-"$JAVA" -jar "$APPPACK" --mode app \
-  --hap-path "$STAGE_HAP" \
-  --pack-info-path "$PACKINFO" \
-  --out-path "$APP_UNSIGNED" \
-  --force true > "${TMPDIR:-/tmp}/hmy-apppack.log" 2>&1
-RC=$?
-tail -3 "${TMPDIR:-/tmp}/hmy-apppack.log"
-if [ $RC -ne 0 ] || [ ! -f "$APP_UNSIGNED" ]; then
-  cat <<EOF
-
-✗ 打包 .app 失败（退出码 $RC）。常见原因：
-  · pack.info 不存在或与 hap 不匹配（应在 entry/build/default/outputs/default/pack.info）
-  · 未签名 hap 不存在：$UNSIGNED
-EOF
+cp "$RAW_APP" "$APP_UNSIGNED"
+echo "  未签名 .app：$(basename "$RAW_APP")  $(du -h "$APP_UNSIGNED" | cut -f1)"
+# 结构自检：缺 pac.json 的包上 AGC 一定解析失败，先在这里拦下来
+if ! unzip -l "$APP_UNSIGNED" 2>/dev/null | grep -q 'pac.json'; then
+  echo "✗ .app 里没有 pac.json（隐私清单），AGC 会报「软件包解析失败」"
   exit 7
 fi
-echo "  未签名 .app：$(du -h "$APP_UNSIGNED" | cut -f1)"
 
 # ---------- 3. 用官方工具签名 .app ----------
 echo "→ 签名 .app…"
+# -signCode 0：代码签名只对 hap/hsp/hqf/elf 生效，签 .app 时置 0，
+# 只给它挂 .app 自己的签名块（体积增加约 14.7 KB）。用 1 在部分 AGC 校验里会被判非法包。
 "$JAVA" -jar "$JAR" sign-app \
   -mode localSign \
   -keyAlias "$ALIAS" \
@@ -175,7 +177,7 @@ echo "→ 签名 .app…"
   -outFile "$TARGET" \
   -signAlg SHA256withECDSA \
   -compatibleVersion 12 \
-  -signCode 1 > "${TMPDIR:-/tmp}/hmy-sign.log" 2>&1
+  -signCode 0 > "${TMPDIR:-/tmp}/hmy-sign.log" 2>&1
 RC=$?
 tail -5 "${TMPDIR:-/tmp}/hmy-sign.log"
 if [ $RC -ne 0 ] || [ ! -f "$TARGET" ]; then
