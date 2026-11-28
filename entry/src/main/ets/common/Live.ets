@@ -266,8 +266,46 @@ export class Live {
     return u.startsWith('http://') || u.startsWith('https://');
   }
 
-  private static push(groups: ChannelGroup[], groupName: string, name: string, url: string,
-    logo: string): void {
+  /**
+   * 收敛主机名后面多余的斜杠。
+   *
+   * 起因：iFan 这类自建源在拼地址时，base 已经带了尾斜杠，又拼了一个 /uuxia，
+   * 于是整份列表里每个台都是 https://host:88//uuxia/<id> 这种双斜杠写法。
+   * 大多数服务端会把重复斜杠当普通路径（404），iFan 的网关更直接——回
+   * 「身份认证失败」403。
+   *
+   * 后果很隐蔽：播放器往往能忍（重定向/归一化后照播），但我们的探活是原样请求，
+   * 于是整组台全被判死、全部标灰，看起来像「源坏了」，实际是地址多了一个斜杠。
+   * 用户手抄一条单斜杠地址去试又是好的，就更难往这上面想了。
+   *
+   * 只收敛 authority 之后那一段连续的斜杠，路径内部不动（有些源确实靠 // 区分）。
+   */
+  private static norm(u: string): string {
+    const i: number = u.indexOf('://');
+    if (i < 0) {
+      return u;
+    }
+    let j: number = i + 3;
+    while (j < u.length && u.charAt(j) !== '/') {
+      j++;
+    }
+    if (j >= u.length) {
+      return u;
+    }
+    let k: number = j;
+    while (k < u.length && u.charAt(k) === '/') {
+      k++;
+    }
+    if (k - j <= 1) {
+      return u;
+    }
+    return u.substring(0, j + 1) + u.substring(k);
+  }
+
+  private static push(groups: ChannelGroup[], groupName: string, name: string, rawUrl: string,
+    rawLogo: string): void {
+    const url: string = Live.norm(rawUrl);
+    const logo: string = Live.norm(rawLogo);
     let g: ChannelGroup | null = null;
     for (let i = 0; i < groups.length; i++) {
       if (groups[i].name === groupName) {
