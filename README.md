@@ -194,6 +194,11 @@ type 0  XML 采集接口         5 个   ← 已完整实现（含 CDATA）
 
 ## 四、编译与安装
 
+> **不想自己编译**：现成的安装包在 [`releases/`](releases/README.md)，
+> 最新版直链
+> `https://github.com/xxl6097/TVBoxTV/raw/main/releases/TVBoxTV-1.1.8-debug.hap`
+> （debug 签名，`hdc install -r` 即可装上）。
+>
 > 包名已改为 `com.hong.tv`。本地构建也走 AGC 发布证书（`./scripts/build.sh` →
 > `scripts/sign-release.sh`），产物与提审用的是同一份，实测可直接 `hdc install`。
 >
